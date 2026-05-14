@@ -1046,6 +1046,13 @@ fn locate_header(frame: &CaptureFrame) -> Result<VisualTarget> {
 
 fn locate_paint_canvas(frame: &CaptureFrame) -> Result<VisualTarget> {
     let view = FrameView::new(frame);
+    if let Some(rect) = locate_paint_canvas_outline(&view) {
+        return Ok(VisualTarget::with_rect(
+            point_in_rect_ratio(rect, (0.35, 0.35))?,
+            rect,
+        ));
+    }
+
     let min_width = max(180, view.width() * 12 / 100);
     let min_height = max(160, view.height() * 12 / 100);
     let max_area = i64::from(view.width()) * i64::from(view.height()) * 92 / 100;
@@ -1082,6 +1089,35 @@ fn locate_paint_canvas(frame: &CaptureFrame) -> Result<VisualTarget> {
         point_in_rect_ratio(rect, (0.35, 0.35))?,
         rect,
     ))
+}
+
+fn locate_paint_canvas_outline(view: &FrameView<'_>) -> Option<Rect> {
+    let min_width = max(220, view.width() * 12 / 100);
+    let min_height = max(160, view.height() * 12 / 100);
+    connected_components(view, is_paint_canvas_outline_pixel, 2)
+        .into_iter()
+        .filter(|component| {
+            let width = component.right - component.left;
+            let height = component.bottom - component.top;
+            let aspect = f64::from(width) / f64::from(max(1, height));
+            width >= min_width
+                && height >= min_height
+                && (0.5..=2.2).contains(&aspect)
+                && component.pixels >= u32::try_from(width + height).unwrap_or(u32::MAX)
+                && component.top >= view.height() * 8 / 100
+                && component.bottom <= view.height() * 94 / 100
+                && component.left <= view.width() * 85 / 100
+                && component.right >= view.width() * 12 / 100
+        })
+        .max_by_key(|component| {
+            let width = component.right - component.left;
+            let height = component.bottom - component.top;
+            let area = i64::from(width) * i64::from(height);
+            let center_penalty = (component.center_x() - view.width() * 42 / 100).abs()
+                + (component.center_y() - view.height() * 42 / 100).abs();
+            area - i64::from(center_penalty * 40)
+        })
+        .map(Component::rect)
 }
 
 fn locate_paint_save_button(frame: &CaptureFrame) -> Result<VisualTarget> {
@@ -1321,6 +1357,10 @@ fn is_paint_canvas_pixel((red, green, blue): (u8, u8, u8)) -> bool {
         && green.abs_diff(blue) <= 18
 }
 
+fn is_paint_canvas_outline_pixel((red, green, blue): (u8, u8, u8)) -> bool {
+    red <= 90 && (85..=180).contains(&green) && blue >= 150 && blue > green + 25
+}
+
 fn point_in_rect_ratio(rect: Rect, ratio: (f32, f32)) -> Result<Point> {
     let (ratio_x, ratio_y) = ratio;
     if !ratio_x.is_finite()
@@ -1427,6 +1467,19 @@ mod tests {
 
         assert_eq!(target.rect, Some(Rect::new(220, 152, 820, 620)));
         assert_eq!(target.point, Point::new(507, 369));
+    }
+
+    #[test]
+    fn locates_paint_canvas_outline_inside_white_workspace() {
+        let mut frame = blank_frame(1_920, 1_200, (34, 36, 40));
+        fill_rect(&mut frame, 68, 140, 1_852, 1_060, (248, 248, 248));
+        fill_rect(&mut frame, 938, 200, 4, 608, (44, 130, 230));
+        fill_rect(&mut frame, 134, 804, 808, 4, (44, 130, 230));
+
+        let target = locate_paint_canvas(&frame).unwrap();
+
+        assert_eq!(target.rect, Some(Rect::new(134, 200, 808, 608)));
+        assert_eq!(target.point, Point::new(416, 412));
     }
 
     #[test]
