@@ -369,9 +369,11 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
                 ["click", "--delay", "0", ydotool_button(*button)],
             )
         }
-        (InputTool::Ydotool, InputAction::TypeText(text)) => {
-            run_command_with_stdin("ydotool", ["type", "--delay", "0", "--file", "-"], text)
-        }
+        (InputTool::Ydotool, InputAction::TypeText(text)) => run_command_with_stdin(
+            "ydotool",
+            ["type", "--delay", "120", "--key-delay", "45", "--file", "-"],
+            text,
+        ),
         (InputTool::Ydotool, InputAction::Hotkey(keys)) => ydotool_hotkey(keys),
         (InputTool::Wtype, InputAction::TypeText(text)) => run_command("wtype", ["--", text]),
         (InputTool::Xdotool, InputAction::MoveMouse(position)) => run_command(

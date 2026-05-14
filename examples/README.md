@@ -46,11 +46,15 @@ the global search bar, searches for `Saved Messages`, opens the result, and
 sends `PeekabooX Example` to that chat. Telegram must already be logged in.
 Override `PEEKABOOX_TELEGRAM_MESSAGE`, `PEEKABOOX_TELEGRAM_SEARCH_QUERY`,
 `PEEKABOOX_TELEGRAM_APP`, or the optional coordinate variables
-`PEEKABOOX_TELEGRAM_SEARCH_X/Y`, `PEEKABOOX_TELEGRAM_RESULT_X/Y`, and
-`PEEKABOOX_TELEGRAM_INPUT_X/Y` when the default keyboard path does not match
-your Telegram build or locale. By default the script refuses to type unless a
-Telegram window is focused; set `PEEKABOOX_TELEGRAM_REQUIRE_FOCUS=0` to bypass
-that guard.
+`PEEKABOOX_TELEGRAM_FOCUS_X/Y`, `PEEKABOOX_TELEGRAM_SEARCH_X/Y`,
+`PEEKABOOX_TELEGRAM_CLEAR_X/Y`, `PEEKABOOX_TELEGRAM_RESULT_X/Y`,
+`PEEKABOOX_TELEGRAM_INPUT_X/Y`, and `PEEKABOOX_TELEGRAM_SEND_X/Y` when the
+default keyboard path does not match your Telegram build, locale, or desktop
+focus behavior. By default the script refuses to type unless a Telegram window
+is focused; set
+`PEEKABOOX_TELEGRAM_REQUIRE_FOCUS=0` to bypass that focus guard, or
+`PEEKABOOX_TELEGRAM_WINDOW_GUARD=0` when your desktop does not expose Telegram
+through window enumeration and you provide reliable coordinates.
 
 `examples/workflows/desktop_observe.yaml` and
 `examples/workflows/input_actions.yaml` are editable workflow files for

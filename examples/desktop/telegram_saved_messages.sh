@@ -15,7 +15,11 @@ LAUNCH_DELAY="${PEEKABOOX_TELEGRAM_LAUNCH_DELAY:-5}"
 SEARCH_DELAY="${PEEKABOOX_TELEGRAM_SEARCH_DELAY:-1}"
 OPEN_DELAY="${PEEKABOOX_TELEGRAM_OPEN_DELAY:-1}"
 SEND_DELAY="${PEEKABOOX_TELEGRAM_SEND_DELAY:-1}"
+FOCUS_DELAY="${PEEKABOOX_TELEGRAM_FOCUS_DELAY:-0.6}"
+FOCUS_APP_DELAY="${PEEKABOOX_TELEGRAM_FOCUS_APP_DELAY:-1}"
+TYPE_DELAY="${PEEKABOOX_TELEGRAM_TYPE_DELAY:-0.8}"
 REQUIRE_FOCUS="${PEEKABOOX_TELEGRAM_REQUIRE_FOCUS:-1}"
+WINDOW_GUARD="${PEEKABOOX_TELEGRAM_WINDOW_GUARD:-1}"
 telegram_pid=""
 failures=0
 
@@ -125,11 +129,25 @@ ensure_telegram_window_ready() {
   run_step "window enumeration after Telegram launch" capture_windows
 
   if ! telegram_window_visible; then
+    if [[ "$WINDOW_GUARD" == "0" ]]; then
+      echo "warning: no Telegram window was detected; continuing because PEEKABOOX_TELEGRAM_WINDOW_GUARD=0" >&2
+      return 0
+    fi
     warn_or_exit "no Telegram window was detected; log written to $TELEGRAM_LOG"
   fi
 
   if [[ "$REQUIRE_FOCUS" == "1" ]] && ! telegram_window_focused; then
+    if [[ "$WINDOW_GUARD" == "0" ]]; then
+      echo "warning: Telegram focus was not confirmed; continuing because PEEKABOOX_TELEGRAM_WINDOW_GUARD=0" >&2
+      return 0
+    fi
     warn_or_exit "Telegram window is visible but not focused; set PEEKABOOX_TELEGRAM_REQUIRE_FOCUS=0 to bypass this guard"
+  fi
+}
+
+focus_telegram_window() {
+  if [[ -n "${PEEKABOOX_TELEGRAM_FOCUS_X:-}" && -n "${PEEKABOOX_TELEGRAM_FOCUS_Y:-}" ]]; then
+    run_peekaboox click --x "$PEEKABOOX_TELEGRAM_FOCUS_X" --y "$PEEKABOOX_TELEGRAM_FOCUS_Y"
   fi
 }
 
@@ -140,6 +158,15 @@ focus_search_bar() {
   fi
 
   run_peekaboox hotkey ctrl+k
+}
+
+clear_search_bar() {
+  if [[ -n "${PEEKABOOX_TELEGRAM_CLEAR_X:-}" && -n "${PEEKABOOX_TELEGRAM_CLEAR_Y:-}" ]]; then
+    run_peekaboox click --x "$PEEKABOOX_TELEGRAM_CLEAR_X" --y "$PEEKABOOX_TELEGRAM_CLEAR_Y"
+    return
+  fi
+
+  run_peekaboox hotkey ctrl+a
 }
 
 open_search_result() {
@@ -155,6 +182,15 @@ focus_message_input() {
   if [[ -n "${PEEKABOOX_TELEGRAM_INPUT_X:-}" && -n "${PEEKABOOX_TELEGRAM_INPUT_Y:-}" ]]; then
     run_peekaboox click --x "$PEEKABOOX_TELEGRAM_INPUT_X" --y "$PEEKABOOX_TELEGRAM_INPUT_Y"
   fi
+}
+
+send_message() {
+  if [[ -n "${PEEKABOOX_TELEGRAM_SEND_X:-}" && -n "${PEEKABOOX_TELEGRAM_SEND_Y:-}" ]]; then
+    run_peekaboox click --x "$PEEKABOOX_TELEGRAM_SEND_X" --y "$PEEKABOOX_TELEGRAM_SEND_Y"
+    return
+  fi
+
+  run_peekaboox hotkey Enter
 }
 
 maybe_close_telegram() {
@@ -177,19 +213,26 @@ echo "Launching Telegram: $telegram_app"
 launch_telegram_app "$telegram_app"
 sleep "$LAUNCH_DELAY"
 ensure_telegram_app_started
+if [[ -n "${PEEKABOOX_TELEGRAM_FOCUS_X:-}" && -n "${PEEKABOOX_TELEGRAM_FOCUS_Y:-}" ]]; then
+  run_step "focus Telegram window override" focus_telegram_window
+  sleep "$FOCUS_APP_DELAY"
+fi
 ensure_telegram_window_ready
 
 run_step "capture Telegram after launch" run_peekaboox capture --output "$AFTER_LAUNCH_CAPTURE"
 run_step "focus Telegram search bar" focus_search_bar
-run_step "clear search bar" run_peekaboox hotkey ctrl+a
+sleep "$FOCUS_DELAY"
+run_step "clear search bar" clear_search_bar
+sleep "$TYPE_DELAY"
 run_step "search Saved Messages chat" run_peekaboox type "$SEARCH_QUERY"
 sleep "$SEARCH_DELAY"
 run_step "capture Telegram search results" run_peekaboox capture --output "$AFTER_SEARCH_CAPTURE"
 run_step "open Saved Messages search result" open_search_result
 sleep "$OPEN_DELAY"
 run_step "focus message input override" focus_message_input
+sleep "$FOCUS_DELAY"
 run_step "type test message" run_peekaboox type "$MESSAGE"
-run_step "send test message" run_peekaboox hotkey Enter
+run_step "send test message" send_message
 sleep "$SEND_DELAY"
 run_step "capture Telegram after sending" run_peekaboox capture --output "$AFTER_SEND_CAPTURE"
 
