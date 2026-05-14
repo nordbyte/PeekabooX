@@ -476,7 +476,7 @@ fn drag_steps(duration_ms: u64, from: Point, to: Point) -> u32 {
     }
 
     let distance = (from.x.abs_diff(to.x).max(from.y.abs_diff(to.y)) / 32).max(1);
-    let timing = ((duration_ms / 16).max(1)).min(120);
+    let timing = (duration_ms / 16).clamp(1, 120);
     distance.max(timing as u32).min(120)
 }
 
