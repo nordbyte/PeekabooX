@@ -1,0 +1,26 @@
+[package]
+name = "peekaboox-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+peekaboox-accessibility = { path = "../rust/accessibility" }
+peekaboox-capture = { path = "../rust/capture" }
+peekaboox-core = { path = "../rust/core" }
+peekaboox-input = { path = "../rust/input" }
+peekaboox-ipc = { path = "../rust/ipc" }
+peekaboox-plugins = { path = "../rust/plugins" }
+peekaboox-vision = { path = "../rust/vision" }
+peekaboox-windows = { path = "../rust/windows" }
+serde_json = "1"
+
+[features]
+default = []
+egl-backend = ["peekaboox-capture/egl-backend"]
+pipewire-backend = ["peekaboox-capture/pipewire-backend"]
+
+[[bin]]
+name = "peekaboox"
+path = "src/main.rs"

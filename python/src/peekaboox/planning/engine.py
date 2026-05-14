@@ -1,0 +1,249 @@
+import re
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+from peekaboox.memory import GraphNode
+from peekaboox.workflows import (
+    Workflow,
+    WorkflowStep,
+    load_workflow_text,
+    workflow_from_dict,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowRefinementRequest:
+    goal: str
+    draft: Workflow
+    desktop_nodes: tuple[GraphNode, ...]
+
+
+WorkflowRefinementProvider = Callable[
+    [WorkflowRefinementRequest],
+    Workflow | dict[str, object] | str,
+]
+
+
+@dataclass(slots=True)
+class PlanningEngine:
+    max_steps: int = 16
+    workflow_refiner: WorkflowRefinementProvider | None = None
+
+    def decompose(self, goal: str) -> list[str]:
+        normalized = goal.strip()
+        if not normalized:
+            raise ValueError("goal must not be empty")
+        return [normalized]
+
+    def plan_workflow(self, goal: str) -> Workflow:
+        normalized = goal.strip()
+        if not normalized:
+            raise ValueError("goal must not be empty")
+        return Workflow(
+            name=normalized,
+            steps=[WorkflowStep(action="observe", value=normalized)],
+        )
+
+    def generate_workflow(
+        self,
+        goal: str,
+        *,
+        desktop_nodes: tuple[GraphNode, ...] | list[GraphNode] = (),
+    ) -> Workflow:
+        normalized = goal.strip()
+        if not normalized:
+            raise ValueError("goal must not be empty")
+
+        steps: list[WorkflowStep] = [WorkflowStep(action="observe", value=normalized)]
+        target = _target_selector(normalized, desktop_nodes)
+        typed_text = _typed_text(normalized)
+        intent = _intent(normalized)
+
+        if target is not None and (intent in {"click", "type"} or typed_text is None):
+            steps.append(WorkflowStep(action="find_element", selector=target))
+
+        if target is not None and intent in {"click", "type"}:
+            steps.append(
+                WorkflowStep(action="click", selector=target, vision_fallback=True)
+            )
+
+        if typed_text is not None:
+            steps.append(WorkflowStep(action="type_text", value=typed_text))
+
+        if len(steps) == 1 and target is not None:
+            steps.append(WorkflowStep(action="find_element", selector=target))
+
+        return self._validate_workflow(Workflow(name=normalized, steps=steps[: self.max_steps]))
+
+    def refine_workflow(
+        self,
+        goal: str,
+        *,
+        draft: Workflow | None = None,
+        desktop_nodes: tuple[GraphNode, ...] | list[GraphNode] = (),
+        provider: WorkflowRefinementProvider | None = None,
+    ) -> Workflow:
+        normalized = goal.strip()
+        if not normalized:
+            raise ValueError("goal must not be empty")
+
+        draft = draft or self.generate_workflow(
+            normalized,
+            desktop_nodes=desktop_nodes,
+        )
+        refiner = provider or self.workflow_refiner
+        if refiner is None:
+            return self._validate_workflow(draft)
+
+        request = WorkflowRefinementRequest(
+            goal=normalized,
+            draft=draft,
+            desktop_nodes=tuple(desktop_nodes),
+        )
+        proposed = _workflow_from_provider_result(refiner(request), default_name=normalized)
+        return self._validate_workflow(proposed)
+
+    def _validate_workflow(self, workflow: Workflow) -> Workflow:
+        if not workflow.name.strip():
+            raise ValueError("workflow name must not be empty")
+        if not workflow.steps:
+            raise ValueError("workflow must contain at least one step")
+        if len(workflow.steps) > self.max_steps:
+            raise ValueError(f"workflow exceeds max_steps={self.max_steps}")
+
+        for index, step in enumerate(workflow.steps):
+            _validate_step(step, index)
+        return workflow
+
+
+def _workflow_from_provider_result(value: object, default_name: str) -> Workflow:
+    if isinstance(value, Workflow):
+        return value
+    if isinstance(value, str):
+        return load_workflow_text(value)
+    if isinstance(value, dict):
+        workflow_value: Any = value.get("workflow", value)
+        if not isinstance(workflow_value, dict):
+            raise ValueError("provider workflow must be an object")
+        return workflow_from_dict(workflow_value, default_name=default_name)
+    raise ValueError("provider must return Workflow, workflow dict, or JSON/YAML text")
+
+
+def _validate_step(step: WorkflowStep, index: int) -> None:
+    action = step.action.strip().lower()
+    if action not in _SUPPORTED_ACTIONS:
+        raise ValueError(f"steps[{index}].action is unsupported: {step.action}")
+    if action == "find_element" and not step.selector:
+        raise ValueError(f"steps[{index}].selector is required for find_element")
+    if action == "click":
+        has_selector = bool(step.selector)
+        has_coordinates = step.x is not None and step.y is not None
+        if has_selector == has_coordinates:
+            raise ValueError(f"steps[{index}] click requires selector or x/y")
+    if action in {"type", "type_text"} and step.value is None:
+        raise ValueError(f"steps[{index}].value is required for type_text")
+
+
+_SUPPORTED_ACTIONS = {
+    "observe",
+    "capture",
+    "capture_screen",
+    "find_element",
+    "click",
+    "type",
+    "type_text",
+    "list_windows",
+    "get_desktop_state",
+}
+
+
+def _intent(goal: str) -> str | None:
+    normalized = goal.casefold()
+    if any(word in normalized for word in ("type", "enter", "write", "input")):
+        return "type"
+    if any(word in normalized for word in ("click", "press", "select", "open", "submit")):
+        return "click"
+    return None
+
+
+def _typed_text(goal: str) -> str | None:
+    quoted = re.search(r'"([^"]+)"|\'([^\']+)\'', goal)
+    if quoted is not None:
+        return quoted.group(1) or quoted.group(2)
+    typed = re.search(
+        r"\b(?:type|enter|write|input)\s+(.+?)"
+        r"(?:\s+(?:into|in|to|and)\b|$)",
+        goal,
+        re.IGNORECASE,
+    )
+    if typed is None:
+        return None
+    value = typed.group(1).strip()
+    return value or None
+
+
+def _target_selector(
+    goal: str,
+    desktop_nodes: tuple[GraphNode, ...] | list[GraphNode],
+) -> str | None:
+    graph_target = _target_selector_from_graph(goal, desktop_nodes)
+    if graph_target is not None:
+        return graph_target
+    label = _target_label_from_goal(goal)
+    if label is None:
+        return None
+    return f"label={label}"
+
+
+def _target_selector_from_graph(
+    goal: str,
+    desktop_nodes: tuple[GraphNode, ...] | list[GraphNode],
+) -> str | None:
+    candidates: list[tuple[int, GraphNode]] = []
+    normalized_goal = goal.casefold()
+    for node in desktop_nodes:
+        if node.kind != "element" or node.label is None:
+            continue
+        label = node.label.strip()
+        if not _selector_safe(label) or label.casefold() not in normalized_goal:
+            continue
+        score = len(label)
+        if node.role and node.role.casefold() in normalized_goal:
+            score += 20
+        candidates.append((score, node))
+
+    if not candidates:
+        return None
+    _score, node = max(candidates, key=lambda item: item[0])
+    return _selector_for_node(node)
+
+
+def _selector_for_node(node: GraphNode) -> str | None:
+    label = node.label.strip() if node.label is not None else ""
+    if not _selector_safe(label):
+        return None
+    parts: list[str] = []
+    if node.role and _selector_safe(node.role):
+        parts.append(f"role={node.role}")
+    parts.append(f"label={label}")
+    return ",".join(parts)
+
+
+def _target_label_from_goal(goal: str) -> str | None:
+    match = re.search(
+        r"\b(?:click|press|select|open|submit|find)\s+(.+?)"
+        r"(?:\s+(?:button|field|link|and|then|with|to|into|in)\b|$)",
+        goal,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    label = match.group(1).strip(" .:")
+    if not label or len(label.split()) > 5 or not _selector_safe(label):
+        return None
+    return label
+
+
+def _selector_safe(value: str) -> bool:
+    return bool(value.strip()) and not any(separator in value for separator in ",\n\r")

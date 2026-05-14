@@ -1,0 +1,26 @@
+[Unit]
+Description=PeekabooX local desktop automation daemon (hardened observe profile)
+Documentation=https://git.marketdeck.io/marketdeck/PeekabooX
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=peekabooxd run --profile observe --sandbox basic --socket %t/peekabooxd.sock --audit-log %h/.local/state/peekaboox/audit.jsonl
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+PrivateTmp=true
+PrivateMounts=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%t %h/.local/state/peekaboox
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

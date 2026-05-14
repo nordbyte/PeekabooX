@@ -1,0 +1,13 @@
+[package]
+name = "peekaboox-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dbus = "0.9"
+peekaboox-core = { path = "../core" }
+
+[lib]
+path = "src/lib.rs"

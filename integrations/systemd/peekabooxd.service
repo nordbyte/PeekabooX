@@ -1,0 +1,17 @@
+[Unit]
+Description=PeekabooX local desktop automation daemon
+Documentation=https://git.marketdeck.io/marketdeck/PeekabooX
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=peekabooxd run --sandbox basic --socket %t/peekabooxd.sock --audit-log %h/.local/state/peekaboox/audit.jsonl
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+LockPersonality=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target

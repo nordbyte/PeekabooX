@@ -1,0 +1,1246 @@
+import argparse
+import json
+import sys
+from collections.abc import Callable
+from dataclasses import dataclass, field, fields, is_dataclass, replace
+from pathlib import Path
+from typing import Any, Sequence
+
+from peekaboox.client import (
+    ActionResult,
+    CaptureDeltaResult,
+    CaptureScreenResult,
+    DetectUiElementsResult,
+    DesktopState,
+    OcrResult,
+    PeekabooXClient,
+    Rect,
+    UiElement,
+    UiStateResult,
+    VisualDiffResult,
+    WindowInfo,
+)
+from peekaboox.client import DEFAULT_GRPC_TARGET
+from peekaboox.memory import (
+    DesktopGraphSnapshot,
+    DesktopGraphStatus,
+    DesktopGraphUpdate,
+    GraphEdge,
+    GraphNode,
+    MemoryStore,
+    SQLiteMemoryStore,
+)
+from peekaboox.planning import PlanningEngine
+from peekaboox.plugins import (
+    PluginToolExecutionResult,
+    discover_plugins,
+    execute_plugin_tool,
+    PluginDiscoveryResult,
+)
+from peekaboox.security import (
+    Capability,
+    CapabilityAuditEvent,
+    CapabilityPolicy,
+    ConfirmationAuditEvent,
+    ConfirmationPolicy,
+    DangerousAction,
+    JsonlAuditLogger,
+    KNOWN_CAPABILITY_PROFILES,
+)
+from peekaboox.workflows import (
+    Workflow,
+    WorkflowRecorder,
+    WorkflowStep,
+    load_workflow_file,
+    save_workflow_file,
+)
+from peekaboox import __version__ as PEEKABOOX_VERSION
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationResult:
+    ok: bool
+    message: str
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ActionAttempt:
+    attempt: int
+    ok: bool
+    message: str
+    result: object | None = None
+    error: str | None = None
+    verification: VerificationResult | None = None
+    recovery: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class StepExecutionResult:
+    step: WorkflowStep
+    ok: bool
+    attempts: tuple[ActionAttempt, ...]
+    result: object | None
+    recovery: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowExecutionResult:
+    goal: str
+    ok: bool
+    steps: tuple[StepExecutionResult, ...]
+    recovery: dict[str, object]
+
+
+Verifier = Callable[[WorkflowStep, object], VerificationResult | bool]
+
+
+@dataclass(slots=True)
+class AgentRuntime:
+    """Small orchestration shell for daemon RPCs, workflows, and memory."""
+
+    retries: int = 2
+    tools: dict[str, object] = field(default_factory=dict)
+    client: PeekabooXClient | None = None
+    planner: PlanningEngine = field(default_factory=PlanningEngine)
+    memory: MemoryStore = field(default_factory=MemoryStore)
+    recorder: WorkflowRecorder | None = None
+    last_recording: Workflow | None = None
+    capability_policy: CapabilityPolicy = field(default_factory=CapabilityPolicy.allow_all)
+    confirmation_policy: ConfirmationPolicy = field(default_factory=ConfirmationPolicy.disabled)
+    audit_logger: JsonlAuditLogger | None = None
+    plugin_paths: tuple[Path, ...] = ()
+    plugin_registry: PluginDiscoveryResult | None = None
+
+    def __post_init__(self) -> None:
+        if self.audit_logger is not None:
+            self.capability_policy.audit_logger = self.audit_logger
+            self.confirmation_policy.audit_logger = self.audit_logger
+
+    @classmethod
+    def connect(
+        cls,
+        target: str = "127.0.0.1:47777",
+        memory_path: str | Path | None = None,
+        capability_policy: CapabilityPolicy | None = None,
+        capability_profile: str | None = None,
+        confirmation_policy: ConfirmationPolicy | None = None,
+        audit_log_path: str | Path | None = None,
+        audit_source: str = "runtime",
+        plugin_paths: tuple[str | Path, ...] = (),
+    ) -> "AgentRuntime":
+        if capability_policy is not None and capability_profile is not None:
+            raise ValueError("use either capability_policy or capability_profile, not both")
+        memory = SQLiteMemoryStore(memory_path) if memory_path is not None else MemoryStore()
+        audit_logger = (
+            JsonlAuditLogger(audit_log_path, source=audit_source)
+            if audit_log_path is not None
+            else None
+        )
+        if capability_policy is None:
+            capability_policy = (
+                CapabilityPolicy.from_profile(capability_profile, audit_logger=audit_logger)
+                if capability_profile is not None
+                else CapabilityPolicy.from_env(audit_logger=audit_logger)
+            )
+        return cls(
+            client=PeekabooXClient(target=target),
+            memory=memory,
+            capability_policy=capability_policy,
+            confirmation_policy=confirmation_policy or ConfirmationPolicy.disabled(),
+            audit_logger=audit_logger,
+            plugin_paths=tuple(Path(path) for path in plugin_paths),
+        )
+
+    def register_tool(self, name: str, tool: object) -> None:
+        if not name:
+            raise ValueError("tool name must not be empty")
+        self.tools[name] = tool
+
+    def list_plugins(
+        self,
+        paths: tuple[str | Path, ...] | list[str | Path] | None = None,
+    ) -> PluginDiscoveryResult:
+        self._require_capability(Capability.PLUGIN_READ, "list_plugins")
+        selected_paths = tuple(Path(path) for path in paths) if paths is not None else self.plugin_paths
+        result = discover_plugins(selected_paths if selected_paths else None)
+        self.plugin_registry = result
+        return result
+
+    def call_plugin_tool(
+        self,
+        plugin_id: str,
+        tool: str,
+        arguments: dict[str, object] | None = None,
+        *,
+        paths: tuple[str | Path, ...] | list[str | Path] | None = None,
+        timeout_seconds: float = 10.0,
+    ) -> PluginToolExecutionResult:
+        self._require_capability(
+            Capability.PLUGIN_EXECUTE,
+            "call_plugin_tool",
+            plugin_id=plugin_id,
+            tool=tool,
+        )
+        plugins = self.list_plugins(paths=paths).plugins
+        plugin = next((plugin for plugin in plugins if plugin.manifest.id == plugin_id), None)
+        if plugin is None:
+            raise ValueError(f"unknown plugin: {plugin_id}")
+        return execute_plugin_tool(
+            plugin,
+            tool,
+            dict(arguments or {}),
+            timeout_seconds=timeout_seconds,
+        )
+
+    def plan(self, goal: str) -> list[str]:
+        return self.planner.decompose(goal)
+
+    def plan_workflow(self, goal: str) -> Workflow:
+        return self.planner.plan_workflow(goal)
+
+    def capability_audit(self) -> tuple[CapabilityAuditEvent, ...]:
+        return tuple(self.capability_policy.audit_events)
+
+    def confirmation_audit(self) -> tuple[ConfirmationAuditEvent, ...]:
+        return tuple(self.confirmation_policy.audit_events)
+
+    def generate_workflow(
+        self,
+        goal: str,
+        *,
+        refresh_desktop_graph: bool = False,
+    ) -> Workflow:
+        self._require_capability(Capability.WORKFLOW_GENERATE, "generate_workflow")
+        if refresh_desktop_graph:
+            self.refresh_desktop_graph()
+        desktop_nodes: tuple[GraphNode, ...] = ()
+        if (
+            self.memory.latest_desktop_snapshot() is not None
+            and not self.memory.desktop_graph_stale
+        ):
+            desktop_nodes = self.query_desktop_graph(kind="element")
+        return self.planner.generate_workflow(goal, desktop_nodes=desktop_nodes)
+
+    def refine_workflow(
+        self,
+        goal: str,
+        workflow: Workflow | None = None,
+        *,
+        refresh_desktop_graph: bool = False,
+    ) -> Workflow:
+        self._require_capability(Capability.WORKFLOW_GENERATE, "refine_workflow")
+        if refresh_desktop_graph:
+            self.refresh_desktop_graph()
+        desktop_nodes: tuple[GraphNode, ...] = ()
+        if (
+            self.memory.latest_desktop_snapshot() is not None
+            and not self.memory.desktop_graph_stale
+        ):
+            desktop_nodes = self.query_desktop_graph(kind="element")
+        return self.planner.refine_workflow(
+            goal,
+            draft=workflow,
+            desktop_nodes=desktop_nodes,
+        )
+
+    def save_generated_workflow(
+        self,
+        goal: str,
+        path: str | Path,
+        format_name: str | None = None,
+        *,
+        refresh_desktop_graph: bool = False,
+    ) -> str:
+        self._require_capability(Capability.WORKFLOW_GENERATE, "save_generated_workflow")
+        workflow = self.generate_workflow(
+            goal,
+            refresh_desktop_graph=refresh_desktop_graph,
+        )
+        return str(save_workflow_file(workflow, path, format_name=format_name))
+
+    def save_refined_workflow(
+        self,
+        goal: str,
+        path: str | Path,
+        workflow: Workflow | None = None,
+        format_name: str | None = None,
+        *,
+        refresh_desktop_graph: bool = False,
+    ) -> str:
+        self._require_capability(Capability.WORKFLOW_GENERATE, "save_refined_workflow")
+        refined = self.refine_workflow(
+            goal,
+            workflow=workflow,
+            refresh_desktop_graph=refresh_desktop_graph,
+        )
+        return str(save_workflow_file(refined, path, format_name=format_name))
+
+    def execute_goal(
+        self,
+        goal: str,
+        verifier: Verifier | None = None,
+    ) -> WorkflowExecutionResult:
+        self._require_capability(Capability.WORKFLOW_EXECUTE, "execute_goal")
+        return self.execute_workflow(self.plan_workflow(goal), verifier=verifier)
+
+    def execute_workflow(
+        self,
+        workflow: Workflow,
+        verifier: Verifier | None = None,
+    ) -> WorkflowExecutionResult:
+        self._require_capability(
+            Capability.WORKFLOW_EXECUTE,
+            "execute_workflow",
+            workflow=workflow.name,
+        )
+        if not workflow.steps:
+            raise ValueError("workflow must contain at least one step")
+        self._require_confirmation(
+            DangerousAction.WORKFLOW_EXECUTE,
+            "execute_workflow",
+            workflow=workflow.name,
+            steps=len(workflow.steps),
+        )
+
+        step_results: list[StepExecutionResult] = []
+        for step in workflow.steps:
+            result = self.execute_step(step, verifier=verifier)
+            step_results.append(result)
+            if not result.ok:
+                recovery: dict[str, object] = {
+                    "failed_step": len(step_results) - 1,
+                    "action": step.action,
+                    "reason": result.recovery.get("reason", "step failed"),
+                    "attempts": result.recovery.get("attempts", 0),
+                    "next_action": "inspect_state",
+                }
+                for key in ("successful", "strategy", "strategies", "events"):
+                    if key in result.recovery:
+                        recovery[key] = result.recovery[key]
+                return WorkflowExecutionResult(
+                    goal=workflow.name,
+                    ok=False,
+                    steps=tuple(step_results),
+                    recovery=recovery,
+                )
+
+        return WorkflowExecutionResult(
+            goal=workflow.name,
+            ok=True,
+            steps=tuple(step_results),
+            recovery={},
+        )
+
+    def load_workflow_file(self, path: str | Path) -> Workflow:
+        return load_workflow_file(path)
+
+    def execute_workflow_file(
+        self,
+        path: str | Path,
+        verifier: Verifier | None = None,
+    ) -> WorkflowExecutionResult:
+        self._require_capability(
+            Capability.WORKFLOW_EXECUTE,
+            "execute_workflow_file",
+            path=str(path),
+        )
+        return self.execute_workflow(self.load_workflow_file(path), verifier=verifier)
+
+    def start_recording(self, name: str = "recorded-workflow") -> WorkflowRecorder:
+        self._require_capability(Capability.WORKFLOW_RECORD, "start_recording")
+        if not name.strip():
+            raise ValueError("recording name must not be empty")
+        self.recorder = WorkflowRecorder(name=name)
+        self.last_recording = None
+        return self.recorder
+
+    def stop_recording(self) -> Workflow:
+        self._require_capability(Capability.WORKFLOW_RECORD, "stop_recording")
+        workflow = self.recorded_workflow()
+        self.last_recording = workflow
+        self.recorder = None
+        return workflow
+
+    def recorded_workflow(self) -> Workflow:
+        self._require_capability(Capability.WORKFLOW_RECORD, "recorded_workflow")
+        if self.recorder is not None:
+            return self.recorder.workflow()
+        if self.last_recording is not None:
+            return self.last_recording
+        raise RuntimeError("no active or completed workflow recording")
+
+    def save_recording(
+        self,
+        path: str | Path,
+        format_name: str | None = None,
+    ) -> str:
+        self._require_capability(
+            Capability.WORKFLOW_RECORD,
+            "save_recording",
+            path=str(path),
+        )
+        workflow = self.recorded_workflow()
+        recorder = WorkflowRecorder(name=workflow.name, steps=list(workflow.steps))
+        return str(recorder.save(path, format_name=format_name))
+
+    def execute_step(
+        self,
+        step: WorkflowStep,
+        verifier: Verifier | None = None,
+    ) -> StepExecutionResult:
+        self._require_capability(
+            Capability.WORKFLOW_EXECUTE,
+            "execute_step",
+            action=step.action,
+        )
+        max_attempts = max(1, self.retries + 1)
+        attempts: list[ActionAttempt] = []
+        recovery_events: list[dict[str, object]] = []
+        current_step = step
+
+        for attempt_index in range(1, max_attempts + 1):
+            current_step, attempt_recovery = self._prepare_replay_recovery(
+                current_step,
+                attempt_index=attempt_index,
+            )
+            if attempt_recovery:
+                recovery_events.append(attempt_recovery)
+
+            try:
+                result = self._perform_step(current_step)
+                verification = _with_recovery_metadata(
+                    self._verify_step(current_step, result, verifier),
+                    attempt_recovery,
+                )
+                ok = verification.ok
+                message = verification.message
+                error = None
+            except Exception as exc:
+                result = None
+                metadata: dict[str, object] = {"exception": type(exc).__name__}
+                if attempt_recovery:
+                    metadata["recovery"] = attempt_recovery
+                    metadata["recovery_strategy"] = attempt_recovery["strategy"]
+                verification = VerificationResult(
+                    ok=False,
+                    message=str(exc),
+                    metadata=metadata,
+                )
+                ok = False
+                message = str(exc)
+                error = f"{type(exc).__name__}: {exc}"
+
+            attempts.append(
+                ActionAttempt(
+                    attempt=attempt_index,
+                    ok=ok,
+                    message=message,
+                    result=result,
+                    error=error,
+                    verification=verification,
+                    recovery=attempt_recovery,
+                )
+            )
+            if ok:
+                return StepExecutionResult(
+                    step=step,
+                    ok=True,
+                    attempts=tuple(attempts),
+                    result=result,
+                    recovery=_step_recovery_report(
+                        successful=True,
+                        attempt=attempt_index,
+                        events=recovery_events,
+                    ),
+                )
+
+        last_attempt = attempts[-1]
+        return StepExecutionResult(
+            step=step,
+            ok=False,
+            attempts=tuple(attempts),
+            result=last_attempt.result,
+            recovery={
+                "action": step.action,
+                "reason": last_attempt.message,
+                "attempts": len(attempts),
+                "retryable": False,
+                "next_action": "inspect_state",
+                **_step_recovery_report(
+                    successful=False,
+                    attempt=len(attempts),
+                    events=recovery_events,
+                ),
+            },
+        )
+
+    def capture_screen(self, include_semantic_tree: bool = False) -> CaptureScreenResult:
+        self._require_capability(Capability.OBSERVE, "capture_screen")
+        result = self._require_client().capture_screen(include_semantic_tree)
+        self._record_step(WorkflowStep(action="observe"))
+        return result
+
+    def capture_delta(
+        self,
+        stream_id: str = "default",
+        reset: bool = False,
+        region: Rect | None = None,
+        per_channel_threshold: int | None = None,
+        low_bandwidth: bool = True,
+    ) -> CaptureDeltaResult:
+        self._require_capability(Capability.OBSERVE, "capture_delta")
+        result = self._require_client().capture_delta(
+            stream_id=stream_id,
+            reset=reset,
+            region=region,
+            per_channel_threshold=per_channel_threshold,
+            low_bandwidth=low_bandwidth,
+        )
+        self._record_step(WorkflowStep(action="observe"))
+        return result
+
+    def ocr_screen(
+        self,
+        region: Rect | None = None,
+        language: str | None = None,
+    ) -> OcrResult:
+        self._require_capability(Capability.VISION, "ocr_screen")
+        return self._require_client().ocr_screen(region, language)
+
+    def ocr_region(self, region: Rect, language: str | None = None) -> OcrResult:
+        return self._require_client().ocr_region(region, language)
+
+    def compare_images(
+        self,
+        expected_image: bytes,
+        actual_image: bytes,
+        region: Rect | None = None,
+        per_channel_threshold: int | None = None,
+        max_changed_ratio: float | None = None,
+    ) -> VisualDiffResult:
+        self._require_capability(Capability.VISION, "compare_images")
+        return self._require_client().compare_images(
+            expected_image,
+            actual_image,
+            region,
+            per_channel_threshold,
+            max_changed_ratio,
+        )
+
+    def compare_image_files(
+        self,
+        expected_path: str,
+        actual_path: str,
+        region: Rect | None = None,
+        per_channel_threshold: int | None = None,
+        max_changed_ratio: float | None = None,
+    ) -> VisualDiffResult:
+        self._require_capability(
+            Capability.VISION,
+            "compare_image_files",
+            expected_path=expected_path,
+            actual_path=actual_path,
+        )
+        return self._require_client().compare_image_files(
+            expected_path,
+            actual_path,
+            region,
+            per_channel_threshold,
+            max_changed_ratio,
+        )
+
+    def detect_ui_state(
+        self,
+        images: tuple[bytes, ...] | list[bytes],
+        region: Rect | None = None,
+        per_channel_threshold: int | None = None,
+        stable_max_changed_ratio: float | None = None,
+        loading_min_changed_ratio: float | None = None,
+        required_stable_transitions: int | None = None,
+    ) -> UiStateResult:
+        self._require_capability(Capability.VISION, "detect_ui_state")
+        return self._require_client().detect_ui_state(
+            images,
+            region,
+            per_channel_threshold,
+            stable_max_changed_ratio,
+            loading_min_changed_ratio,
+            required_stable_transitions,
+        )
+
+    def detect_ui_state_from_image_files(
+        self,
+        image_paths: tuple[str, ...] | list[str],
+        region: Rect | None = None,
+        per_channel_threshold: int | None = None,
+        stable_max_changed_ratio: float | None = None,
+        loading_min_changed_ratio: float | None = None,
+        required_stable_transitions: int | None = None,
+    ) -> UiStateResult:
+        self._require_capability(Capability.VISION, "detect_ui_state_from_image_files")
+        return self._require_client().detect_ui_state_from_image_files(
+            image_paths,
+            region,
+            per_channel_threshold,
+            stable_max_changed_ratio,
+            loading_min_changed_ratio,
+            required_stable_transitions,
+        )
+
+    def detect_ui_elements(
+        self,
+        image: bytes,
+        region: Rect | None = None,
+        edge_threshold: int | None = None,
+        min_width: int | None = None,
+        min_height: int | None = None,
+        min_component_pixels: int | None = None,
+        max_elements: int | None = None,
+        merge_distance: int | None = None,
+    ) -> DetectUiElementsResult:
+        self._require_capability(Capability.VISION, "detect_ui_elements")
+        return self._require_client().detect_ui_elements(
+            image,
+            region,
+            edge_threshold,
+            min_width,
+            min_height,
+            min_component_pixels,
+            max_elements,
+            merge_distance,
+        )
+
+    def detect_ui_elements_from_image_file(
+        self,
+        image_path: str,
+        region: Rect | None = None,
+        edge_threshold: int | None = None,
+        min_width: int | None = None,
+        min_height: int | None = None,
+        min_component_pixels: int | None = None,
+        max_elements: int | None = None,
+        merge_distance: int | None = None,
+    ) -> DetectUiElementsResult:
+        self._require_capability(
+            Capability.VISION,
+            "detect_ui_elements_from_image_file",
+            image_path=image_path,
+        )
+        return self._require_client().detect_ui_elements_from_image_file(
+            image_path,
+            region,
+            edge_threshold,
+            min_width,
+            min_height,
+            min_component_pixels,
+            max_elements,
+            merge_distance,
+        )
+
+    def list_windows(self) -> tuple[WindowInfo, ...]:
+        self._require_capability(Capability.OBSERVE, "list_windows")
+        return self._require_client().list_windows()
+
+    def get_desktop_state(self) -> DesktopState:
+        self._require_capability(Capability.OBSERVE, "get_desktop_state")
+        return self._require_client().get_desktop_state()
+
+    def ingest_desktop_snapshot(
+        self,
+        state: DesktopState | None = None,
+        snapshot_id: str | None = None,
+        captured_at_unix_ms: int | None = None,
+    ) -> DesktopGraphSnapshot:
+        self._require_capability(Capability.MEMORY_WRITE, "ingest_desktop_snapshot")
+        if state is None:
+            state = self.get_desktop_state()
+        return self.memory.ingest_desktop_state(
+            state,
+            snapshot_id=snapshot_id,
+            captured_at_unix_ms=captured_at_unix_ms,
+        )
+
+    def latest_desktop_snapshot(self) -> DesktopGraphSnapshot | None:
+        self._require_capability(Capability.MEMORY_READ, "latest_desktop_snapshot")
+        return self.memory.latest_desktop_snapshot()
+
+    def record_desktop_event(
+        self,
+        *,
+        kind: str,
+        source: str = "runtime",
+        target_id: str | None = None,
+        payload: dict[str, object] | None = None,
+        occurred_at_unix_ms: int | None = None,
+        state: DesktopState | None = None,
+        snapshot_id: str | None = None,
+    ) -> DesktopGraphUpdate:
+        self._require_capability(
+            Capability.MEMORY_WRITE,
+            "record_desktop_event",
+            kind=kind,
+        )
+        return self.memory.record_desktop_event(
+            kind=kind,
+            source=source,
+            target_id=target_id,
+            payload=payload,
+            occurred_at_unix_ms=occurred_at_unix_ms,
+            state=state,
+            snapshot_id=snapshot_id,
+        )
+
+    def desktop_graph_status(self) -> DesktopGraphStatus:
+        self._require_capability(Capability.MEMORY_READ, "desktop_graph_status")
+        return self.memory.desktop_graph_status()
+
+    def refresh_desktop_graph(self, snapshot_id: str | None = None) -> DesktopGraphSnapshot:
+        self._require_capability(Capability.MEMORY_WRITE, "refresh_desktop_graph")
+        return self.ingest_desktop_snapshot(snapshot_id=snapshot_id)
+
+    def query_desktop_graph(
+        self,
+        *,
+        kind: str | None = None,
+        label_contains: str | None = None,
+        role: str | None = None,
+        attribute_equals: dict[str, object] | None = None,
+        contained_by: str | None = None,
+        latest_only: bool = True,
+        refresh_if_stale: bool = False,
+    ) -> tuple[GraphNode, ...]:
+        self._require_capability(Capability.MEMORY_READ, "query_desktop_graph")
+        if refresh_if_stale and self.memory.desktop_graph_stale:
+            self.refresh_desktop_graph()
+        return self.memory.query_desktop_nodes(
+            kind=kind,
+            label_contains=label_contains,
+            role=role,
+            attribute_equals=attribute_equals,
+            contained_by=contained_by,
+            latest_only=latest_only,
+        )
+
+    def query_desktop_edges(
+        self,
+        *,
+        source: str | None = None,
+        target: str | None = None,
+        kind: str | None = None,
+        latest_only: bool = True,
+    ) -> tuple[GraphEdge, ...]:
+        self._require_capability(Capability.MEMORY_READ, "query_desktop_edges")
+        return self.memory.query_desktop_edges(
+            source=source,
+            target=target,
+            kind=kind,
+            latest_only=latest_only,
+        )
+
+    def click(
+        self,
+        x: int | None = None,
+        y: int | None = None,
+        semantic_selector: str | None = None,
+        vision_fallback: bool = False,
+    ) -> ActionResult:
+        self._require_capability(Capability.CLICK, "click")
+        if vision_fallback:
+            self._require_capability(Capability.VISION, "click.vision_fallback")
+        if semantic_selector is not None and x is None and y is None:
+            return self.click_selector(
+                semantic_selector,
+                vision_fallback=vision_fallback,
+            )
+        self._require_confirmation(
+            DangerousAction.CLICK,
+            "click",
+            x=x,
+            y=y,
+            semantic_selector=semantic_selector,
+            vision_fallback=vision_fallback,
+        )
+        recorded_step = self._recorded_click_step(
+            x=x,
+            y=y,
+            semantic_selector=semantic_selector,
+            vision_fallback=vision_fallback,
+        )
+        result = self._require_client().click(
+            x=x,
+            y=y,
+            semantic_selector=semantic_selector,
+            vision_fallback=vision_fallback,
+        )
+        if recorded_step is not None:
+            self._record_step(recorded_step)
+        return result
+
+    def click_selector(self, selector: str, vision_fallback: bool = False) -> ActionResult:
+        self._require_capability(
+            Capability.CLICK,
+            "click_selector",
+            selector=selector,
+        )
+        if vision_fallback:
+            self._require_capability(Capability.VISION, "click_selector.vision_fallback")
+        self._require_confirmation(
+            DangerousAction.CLICK,
+            "click_selector",
+            selector=selector,
+            vision_fallback=vision_fallback,
+        )
+        cached = self.memory.find_cached_elements(selector)
+        recorded_selector = selector
+        if cached:
+            target = _smallest_element(cached)
+            if self.recorder is not None:
+                recorded_selector = self._semantic_selector_for_element(target) or selector
+            bounds = target.bounds
+            result = self._require_client().click(
+                x=bounds.x + bounds.width // 2,
+                y=bounds.y + bounds.height // 2,
+                vision_fallback=vision_fallback,
+            )
+        else:
+            result = self._require_client().click_selector(
+                selector,
+                vision_fallback=vision_fallback,
+            )
+        self._record_step(
+            WorkflowStep(
+                action="click",
+                selector=recorded_selector,
+                vision_fallback=vision_fallback,
+            )
+        )
+        return result
+
+    def type_text(
+        self,
+        text: str,
+        typing_speed_chars_per_second: int | None = None,
+    ) -> ActionResult:
+        self._require_capability(Capability.TYPE_TEXT, "type_text", text_length=len(text))
+        self._require_confirmation(
+            DangerousAction.TYPE_TEXT,
+            "type_text",
+            text_length=len(text),
+            typing_speed_chars_per_second=typing_speed_chars_per_second,
+        )
+        result = self._require_client().type_text(text, typing_speed_chars_per_second)
+        self._record_step(WorkflowStep(action="type_text", value=text))
+        return result
+
+    def find_element(self, selector: str, vision_fallback: bool = False) -> tuple[UiElement, ...]:
+        self._require_capability(
+            Capability.OBSERVE,
+            "find_element",
+            selector=selector,
+        )
+        if vision_fallback:
+            self._require_capability(Capability.VISION, "find_element.vision_fallback")
+        cached = self.memory.find_cached_elements(selector)
+        if cached:
+            result = cached
+        else:
+            result = self._require_client().find_element(
+                selector,
+                vision_fallback=vision_fallback,
+            )
+        self._record_step(
+            WorkflowStep(
+                action="find_element",
+                selector=selector,
+                vision_fallback=vision_fallback,
+            )
+        )
+        return result
+
+    def _perform_step(self, step: WorkflowStep) -> object:
+        action = step.action.strip().lower()
+        if action in {"observe", "capture", "capture_screen"}:
+            return self.capture_screen(include_semantic_tree=True)
+        if action == "find_element":
+            if not step.selector:
+                raise ValueError("find_element step requires selector")
+            return self.find_element(step.selector, vision_fallback=step.vision_fallback)
+        if action == "click":
+            if step.selector:
+                return self.click_selector(step.selector, vision_fallback=step.vision_fallback)
+            if step.x is None or step.y is None:
+                raise ValueError("click step requires selector or x/y coordinates")
+            return self.click(x=step.x, y=step.y, vision_fallback=step.vision_fallback)
+        if action in {"type", "type_text"}:
+            if step.value is None:
+                raise ValueError("type_text step requires value")
+            return self.type_text(step.value)
+        if action == "list_windows":
+            return self.list_windows()
+        if action == "get_desktop_state":
+            return self.get_desktop_state()
+        raise ValueError(f"unsupported workflow action: {step.action}")
+
+    def _verify_step(
+        self,
+        step: WorkflowStep,
+        result: object,
+        verifier: Verifier | None,
+    ) -> VerificationResult:
+        action = step.action.strip().lower()
+        if isinstance(result, ActionResult) and not result.ok:
+            return VerificationResult(
+                ok=False,
+                message=result.message or "action returned ok=false",
+                metadata={"action_result": result.message},
+            )
+
+        if action == "find_element" and not result:
+            return VerificationResult(
+                ok=False,
+                message="find_element returned no elements",
+                metadata={"selector": step.selector or ""},
+            )
+
+        if verifier is not None:
+            custom = verifier(step, result)
+            if isinstance(custom, VerificationResult):
+                return custom
+            return VerificationResult(
+                ok=bool(custom),
+                message="custom verifier passed" if custom else "custom verifier failed",
+            )
+
+        if not step.verify:
+            return VerificationResult(ok=True, message="verification skipped")
+
+        if action in {"click", "type", "type_text"}:
+            state = self.get_desktop_state()
+            self.ingest_desktop_snapshot(state)
+            return VerificationResult(
+                ok=True,
+                message="desktop state sampled after action",
+                metadata={
+                    "windows": len(state.windows),
+                    "elements": len(state.elements),
+                    "has_active_window": state.active_window is not None,
+                },
+            )
+
+        return VerificationResult(ok=True, message="result accepted")
+
+    def _require_client(self) -> PeekabooXClient:
+        if self.client is None:
+            raise RuntimeError("AgentRuntime requires a PeekabooXClient for daemon RPC calls")
+        return self.client
+
+    def _require_capability(
+        self,
+        capability: str,
+        operation: str,
+        **metadata: object,
+    ) -> None:
+        self.capability_policy.require(capability, operation, metadata)
+
+    def _require_confirmation(
+        self,
+        action: str,
+        operation: str,
+        **metadata: object,
+    ) -> None:
+        self.confirmation_policy.confirm(action, operation, metadata)
+
+    def _record_step(self, step: WorkflowStep) -> None:
+        if self.recorder is not None:
+            self.recorder.record_step(step)
+
+    def _prepare_replay_recovery(
+        self,
+        step: WorkflowStep,
+        *,
+        attempt_index: int,
+    ) -> tuple[WorkflowStep, dict[str, object]]:
+        if attempt_index <= 1 or not _is_selector_replay_step(step):
+            return step, {}
+
+        if attempt_index == 2:
+            try:
+                snapshot = self.refresh_desktop_graph()
+            except Exception as exc:
+                return step, {
+                    "strategy": "refresh_desktop_graph",
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            return step, {
+                "strategy": "refresh_desktop_graph",
+                "ok": True,
+                "snapshot_id": snapshot.id,
+            }
+
+        if not step.vision_fallback:
+            return replace(step, vision_fallback=True), {
+                "strategy": "vision_fallback",
+                "ok": True,
+            }
+
+        return step, {}
+
+    def _recorded_click_step(
+        self,
+        *,
+        x: int | None,
+        y: int | None,
+        semantic_selector: str | None,
+        vision_fallback: bool,
+    ) -> WorkflowStep | None:
+        if self.recorder is None:
+            return None
+        if semantic_selector is not None:
+            return WorkflowStep(
+                action="click",
+                selector=semantic_selector,
+                vision_fallback=vision_fallback,
+            )
+        if x is None or y is None:
+            return None
+
+        try:
+            selector = self._semantic_selector_for_point(x, y)
+        except Exception:
+            selector = None
+        if selector is not None:
+            return WorkflowStep(
+                action="click",
+                selector=selector,
+                vision_fallback=vision_fallback,
+            )
+        return WorkflowStep(
+            action="click",
+            x=x,
+            y=y,
+            vision_fallback=vision_fallback,
+        )
+
+    def _semantic_selector_for_point(self, x: int, y: int) -> str | None:
+        if self.memory.latest_desktop_snapshot() is None or self.memory.desktop_graph_stale:
+            try:
+                self.refresh_desktop_graph()
+            except Exception:
+                return None
+
+        matches = self.memory.find_cached_elements(f"contains={x},{y}")
+        if not matches:
+            return None
+        return self._semantic_selector_for_element(_smallest_element(matches))
+
+    def _semantic_selector_for_element(self, element: UiElement) -> str | None:
+        for selector in _candidate_selectors_for_element(element):
+            matches = self.memory.find_cached_elements(selector)
+            if len(matches) == 1 and matches[0].id == element.id:
+                return selector
+        return None
+
+
+def _candidate_selectors_for_element(element: UiElement) -> tuple[str, ...]:
+    role = _selector_value(element.role)
+    label = _selector_value(element.label)
+    states = tuple(
+        state
+        for state in (_selector_value(state) for state in element.states)
+        if state is not None
+    )
+    bounds = _bounds_selector(element)
+    selectors: list[str] = []
+
+    def add(*parts: str | None) -> None:
+        selector_parts = [part for part in parts if part is not None]
+        if selector_parts:
+            selectors.append(",".join(selector_parts))
+
+    role_part = f"role={role}" if role is not None else None
+    label_part = f"label={label}" if label is not None else None
+
+    add(role_part, label_part)
+    for state in states:
+        add(role_part, label_part, f"state={state}")
+    add(label_part)
+    for state in states:
+        add(label_part, f"state={state}")
+    add(role_part)
+    for state in states:
+        add(role_part, f"state={state}")
+    add(role_part, label_part, bounds)
+    add(label_part, bounds)
+    add(role_part, bounds)
+    add(bounds)
+
+    return tuple(dict.fromkeys(selectors))
+
+
+def _selector_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value or any(separator in value for separator in ",\n\r"):
+        return None
+    return value
+
+
+def _bounds_selector(element: UiElement) -> str:
+    bounds = element.bounds
+    return f"bounds={bounds.x},{bounds.y},{bounds.width},{bounds.height}"
+
+
+def _smallest_element(elements: tuple[UiElement, ...]) -> UiElement:
+    return min(elements, key=lambda element: element.bounds.width * element.bounds.height)
+
+
+def _is_selector_replay_step(step: WorkflowStep) -> bool:
+    action = step.action.strip().lower()
+    return bool(step.selector) and action in {"click", "find_element"}
+
+
+def _with_recovery_metadata(
+    verification: VerificationResult,
+    recovery: dict[str, object],
+) -> VerificationResult:
+    if not recovery:
+        return verification
+    metadata = dict(verification.metadata)
+    metadata["recovery"] = recovery
+    metadata["recovery_strategy"] = recovery["strategy"]
+    return VerificationResult(
+        ok=verification.ok,
+        message=verification.message,
+        metadata=metadata,
+    )
+
+
+def _step_recovery_report(
+    *,
+    successful: bool,
+    attempt: int,
+    events: list[dict[str, object]],
+) -> dict[str, object]:
+    if not events:
+        return {}
+    strategies = [str(event["strategy"]) for event in events]
+    report: dict[str, object] = {
+        "successful": successful,
+        "attempt": attempt,
+        "strategies": strategies,
+        "events": list(events),
+    }
+    successful_events = [event for event in events if event.get("ok", False)]
+    if successful and successful_events:
+        report["strategy"] = successful_events[-1]["strategy"]
+    return report
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="peekaboox-agent",
+        description="Inspect a local PeekabooX daemon or plugin installation.",
+    )
+    parser.add_argument("--version", action="store_true", help="print package version and exit")
+    parser.add_argument(
+        "--target",
+        default=DEFAULT_GRPC_TARGET,
+        help=f"daemon gRPC target, default: {DEFAULT_GRPC_TARGET}",
+    )
+    parser.add_argument(
+        "--profile",
+        choices=KNOWN_CAPABILITY_PROFILES,
+        default="observe",
+        help="capability profile for daemon/plugin operations",
+    )
+    parser.add_argument("--audit-log", help="optional JSONL audit log path")
+    parser.add_argument(
+        "--plugin-path",
+        action="append",
+        default=[],
+        help="plugin search path, repeatable",
+    )
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("windows", help="list desktop windows through the daemon")
+    subparsers.add_parser("desktop-state", help="print daemon desktop state")
+    plugins_parser = subparsers.add_parser("plugins", help="discover local plugins")
+    plugins_parser.add_argument("--path", action="append", default=[], help="plugin search path")
+
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    if args.version:
+        print(f"peekaboox-agent {PEEKABOOX_VERSION}")
+        return 0
+    if args.command is None:
+        parser.print_help()
+        return 0
+
+    try:
+        if args.command == "plugins":
+            paths = tuple(Path(path) for path in [*args.plugin_path, *args.path])
+            runtime = _local_runtime(args.profile, args.audit_log, paths)
+            _print_json(runtime.list_plugins())
+            return 0
+
+        runtime = AgentRuntime.connect(
+            target=args.target,
+            capability_profile=args.profile,
+            audit_log_path=args.audit_log,
+            plugin_paths=tuple(Path(path) for path in args.plugin_path),
+        )
+        if args.command == "windows":
+            _print_json(runtime.list_windows())
+            return 0
+        if args.command == "desktop-state":
+            _print_json(runtime.get_desktop_state())
+            return 0
+    except Exception as error:
+        print(f"peekaboox-agent failed: {error}", file=sys.stderr)
+        return 1
+
+    parser.error(f"unknown command: {args.command}")
+    return 2
+
+
+def _local_runtime(
+    profile: str,
+    audit_log_path: str | None,
+    plugin_paths: tuple[Path, ...],
+) -> AgentRuntime:
+    audit_logger = (
+        JsonlAuditLogger(audit_log_path, source="runtime")
+        if audit_log_path is not None
+        else None
+    )
+    return AgentRuntime(
+        capability_policy=CapabilityPolicy.from_profile(profile, audit_logger=audit_logger),
+        audit_logger=audit_logger,
+        plugin_paths=plugin_paths,
+    )
+
+
+def _print_json(value: object) -> None:
+    print(json.dumps(_to_json_value(value), indent=2, sort_keys=True))
+
+
+def _to_json_value(value: object) -> object:
+    if is_dataclass(value):
+        return {
+            field.name: _to_json_value(getattr(value, field.name))
+            for field in fields(value)
+        }
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, tuple | list):
+        return [_to_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _to_json_value(item) for key, item in value.items()}
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

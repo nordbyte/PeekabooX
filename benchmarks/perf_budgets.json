@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "budgets": {
+    "python.workflow_yaml_roundtrip": {
+      "description": "Load the checked-in YAML workflow and serialize it back to JSON.",
+      "target_ms": 10.0,
+      "iterations": 200,
+      "warmup": 20
+    },
+    "python.memory.desktop_graph_ingest": {
+      "description": "Ingest a deterministic desktop state with many UI elements into the semantic graph.",
+      "target_ms": 30.0,
+      "iterations": 100,
+      "warmup": 10
+    },
+    "python.memory.cached_selector_query": {
+      "description": "Resolve a cached semantic selector from an already-ingested desktop graph.",
+      "target_ms": 20.0,
+      "iterations": 300,
+      "warmup": 30
+    },
+    "python.agent.cached_click_cycle": {
+      "description": "Run an agent click_selector cycle against cached semantic state and a fake client.",
+      "target_ms": 20.0,
+      "iterations": 200,
+      "warmup": 20
+    },
+    "python.agent.capture_delta_cycle": {
+      "description": "Run an agent capture_delta cycle against a fake low-bandwidth patch client.",
+      "target_ms": 20.0,
+      "iterations": 200,
+      "warmup": 20
+    },
+    "python.agent.capture_delta_full_frame_cycle": {
+      "description": "Run an agent capture_delta cycle with low-bandwidth mode disabled against a fake client.",
+      "target_ms": 20.0,
+      "iterations": 200,
+      "warmup": 20
+    },
+    "python.mcp.list_tools": {
+      "description": "List and JSON-serialize the default MCP tool descriptors.",
+      "target_ms": 20.0,
+      "iterations": 200,
+      "warmup": 20
+    },
+    "python.plugins.discovery": {
+      "description": "Discover and validate local PeekabooX plugin manifests.",
+      "target_ms": 20.0,
+      "iterations": 200,
+      "warmup": 20
+    },
+    "python.audit.jsonl_write": {
+      "description": "Persist one JSONL audit event through the runtime audit logger.",
+      "target_ms": 25.0,
+      "iterations": 100,
+      "warmup": 10
+    }
+  }
+}

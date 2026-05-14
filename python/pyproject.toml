@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "peekaboox"
+version = "1.0.0"
+description = "Linux-native AI computer-use agent runtime for PeekabooX"
+requires-python = ">=3.12"
+readme = "README.md"
+license = { text = "Apache-2.0 OR MIT" }
+dependencies = [
+    "grpcio>=1.80",
+    "protobuf>=6.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "grpcio-tools>=1.80",
+]
+
+[project.scripts]
+peekaboox-agent = "peekaboox.agent.runtime:main"
+peekaboox-mcp = "peekaboox.mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

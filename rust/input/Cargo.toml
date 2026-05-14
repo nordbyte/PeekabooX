@@ -1,0 +1,13 @@
+[package]
+name = "peekaboox-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+peekaboox-core = { path = "../core" }
+
+[lib]
+path = "src/lib.rs"
+

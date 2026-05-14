@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = [
+    "rust/core",
+    "rust/capture",
+    "rust/input",
+    "rust/windows",
+    "rust/accessibility",
+    "rust/vision",
+    "rust/ipc",
+    "rust/plugins",
+    "rust/daemon",
+    "cli",
+]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+repository = "https://git.marketdeck.io/marketdeck/PeekabooX"
+version = "1.0.0"

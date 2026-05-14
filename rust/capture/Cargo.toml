@@ -1,0 +1,21 @@
+[package]
+name = "peekaboox-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dbus = "0.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
+libspa-sys = { version = "0.9.2", optional = true }
+peekaboox-core = { path = "../core" }
+pipewire = { version = "0.9.2", optional = true, features = ["v0_3_65"] }
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+egl-backend = []
+pipewire-backend = ["dep:libspa-sys", "dep:pipewire", "libspa-sys/v0_3_65"]

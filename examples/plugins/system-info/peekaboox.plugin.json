@@ -1,0 +1,27 @@
+{
+  "schema_version": "peekaboox.plugin.v1",
+  "id": "org.peekaboox.examples.system-info",
+  "name": "System Info Example",
+  "version": "1.0.0",
+  "description": "Example plugin manifest for read-only Linux system inspection tools.",
+  "capabilities": ["observe"],
+  "entrypoint": {
+    "kind": "process",
+    "command": ["python3", "plugin.py"]
+  },
+  "tools": [
+    {
+      "name": "system_info.uname",
+      "description": "Return kernel and machine information from platform.uname().",
+      "capabilities": ["observe"],
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  ],
+  "metadata": {
+    "homepage": "https://git.marketdeck.io/marketdeck/PeekabooX/src/branch/main/examples/plugins/system-info"
+  }
+}

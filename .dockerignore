@@ -1,0 +1,8 @@
+target
+.git
+.github
+.nordrelay
+**/__pycache__
+python/src/*.egg-info
+*.deb
+*.whl

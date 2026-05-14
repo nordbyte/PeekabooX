@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m compileall python/src
+      - run: PYTHONPATH=python/src python -m unittest discover -s python/tests -p "test_*.py"
+      - run: python -m pip wheel --no-deps -w target/python-wheel ./python
+      - run: python packaging/smoke_install.py --skip-deb --skip-cargo-install --wheel "target/python-wheel/peekaboox-*.whl"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-wheel
+          path: target/python-wheel/*.whl
+
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - run: bash -n packaging/install-rust.sh
+      - run: python packaging/release_manifest.py --check
+      - run: python packaging/debian/build_deb.py --check
+      - run: python -m pip wheel --no-deps -w target/python-wheel ./python
+      - run: cargo build --release -p peekaboox-cli -p peekabooxd
+      - run: python packaging/debian/build_deb.py --skip-cargo-build
+      - run: python packaging/smoke_install.py --skip-wheel --skip-cargo-install --deb "target/dist/peekaboox_*.deb"
+      - run: python packaging/smoke_install.py --skip-wheel --skip-deb --cargo-root target/install-smoke/cargo
+      - run: docker build --target smoke -t peekaboox:ci .
+      - name: Write Docker image metadata
+        run: |
+          mkdir -p target/dist
+          docker image inspect --format '{{json .}}' peekaboox:ci > target/dist/docker-image.json
+      - run: python packaging/release_manifest.py --output target/dist/ci-release-manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-artifacts
+          path: |
+            target/python-wheel/*.whl
+            target/dist/*.deb
+            target/dist/docker-image.json
+            target/dist/ci-release-manifest.json
+            target/dist/SHA256SUMS
+
+  benchmarks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: PYTHONPATH=python/src python benchmarks/perf_baseline.py --iterations 30 --json-out target/benchmark-results.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: target/benchmark-results.json

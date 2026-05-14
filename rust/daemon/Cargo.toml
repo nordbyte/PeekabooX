@@ -1,0 +1,33 @@
+[package]
+name = "peekabooxd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64 = "0.22"
+dbus = "0.9"
+libc = "0.2"
+peekaboox-accessibility = { path = "../accessibility" }
+peekaboox-capture = { path = "../capture" }
+peekaboox-core = { path = "../core" }
+peekaboox-input = { path = "../input" }
+peekaboox-ipc = { path = "../ipc" }
+peekaboox-plugins = { path = "../plugins" }
+peekaboox-vision = { path = "../vision" }
+peekaboox-windows = { path = "../windows" }
+serde_json = "1"
+signal-hook = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = { version = "0.14.6", features = ["transport"] }
+
+[features]
+default = []
+egl-backend = ["peekaboox-capture/egl-backend"]
+pipewire-backend = ["peekaboox-capture/pipewire-backend"]
+
+[[bin]]
+name = "peekabooxd"
+path = "src/main.rs"

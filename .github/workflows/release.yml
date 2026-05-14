@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, for example 0.1.0
+        required: true
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - name: Resolve release version
+        run: |
+          VERSION="${RELEASE_REF#v}"
+          echo "RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: python -m compileall python/src
+      - run: PYTHONPATH=python/src python -m unittest discover -s python/tests -p "test_*.py"
+      - run: python packaging/release_manifest.py --check --expected-version "$RELEASE_VERSION"
+      - run: python -m pip wheel --no-deps -w target/python-wheel ./python
+      - run: cargo build --release -p peekaboox-cli -p peekabooxd
+      - run: python packaging/debian/build_deb.py --skip-cargo-build
+      - run: python packaging/smoke_install.py --skip-cargo-install
+      - run: docker build --target smoke -t "peekaboox:${RELEASE_VERSION}" .
+      - name: Write Docker image metadata
+        run: |
+          mkdir -p target/dist
+          docker image inspect --format '{{json .}}' "peekaboox:${RELEASE_VERSION}" > target/dist/docker-image.json
+      - run: python packaging/release_manifest.py --expected-version "$RELEASE_VERSION"
+      - name: Write release notes
+        run: |
+          {
+            echo "PeekabooX ${RELEASE_VERSION}"
+            echo
+            echo "See CHANGELOG.md and release-manifest.json for the complete artifact manifest."
+          } > target/dist/release-notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: peekaboox-${{ env.RELEASE_VERSION }}-release-artifacts
+          path: |
+            target/python-wheel/*.whl
+            target/dist/*.deb
+            target/dist/docker-image.json
+            target/dist/release-manifest.json
+            target/dist/SHA256SUMS
+            target/dist/release-notes.md
+      - name: Publish GitHub release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            target/python-wheel/*.whl \
+            target/dist/*.deb \
+            target/dist/docker-image.json \
+            target/dist/release-manifest.json \
+            target/dist/SHA256SUMS \
+            --title "PeekabooX ${RELEASE_VERSION}" \
+            --notes-file target/dist/release-notes.md \
+            --verify-tag

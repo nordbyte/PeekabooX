@@ -1,0 +1,10 @@
+name: example-submit-form
+steps:
+  - action: find_element
+    selector: role=push button,label=Submit
+  - action: click
+    selector: role=push button,label=Submit
+    vision_fallback: true
+  - action: type_text
+    value: Hello from workflow file
+    verify: false

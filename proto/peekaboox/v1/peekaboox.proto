@@ -1,0 +1,229 @@
+syntax = "proto3";
+
+package peekaboox.v1;
+
+service PeekabooX {
+  rpc CaptureScreen(CaptureScreenRequest) returns (CaptureScreenResponse);
+  rpc CaptureDelta(CaptureDeltaRequest) returns (CaptureDeltaResponse);
+  rpc Click(ClickRequest) returns (ActionResponse);
+  rpc TypeText(TypeTextRequest) returns (ActionResponse);
+  rpc FindElement(FindElementRequest) returns (FindElementResponse);
+  rpc ListWindows(ListWindowsRequest) returns (ListWindowsResponse);
+  rpc GetDesktopState(GetDesktopStateRequest) returns (DesktopState);
+  rpc OcrScreen(OcrScreenRequest) returns (OcrResponse);
+  rpc CompareImages(CompareImagesRequest) returns (VisualDiffResponse);
+  rpc DetectUiState(DetectUiStateRequest) returns (UiStateResponse);
+  rpc DetectUiElements(DetectUiElementsRequest) returns (DetectUiElementsResponse);
+}
+
+message CaptureScreenRequest {
+  CaptureTarget target = 1;
+  bool include_semantic_tree = 2;
+}
+
+message CaptureScreenResponse {
+  bytes image = 1;
+  string mime_type = 2;
+  repeated UiElement semantic_tree = 3;
+  CaptureMetadata metadata = 4;
+}
+
+message CaptureDeltaRequest {
+  string stream_id = 1;
+  bool reset = 2;
+  CaptureTarget target = 3;
+  optional Rect region = 4;
+  optional uint32 per_channel_threshold = 5;
+  optional bool low_bandwidth = 6;
+}
+
+message CaptureDeltaResponse {
+  string stream_id = 1;
+  uint64 sequence = 2;
+  bool full_frame = 3;
+  uint32 frame_width = 4;
+  uint32 frame_height = 5;
+  PixelFormat pixel_format = 6;
+  optional Rect changed_bounds = 7;
+  uint64 changed_pixels = 8;
+  float changed_ratio = 9;
+  uint32 patch_stride = 10;
+  bytes patch = 11;
+  CaptureMetadata metadata = 12;
+  optional Rect capture_region = 13;
+  bool low_bandwidth = 14;
+}
+
+message CaptureTarget {
+  oneof target {
+    bool full_screen = 1;
+    Rect region = 2;
+    string window_id = 3;
+  }
+}
+
+message CaptureMetadata {
+  uint32 width = 1;
+  uint32 height = 2;
+  string backend = 3;
+  uint64 captured_at_unix_ms = 4;
+}
+
+enum PixelFormat {
+  PIXEL_FORMAT_UNSPECIFIED = 0;
+  PIXEL_FORMAT_RGB8 = 1;
+  PIXEL_FORMAT_RGBA8 = 2;
+  PIXEL_FORMAT_BGRA8 = 3;
+}
+
+message ClickRequest {
+  optional Point coordinates = 1;
+  optional string semantic_selector = 2;
+  optional string window_selector = 3;
+  bool vision_fallback = 4;
+}
+
+message TypeTextRequest {
+  string text = 1;
+  optional uint32 typing_speed_chars_per_second = 2;
+}
+
+message FindElementRequest {
+  string selector = 1;
+  bool vision_fallback = 2;
+}
+
+message FindElementResponse {
+  repeated UiElement elements = 1;
+}
+
+message ListWindowsRequest {}
+
+message ListWindowsResponse {
+  repeated WindowInfo windows = 1;
+}
+
+message GetDesktopStateRequest {}
+
+message DesktopState {
+  optional WindowInfo active_window = 1;
+  repeated WindowInfo windows = 2;
+  repeated UiElement elements = 3;
+}
+
+message OcrScreenRequest {
+  optional Rect region = 1;
+  optional string language = 2;
+}
+
+message OcrResponse {
+  string backend_name = 1;
+  string text = 2;
+  repeated OcrBlock blocks = 3;
+  repeated string warnings = 4;
+}
+
+message OcrBlock {
+  string text = 1;
+  UiElement element = 2;
+}
+
+message CompareImagesRequest {
+  bytes expected_image = 1;
+  bytes actual_image = 2;
+  optional Rect region = 3;
+  optional uint32 per_channel_threshold = 4;
+  optional float max_changed_ratio = 5;
+}
+
+message VisualDiffResponse {
+  Rect compared_region = 1;
+  uint64 compared_pixels = 2;
+  uint64 changed_pixels = 3;
+  float changed_ratio = 4;
+  float mean_absolute_error = 5;
+  uint32 max_channel_delta = 6;
+  optional Rect changed_bounds = 7;
+  bool matches = 8;
+}
+
+message DetectUiStateRequest {
+  repeated bytes images = 1;
+  optional Rect region = 2;
+  optional uint32 per_channel_threshold = 3;
+  optional float stable_max_changed_ratio = 4;
+  optional float loading_min_changed_ratio = 5;
+  optional uint32 required_stable_transitions = 6;
+}
+
+enum UiStateKind {
+  UI_STATE_KIND_UNSPECIFIED = 0;
+  UI_STATE_KIND_STABLE = 1;
+  UI_STATE_KIND_LOADING = 2;
+  UI_STATE_KIND_CHANGING = 3;
+}
+
+message UiStateResponse {
+  UiStateKind state = 1;
+  uint64 compared_transitions = 2;
+  uint64 stable_transitions = 3;
+  uint64 loading_transitions = 4;
+  uint64 trailing_stable_transitions = 5;
+  VisualDiffResponse latest_diff = 6;
+  float max_changed_ratio = 7;
+  float mean_changed_ratio = 8;
+  optional Rect changed_bounds = 9;
+}
+
+message DetectUiElementsRequest {
+  bytes image = 1;
+  optional Rect region = 2;
+  optional uint32 edge_threshold = 3;
+  optional uint32 min_width = 4;
+  optional uint32 min_height = 5;
+  optional uint32 min_component_pixels = 6;
+  optional uint32 max_elements = 7;
+  optional uint32 merge_distance = 8;
+}
+
+message DetectUiElementsResponse {
+  string backend_name = 1;
+  string backend_kind = 2;
+  repeated string warnings = 3;
+  repeated UiElement elements = 4;
+}
+
+message ActionResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+message WindowInfo {
+  string id = 1;
+  string title = 2;
+  optional string app_id = 3;
+  Rect bounds = 4;
+  bool focused = 5;
+  string state = 6;
+}
+
+message UiElement {
+  string id = 1;
+  string role = 2;
+  optional string label = 3;
+  Rect bounds = 4;
+  float confidence = 5;
+  repeated string states = 6;
+}
+
+message Rect {
+  int32 x = 1;
+  int32 y = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+}
+
+message Point {
+  int32 x = 1;
+  int32 y = 2;
+}
