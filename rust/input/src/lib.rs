@@ -469,12 +469,12 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
 
 fn clipboard_paste(tool: InputTool, text: &str) -> Result<()> {
     match tool {
-        InputTool::WlClipboard => run_command_with_stdin("wl-copy", [], text)?,
+        InputTool::WlClipboard => run_clipboard_command_with_stdin("wl-copy", [], text)?,
         InputTool::XclipClipboard => {
-            run_command_with_stdin("xclip", ["-selection", "clipboard"], text)?
+            run_clipboard_command_with_stdin("xclip", ["-selection", "clipboard"], text)?
         }
         InputTool::XselClipboard => {
-            run_command_with_stdin("xsel", ["--clipboard", "--input"], text)?
+            run_clipboard_command_with_stdin("xsel", ["--clipboard", "--input"], text)?
         }
         _ => {
             return Err(PeekabooXError::new(format!(
@@ -486,6 +486,44 @@ fn clipboard_paste(tool: InputTool, text: &str) -> Result<()> {
 
     sleep(Duration::from_millis(80));
     send_paste_hotkey()
+}
+
+fn run_clipboard_command_with_stdin<const N: usize>(
+    program: &str,
+    args: [&str; N],
+    stdin: &str,
+) -> Result<()> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let mut child_stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| PeekabooXError::new(format!("failed to open stdin for {program}")))?;
+    child_stdin.write_all(stdin.as_bytes())?;
+    drop(child_stdin);
+
+    // Clipboard owners often keep running or fork after stdin closes; readiness
+    // is enough here because the next step sends ctrl+v to the focused window.
+    for _ in 0..20 {
+        if let Some(status) = child.try_wait()? {
+            if status.success() {
+                return Ok(());
+            }
+
+            return Err(PeekabooXError::new(format!(
+                "{program} failed with status {status}"
+            )));
+        }
+
+        sleep(Duration::from_millis(25));
+    }
+
+    Ok(())
 }
 
 fn ydotool_mousemove(position: Point) -> Result<()> {
