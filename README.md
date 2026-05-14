@@ -87,13 +87,14 @@ cargo run -q -p peekaboox-cli -- desktop focus --app telegram
 cargo run -q -p peekaboox-cli -- desktop locate --app telegram --target search-input
 cargo run -q -p peekaboox-cli -- desktop type-into --app telegram --target search-input --clear "Saved Messages"
 cargo run -q -p peekaboox-cli -- desktop assert --app telegram --target send-button --not-active
+cargo run -q -p peekaboox-cli -- desktop drag --app drawing --target canvas --from-ratio 0.2,0.3 --to-ratio 0.8,0.3
 ```
 
-The first built-in profile is `telegram`. It uses the safest available path in
-order: existing window focus where window enumeration is available, GNOME
-Overview or application launch fallback, then app-specific visual layout targets
-for `search-input`, `search-result`, `message-input`, `send-button`, and
-`header`.
+The built-in profiles include `telegram`, `paint`, `drawing`, `pinta`, and
+`kolourpaint`. They use the safest available path in order: existing window
+focus where window enumeration is available, GNOME Overview or application
+launch fallback, then app-specific visual layout targets such as Telegram's
+`search-input` and `message-input` or Paint's `canvas`.
 
 List visible desktop windows:
 

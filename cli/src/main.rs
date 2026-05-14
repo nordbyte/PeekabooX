@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use peekaboox_accessibility::{AccessibilityTreeMetadata, ElementQuery};
 use peekaboox_core::{BackendKind, Point, Rect, UiElement};
 use peekaboox_desktop::{
-    AssertOptions, ClickOptions as DesktopClickOptions, DesktopAssertion, FocusOptions,
-    LocateOptions, TypeIntoOptions,
+    AssertOptions, ClickOptions as DesktopClickOptions, DesktopAssertion, DesktopDragOptions,
+    FocusOptions, LocateOptions, TypeIntoOptions,
 };
 use peekaboox_input::MouseButton;
 use peekaboox_ipc::{
@@ -402,6 +402,19 @@ struct DesktopClickArgs {
     dry_run: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct DesktopDragArgs {
+    app: String,
+    target: String,
+    image: Option<PathBuf>,
+    prefer_accessibility: bool,
+    button: MouseButton,
+    from_ratio: (f32, f32),
+    to_ratio: (f32, f32),
+    duration_ms: u64,
+    dry_run: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DesktopTypeIntoArgs {
     app: String,
@@ -422,12 +435,13 @@ struct DesktopAssertArgs {
     assertion: DesktopAssertion,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum DesktopCommand {
     Profiles,
     Focus(DesktopFocusArgs),
     Locate(DesktopLocateArgs),
     Click(DesktopClickArgs),
+    Drag(DesktopDragArgs),
     TypeInto(DesktopTypeIntoArgs),
     Assert(DesktopAssertArgs),
     Help,
@@ -2189,6 +2203,26 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
             print_desktop_action_result(result);
             Ok(())
         }
+        DesktopCommand::Drag(args) => {
+            let result = peekaboox_desktop::drag_target(
+                &args.app,
+                &args.target,
+                &DesktopDragOptions {
+                    locate: LocateOptions {
+                        image: args.image,
+                        prefer_accessibility: args.prefer_accessibility,
+                    },
+                    from_ratio: args.from_ratio,
+                    to_ratio: args.to_ratio,
+                    button: args.button,
+                    duration_ms: args.duration_ms,
+                    dry_run: args.dry_run,
+                },
+            )
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+            print_desktop_action_result(result);
+            Ok(())
+        }
         DesktopCommand::TypeInto(args) => {
             let result = peekaboox_desktop::type_into_target(
                 &args.app,
@@ -2255,6 +2289,7 @@ fn parse_desktop_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
         "focus" => parse_desktop_focus_args(rest.to_vec()),
         "locate" => parse_desktop_locate_args(rest.to_vec()),
         "click" => parse_desktop_click_args(rest.to_vec()),
+        "drag" => parse_desktop_drag_args(rest.to_vec()),
         "type-into" | "type" => parse_desktop_type_into_args(rest.to_vec()),
         "assert" => parse_desktop_assert_args(rest.to_vec(), false),
         "assert-not" => parse_desktop_assert_args(rest.to_vec(), true),
@@ -2403,6 +2438,81 @@ fn parse_desktop_click_args(args: Vec<String>) -> Result<DesktopCommand, CliErro
         image,
         prefer_accessibility,
         button,
+        dry_run,
+    }))
+}
+
+fn parse_desktop_drag_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
+    let mut app = None;
+    let mut target = None;
+    let mut image = None;
+    let mut prefer_accessibility = true;
+    let mut button = MouseButton::Left;
+    let mut from_ratio = None;
+    let mut to_ratio = None;
+    let mut duration_ms = 250_u64;
+    let mut dry_run = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
+            "--target" | "-t" => target = Some(parse_next_string(&args, &mut index, "--target")?),
+            "--image" | "-i" => {
+                image = Some(PathBuf::from(parse_next_string(
+                    &args, &mut index, "--image",
+                )?))
+            }
+            "--button" | "-b" => {
+                button = parse_mouse_button(&parse_next_string(&args, &mut index, "--button")?)?
+            }
+            "--from-ratio" | "--from" => {
+                from_ratio = Some(parse_ratio_pair(
+                    "--from-ratio",
+                    &parse_next_string(&args, &mut index, "--from-ratio")?,
+                )?)
+            }
+            "--to-ratio" | "--to" => {
+                to_ratio = Some(parse_ratio_pair(
+                    "--to-ratio",
+                    &parse_next_string(&args, &mut index, "--to-ratio")?,
+                )?)
+            }
+            "--duration-ms" => {
+                duration_ms = parse_u64(
+                    "--duration-ms",
+                    &parse_next_string(&args, &mut index, "--duration-ms")?,
+                )?;
+            }
+            "--dry-run" => dry_run = true,
+            "--no-accessibility" => prefer_accessibility = false,
+            "--help" | "-h" => return Ok(DesktopCommand::Help),
+            value if value.starts_with('-') => {
+                return Err(CliError::Failure(format!(
+                    "unknown desktop drag argument: {value}"
+                )));
+            }
+            value if app.is_none() => app = Some(value.to_owned()),
+            value if target.is_none() => target = Some(value.to_owned()),
+            value => {
+                return Err(CliError::Failure(format!(
+                    "unexpected desktop drag argument: {value}"
+                )));
+            }
+        }
+        index += 1;
+    }
+
+    Ok(DesktopCommand::Drag(DesktopDragArgs {
+        app: app.ok_or_else(|| CliError::Failure("missing --app".to_owned()))?,
+        target: target.ok_or_else(|| CliError::Failure("missing --target".to_owned()))?,
+        image,
+        prefer_accessibility,
+        button,
+        from_ratio: from_ratio
+            .ok_or_else(|| CliError::Failure("missing --from-ratio".to_owned()))?,
+        to_ratio: to_ratio.ok_or_else(|| CliError::Failure("missing --to-ratio".to_owned()))?,
+        duration_ms,
         dry_run,
     }))
 }
@@ -3351,6 +3461,25 @@ fn parse_unit_f32(name: &str, value: &str) -> Result<f32, CliError> {
     Ok(parsed)
 }
 
+fn parse_ratio_pair(name: &str, value: &str) -> Result<(f32, f32), CliError> {
+    let parts = value
+        .split([',', ':', ';', '/'])
+        .flat_map(str::split_whitespace)
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() != 2 {
+        return Err(CliError::Failure(format!(
+            "{name} must be x,y ratios, got {value:?}"
+        )));
+    }
+
+    Ok((
+        parse_unit_f32(name, parts[0])?,
+        parse_unit_f32(name, parts[1])?,
+    ))
+}
+
 fn parse_rect(name: &str, value: &str) -> Result<Rect, CliError> {
     let parts = value
         .split([',', ':', 'x', ';', '/'])
@@ -3551,6 +3680,9 @@ fn print_desktop_usage() {
         "Usage: peekaboox desktop click --app <app> --target <target> [--button left|middle|right] [--image <path>] [--dry-run] [--no-accessibility]"
     );
     println!(
+        "Usage: peekaboox desktop drag --app <app> --target <target> --from-ratio <x,y> --to-ratio <x,y> [--duration-ms <ms>] [--button left|middle|right] [--image <path>] [--dry-run] [--no-accessibility]"
+    );
+    println!(
         "Usage: peekaboox desktop type-into --app <app> --target <target> [--clear] [--image <path>] [--dry-run] <text>"
     );
     println!(
@@ -3595,10 +3727,10 @@ mod tests {
         CaptureArgs, CaptureBackendsCommand, CaptureCommand, CaptureDeltaArgs, CaptureDeltaCommand,
         CaptureDmaBufArgs, CaptureDmaBufCommand, CaptureDmaBufImportTarget, CliContext, CliError,
         ClickArgs, ClickCommand, ClickTarget, CompareArgs, CompareCommand, DesktopAssertArgs,
-        DesktopClickArgs, DesktopCommand, DesktopFocusArgs, DesktopLocateArgs, DesktopTypeIntoArgs,
-        DragArgs, DragCommand, ElementsArgs, ElementsCommand, GlobalArgs, HotkeyArgs,
-        HotkeyCommand, MoveArgs, MoveCommand, OcrArgs, OcrCommand, PluginsArgs, PluginsCommand,
-        TypeArgs, TypeCommand, UiStateArgs, UiStateCommand, VisionElementsArgs,
+        DesktopClickArgs, DesktopCommand, DesktopDragArgs, DesktopFocusArgs, DesktopLocateArgs,
+        DesktopTypeIntoArgs, DragArgs, DragCommand, ElementsArgs, ElementsCommand, GlobalArgs,
+        HotkeyArgs, HotkeyCommand, MoveArgs, MoveCommand, OcrArgs, OcrCommand, PluginsArgs,
+        PluginsCommand, TypeArgs, TypeCommand, UiStateArgs, UiStateCommand, VisionElementsArgs,
         VisionElementsCommand, WindowsCommand, parse_capture_args, parse_capture_backends_args,
         parse_capture_delta_args, parse_capture_dmabuf_args, parse_click_args, parse_compare_args,
         parse_desktop_args, parse_drag_args, parse_elements_args, parse_global_args,
@@ -4207,6 +4339,40 @@ mod tests {
                 image: Some(PathBuf::from("screen.png")),
                 prefer_accessibility: false,
                 button: MouseButton::Right,
+                dry_run: true
+            })
+        );
+    }
+
+    #[test]
+    fn desktop_drag_accepts_ratio_endpoints() {
+        let command = parse_desktop_args(vec![
+            "drag".to_owned(),
+            "--app".to_owned(),
+            "drawing".to_owned(),
+            "--target".to_owned(),
+            "canvas".to_owned(),
+            "--from-ratio".to_owned(),
+            "0.2,0.3".to_owned(),
+            "--to-ratio".to_owned(),
+            "0.8,0.7".to_owned(),
+            "--duration-ms".to_owned(),
+            "400".to_owned(),
+            "--dry-run".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DesktopCommand::Drag(DesktopDragArgs {
+                app: "drawing".to_owned(),
+                target: "canvas".to_owned(),
+                image: None,
+                prefer_accessibility: true,
+                button: MouseButton::Left,
+                from_ratio: (0.2, 0.3),
+                to_ratio: (0.8, 0.7),
+                duration_ms: 400,
                 dry_run: true
             })
         );

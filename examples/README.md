@@ -34,12 +34,11 @@ reported as warnings so the script remains useful across Wayland, X11, and
 headless environments.
 
 `examples/desktop/paint_draw_and_save.sh` opens a blank PNG in `drawing`,
-`pinta`, or `kolourpaint`, draws with `move` and `drag`, saves with
-`hotkey ctrl+s`, falls back to the visible Save toolbar button when needed, and
-verifies that the output file changed. Override `PEEKABOOX_PAINT_APP`,
-`PEEKABOOX_PAINT_CANVAS_X`, `PEEKABOOX_PAINT_CANVAS_Y`,
-`PEEKABOOX_PAINT_SAVE_X`, or `PEEKABOOX_PAINT_SAVE_Y` if your desktop layout
-needs different coordinates.
+`pinta`, or `kolourpaint`, locates the canvas through `peekaboox desktop`,
+draws with ratio-based `desktop drag` actions, saves with `hotkey ctrl+s`, falls
+back to the detected Save toolbar button when needed, and verifies that the
+output file changed. Override `PEEKABOOX_PAINT_APP` to force a specific paint
+application.
 
 `examples/desktop/telegram_saved_messages.sh` opens or focuses Telegram Desktop
 through the reusable `peekaboox desktop focus` helper, locates Telegram's

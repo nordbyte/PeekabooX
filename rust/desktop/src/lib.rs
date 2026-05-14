@@ -34,7 +34,72 @@ const TELEGRAM_COMMANDS: &[CommandSpec] = &[
         args: FLATPAK_TELEGRAM_ARGS,
     },
 ];
-const SUPPORTED_APPS: &[&str] = &[TELEGRAM_PROFILE_ID];
+const PAINT_PROFILE_ID: &str = "paint";
+const DRAWING_PROFILE_ID: &str = "drawing";
+const PINTA_PROFILE_ID: &str = "pinta";
+const KOLOURPAINT_PROFILE_ID: &str = "kolourpaint";
+const DRAWING_SEARCH_NAME: &str = "Drawing";
+const PINTA_SEARCH_NAME: &str = "Pinta";
+const KOLOURPAINT_SEARCH_NAME: &str = "KolourPaint";
+const DRAWING_DESKTOP_IDS: &[&str] = &["drawing", "com.github.maoschanz.drawing"];
+const PINTA_DESKTOP_IDS: &[&str] = &["pinta", "com.github.PintaProject.Pinta"];
+const KOLOURPAINT_DESKTOP_IDS: &[&str] = &["org.kde.kolourpaint", "kolourpaint"];
+const PAINT_DESKTOP_IDS: &[&str] = &[
+    "drawing",
+    "com.github.maoschanz.drawing",
+    "pinta",
+    "com.github.PintaProject.Pinta",
+    "org.kde.kolourpaint",
+    "kolourpaint",
+];
+const PAINT_ALIASES: &[&str] = &[
+    "paint",
+    "drawing",
+    "pinta",
+    "kolourpaint",
+    "org.gnome.Drawing",
+    "com.github.maoschanz.drawing",
+];
+const DRAWING_ALIASES: &[&str] = &[
+    "drawing",
+    "org.gnome.Drawing",
+    "com.github.maoschanz.drawing",
+];
+const PINTA_ALIASES: &[&str] = &["pinta", "com.github.PintaProject.Pinta"];
+const KOLOURPAINT_ALIASES: &[&str] = &["kolourpaint", "org.kde.kolourpaint"];
+const DRAWING_COMMANDS: &[CommandSpec] = &[CommandSpec {
+    program: "drawing",
+    args: NO_ARGS,
+}];
+const PINTA_COMMANDS: &[CommandSpec] = &[CommandSpec {
+    program: "pinta",
+    args: NO_ARGS,
+}];
+const KOLOURPAINT_COMMANDS: &[CommandSpec] = &[CommandSpec {
+    program: "kolourpaint",
+    args: NO_ARGS,
+}];
+const PAINT_COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        program: "drawing",
+        args: NO_ARGS,
+    },
+    CommandSpec {
+        program: "pinta",
+        args: NO_ARGS,
+    },
+    CommandSpec {
+        program: "kolourpaint",
+        args: NO_ARGS,
+    },
+];
+const SUPPORTED_APPS: &[&str] = &[
+    TELEGRAM_PROFILE_ID,
+    PAINT_PROFILE_ID,
+    DRAWING_PROFILE_ID,
+    PINTA_PROFILE_ID,
+    KOLOURPAINT_PROFILE_ID,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopTargetSource {
@@ -114,6 +179,29 @@ impl Default for ClickOptions {
         Self {
             locate: LocateOptions::default(),
             button: MouseButton::Left,
+            dry_run: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesktopDragOptions {
+    pub locate: LocateOptions,
+    pub from_ratio: (f32, f32),
+    pub to_ratio: (f32, f32),
+    pub button: MouseButton,
+    pub duration_ms: u64,
+    pub dry_run: bool,
+}
+
+impl Default for DesktopDragOptions {
+    fn default() -> Self {
+        Self {
+            locate: LocateOptions::default(),
+            from_ratio: (0.5, 0.5),
+            to_ratio: (0.5, 0.5),
+            button: MouseButton::Left,
+            duration_ms: 250,
             dry_run: false,
         }
     }
@@ -279,6 +367,54 @@ pub fn click_target(
     })
 }
 
+pub fn drag_target(
+    app: &str,
+    target: &str,
+    options: &DesktopDragOptions,
+) -> Result<DesktopActionResult> {
+    let resolved = locate_target(app, target, &options.locate)?;
+    let rect = resolved.rect.ok_or_else(|| {
+        PeekabooXError::new(format!(
+            "target {target:?} has no rectangle; ratio-based drag is unavailable"
+        ))
+    })?;
+    let from = point_in_rect_ratio(rect, options.from_ratio)?;
+    let to = point_in_rect_ratio(rect, options.to_ratio)?;
+
+    if options.dry_run {
+        return Ok(DesktopActionResult {
+            app: resolved.app,
+            action: "drag".to_owned(),
+            detail: format!(
+                "would drag {} from {},{} to {},{} via {}",
+                resolved.target,
+                from.x,
+                from.y,
+                to.x,
+                to.y,
+                resolved.source.label()
+            ),
+            backend_name: "dry-run".to_owned(),
+        });
+    }
+
+    let metadata = peekaboox_input::drag(from, to, options.button, options.duration_ms)?;
+    Ok(DesktopActionResult {
+        app: resolved.app,
+        action: "drag".to_owned(),
+        detail: format!(
+            "dragged {} from {},{} to {},{} via {}",
+            resolved.target,
+            from.x,
+            from.y,
+            to.x,
+            to.y,
+            resolved.source.label()
+        ),
+        backend_name: metadata.backend_name,
+    })
+}
+
 pub fn type_into_target(
     app: &str,
     target: &str,
@@ -394,9 +530,13 @@ fn focus_from_gnome_overview(profile: &AppProfile, options: &FocusOptions) -> Re
     peekaboox_input::type_text(profile.search_name.to_owned())?;
     sleep(Duration::from_millis(options.overview_wait_ms));
 
-    let frame = peekaboox_capture::capture_screen_frame()?.frame;
-    let target = locate_overview_icon(&frame)?;
-    peekaboox_input::click(target.point, MouseButton::Left)?;
+    if profile.kind == ProfileKind::Telegram {
+        let frame = peekaboox_capture::capture_screen_frame()?.frame;
+        let target = locate_overview_icon(&frame)?;
+        peekaboox_input::click(target.point, MouseButton::Left)?;
+    } else {
+        peekaboox_input::hotkey(vec!["Enter".to_owned()])?;
+    }
     Ok(())
 }
 
@@ -547,6 +687,16 @@ fn resolve_profile(app: &str) -> Result<&'static AppProfile> {
     if TELEGRAM_PROFILE.matches_id(app) {
         return Ok(&TELEGRAM_PROFILE);
     }
+    for profile in [
+        &DRAWING_PROFILE,
+        &PINTA_PROFILE,
+        &KOLOURPAINT_PROFILE,
+        &PAINT_PROFILE,
+    ] {
+        if profile.matches_id(app) {
+            return Ok(profile);
+        }
+    }
 
     Err(PeekabooXError::new(format!(
         "unsupported desktop app {app:?}; supported apps: {}",
@@ -563,6 +713,7 @@ struct CommandSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProfileKind {
     Telegram,
+    Paint,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -594,9 +745,10 @@ impl AppProfile {
     }
 
     fn accessibility_selector(self, target: &str) -> Option<&'static str> {
-        let _ = self;
-        let _ = target;
-        None
+        match (self.kind, target) {
+            (ProfileKind::Paint, "save-button") => Some("Save"),
+            _ => None,
+        }
     }
 
     fn resolve_visual_target(
@@ -612,11 +764,17 @@ impl AppProfile {
             (ProfileKind::Telegram, "message-input") => locate_message_input(frame)?,
             (ProfileKind::Telegram, "send-button") => locate_send_button(frame)?,
             (ProfileKind::Telegram, "header") => locate_header(frame)?,
+            (ProfileKind::Paint, "canvas") => locate_paint_canvas(frame)?,
+            (ProfileKind::Paint, "save-button") => locate_paint_save_button(frame)?,
             _ => {
+                let supported_targets = match self.kind {
+                    ProfileKind::Telegram => telegram_supported_targets(),
+                    ProfileKind::Paint => paint_supported_targets(),
+                };
                 return Err(PeekabooXError::new(format!(
                     "unsupported target {target:?} for app {}; supported targets: {}",
                     self.id,
-                    telegram_supported_targets().join(", ")
+                    supported_targets.join(", ")
                 )));
             }
         };
@@ -649,6 +807,42 @@ static TELEGRAM_PROFILE: AppProfile = AppProfile {
     kind: ProfileKind::Telegram,
 };
 
+static PAINT_PROFILE: AppProfile = AppProfile {
+    id: PAINT_PROFILE_ID,
+    aliases: PAINT_ALIASES,
+    search_name: DRAWING_SEARCH_NAME,
+    desktop_ids: PAINT_DESKTOP_IDS,
+    commands: PAINT_COMMANDS,
+    kind: ProfileKind::Paint,
+};
+
+static DRAWING_PROFILE: AppProfile = AppProfile {
+    id: DRAWING_PROFILE_ID,
+    aliases: DRAWING_ALIASES,
+    search_name: DRAWING_SEARCH_NAME,
+    desktop_ids: DRAWING_DESKTOP_IDS,
+    commands: DRAWING_COMMANDS,
+    kind: ProfileKind::Paint,
+};
+
+static PINTA_PROFILE: AppProfile = AppProfile {
+    id: PINTA_PROFILE_ID,
+    aliases: PINTA_ALIASES,
+    search_name: PINTA_SEARCH_NAME,
+    desktop_ids: PINTA_DESKTOP_IDS,
+    commands: PINTA_COMMANDS,
+    kind: ProfileKind::Paint,
+};
+
+static KOLOURPAINT_PROFILE: AppProfile = AppProfile {
+    id: KOLOURPAINT_PROFILE_ID,
+    aliases: KOLOURPAINT_ALIASES,
+    search_name: KOLOURPAINT_SEARCH_NAME,
+    desktop_ids: KOLOURPAINT_DESKTOP_IDS,
+    commands: KOLOURPAINT_COMMANDS,
+    kind: ProfileKind::Paint,
+};
+
 fn telegram_supported_targets() -> &'static [&'static str] {
     &[
         "overview-icon",
@@ -659,6 +853,10 @@ fn telegram_supported_targets() -> &'static [&'static str] {
         "send-button",
         "header",
     ]
+}
+
+fn paint_supported_targets() -> &'static [&'static str] {
+    &["canvas", "save-button"]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -843,6 +1041,60 @@ fn locate_header(frame: &CaptureFrame) -> Result<VisualTarget> {
             metrics.top + 50,
         ),
         Rect::new(left, metrics.top + 16, width, 70),
+    ))
+}
+
+fn locate_paint_canvas(frame: &CaptureFrame) -> Result<VisualTarget> {
+    let view = FrameView::new(frame);
+    let min_width = max(180, view.width() * 12 / 100);
+    let min_height = max(160, view.height() * 12 / 100);
+    let max_area = i64::from(view.width()) * i64::from(view.height()) * 92 / 100;
+
+    let candidates = connected_components(&view, is_paint_canvas_pixel, 4)
+        .into_iter()
+        .filter(|component| {
+            let width = component.right - component.left;
+            let height = component.bottom - component.top;
+            let area = i64::from(width) * i64::from(height);
+            width >= min_width
+                && height >= min_height
+                && component.top >= view.height() * 6 / 100
+                && component.bottom >= view.height() * 30 / 100
+                && component.left <= view.width() * 90 / 100
+                && component.right >= view.width() * 10 / 100
+                && area <= max_area
+        })
+        .collect::<Vec<_>>();
+
+    let Some(canvas) = candidates.into_iter().max_by_key(|component| {
+        let width = component.right - component.left;
+        let height = component.bottom - component.top;
+        let area = i64::from(width) * i64::from(height);
+        let center_penalty = (component.center_x() - view.width() / 2).abs()
+            + (component.center_y() - view.height() * 58 / 100).abs();
+        area - i64::from(center_penalty * 20)
+    }) else {
+        return Err(PeekabooXError::new("could not locate paint canvas"));
+    };
+
+    let rect = canvas.rect();
+    Ok(VisualTarget::with_rect(
+        point_in_rect_ratio(rect, (0.35, 0.35))?,
+        rect,
+    ))
+}
+
+fn locate_paint_save_button(frame: &CaptureFrame) -> Result<VisualTarget> {
+    let canvas = locate_paint_canvas(frame)?;
+    let Some(rect) = canvas.rect else {
+        return Err(PeekabooXError::new("paint canvas has no rectangle"));
+    };
+    let offset_x = min(96_i32, i32::try_from(rect.width / 8).unwrap_or(0));
+    let x = rect.x + max(28, offset_x);
+    let y = max(20, rect.y - 24);
+    Ok(VisualTarget::with_rect(
+        Point::new(x, y),
+        Rect::new(max(0, x - 24), max(0, y - 24), 48, 48),
     ))
 }
 
@@ -1060,6 +1312,35 @@ fn is_telegram_action((red, green, blue): (u8, u8, u8)) -> bool {
     red <= 100 && (120..=230).contains(&green) && (120..=230).contains(&blue) && green >= red + 50
 }
 
+fn is_paint_canvas_pixel((red, green, blue): (u8, u8, u8)) -> bool {
+    red >= 235
+        && green >= 235
+        && blue >= 235
+        && red.abs_diff(green) <= 18
+        && red.abs_diff(blue) <= 18
+        && green.abs_diff(blue) <= 18
+}
+
+fn point_in_rect_ratio(rect: Rect, ratio: (f32, f32)) -> Result<Point> {
+    let (ratio_x, ratio_y) = ratio;
+    if !ratio_x.is_finite()
+        || !ratio_y.is_finite()
+        || !(0.0..=1.0).contains(&ratio_x)
+        || !(0.0..=1.0).contains(&ratio_y)
+    {
+        return Err(PeekabooXError::new(format!(
+            "ratio must be finite and between 0.0 and 1.0, got {ratio_x},{ratio_y}"
+        )));
+    }
+
+    let width = rect.width.saturating_sub(1) as f32;
+    let height = rect.height.saturating_sub(1) as f32;
+    Ok(Point::new(
+        rect.x + (width * ratio_x).round() as i32,
+        rect.y + (height * ratio_y).round() as i32,
+    ))
+}
+
 fn rects_intersect(left: Rect, right: Rect) -> bool {
     let left_right = i64::from(left.x) + i64::from(left.width);
     let left_bottom = i64::from(left.y) + i64::from(left.height);
@@ -1096,9 +1377,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn supported_apps_contains_telegram() {
-        assert_eq!(supported_apps(), &["telegram"]);
+    fn supported_apps_contains_desktop_profiles() {
+        assert_eq!(
+            supported_apps(),
+            &["telegram", "paint", "drawing", "pinta", "kolourpaint"]
+        );
         assert!(resolve_profile("telegram-desktop").is_ok());
+        assert_eq!(resolve_profile("pinta").unwrap().id, "pinta");
     }
 
     #[test]
@@ -1130,6 +1415,25 @@ mod tests {
         let target = locate_overview_icon(&frame).unwrap();
 
         assert_eq!(target.point, Point::new(994, 244));
+    }
+
+    #[test]
+    fn locates_paint_canvas_from_visual_layout() {
+        let mut frame = blank_frame(1_280, 900, (34, 36, 40));
+        fill_rect(&mut frame, 220, 150, 820, 620, (248, 248, 247));
+        fill_rect(&mut frame, 20, 20, 200, 70, (245, 245, 245));
+
+        let target = locate_paint_canvas(&frame).unwrap();
+
+        assert_eq!(target.rect, Some(Rect::new(220, 152, 820, 620)));
+        assert_eq!(target.point, Point::new(507, 369));
+    }
+
+    #[test]
+    fn point_in_rect_ratio_maps_inside_rectangle() {
+        let point = point_in_rect_ratio(Rect::new(100, 200, 401, 201), (0.25, 0.5)).unwrap();
+
+        assert_eq!(point, Point::new(200, 300));
     }
 
     fn synthetic_telegram_frame(active_send: bool) -> CaptureFrame {

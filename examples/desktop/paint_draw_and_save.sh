@@ -8,13 +8,8 @@ BEFORE_FILE="$OUT_DIR/before.png"
 AFTER_CAPTURE="$OUT_DIR/after-capture.png"
 PAINT_LOG="$OUT_DIR/paint-app.log"
 STRICT="${PEEKABOOX_STRICT:-0}"
-CANVAS_X="${PEEKABOOX_PAINT_CANVAS_X:-360}"
-CANVAS_Y="${PEEKABOOX_PAINT_CANVAS_Y:-360}"
-STROKE_W="${PEEKABOOX_PAINT_STROKE_W:-260}"
-STROKE_H="${PEEKABOOX_PAINT_STROKE_H:-160}"
-SAVE_X="${PEEKABOOX_PAINT_SAVE_X:-285}"
-SAVE_Y="${PEEKABOOX_PAINT_SAVE_Y:-181}"
 LAUNCH_DELAY="${PEEKABOOX_PAINT_LAUNCH_DELAY:-3}"
+FOCUS_WAIT_MS="${PEEKABOOX_PAINT_FOCUS_WAIT_MS:-500}"
 failures=0
 paint_pid=""
 
@@ -133,8 +128,7 @@ create_blank_png
 cp "$OUT_FILE" "$BEFORE_FILE"
 
 echo "PeekabooX paint example output: $OUT_DIR"
-echo "Canvas origin: $CANVAS_X,$CANVAS_Y"
-echo "Save button: $SAVE_X,$SAVE_Y"
+echo "Canvas target: desktop paint/canvas"
 
 if ! paint_app="$(find_paint_app)"; then
   echo "warning: no supported paint app found; install drawing, pinta, or kolourpaint" >&2
@@ -150,17 +144,18 @@ sleep "$LAUNCH_DELAY"
 ensure_paint_app_started
 
 run_step "window enumeration after launch" run_peekaboox windows
-run_step "move pointer to canvas" run_peekaboox move --x "$CANVAS_X" --y "$CANVAS_Y"
+run_step "focus paint app" run_peekaboox desktop focus --app "$paint_app" --no-launch --wait-ms "$FOCUS_WAIT_MS"
+run_step "locate paint canvas" run_peekaboox desktop locate --app "$paint_app" --target canvas
 run_step "draw horizontal stroke" \
-  run_peekaboox drag --from "$CANVAS_X,$CANVAS_Y" --to "$((CANVAS_X + STROKE_W)),$CANVAS_Y" --duration-ms 250
+  run_peekaboox desktop drag --app "$paint_app" --target canvas --from-ratio 0.22,0.30 --to-ratio 0.70,0.30 --duration-ms 250
 run_step "draw diagonal stroke" \
-  run_peekaboox drag --from "$((CANVAS_X + 20)),$((CANVAS_Y + 40))" --to "$((CANVAS_X + STROKE_W)),$((CANVAS_Y + STROKE_H))" --duration-ms 350
+  run_peekaboox desktop drag --app "$paint_app" --target canvas --from-ratio 0.25,0.40 --to-ratio 0.72,0.66 --duration-ms 350
 run_step "draw vertical stroke" \
-  run_peekaboox drag --from "$((CANVAS_X + 80)),$((CANVAS_Y + 20))" --to "$((CANVAS_X + 80)),$((CANVAS_Y + STROKE_H))" --duration-ms 250
+  run_peekaboox desktop drag --app "$paint_app" --target canvas --from-ratio 0.36,0.34 --to-ratio 0.36,0.68 --duration-ms 250
 run_step "save drawing with ctrl+s" run_peekaboox hotkey ctrl+s
 sleep 1
 if cmp -s "$BEFORE_FILE" "$OUT_FILE"; then
-  run_step "save drawing from toolbar" run_peekaboox click --x "$SAVE_X" --y "$SAVE_Y"
+  run_step "save drawing from toolbar" run_peekaboox desktop click --app "$paint_app" --target save-button
 fi
 sleep 1
 run_step "capture desktop after drawing" run_peekaboox capture --output "$AFTER_CAPTURE"
@@ -168,7 +163,7 @@ run_step "capture desktop after drawing" run_peekaboox capture --output "$AFTER_
 if cmp -s "$BEFORE_FILE" "$OUT_FILE"; then
   failures=$((failures + 1))
   echo "warning: output file did not change after save: $OUT_FILE" >&2
-  echo "         adjust PEEKABOOX_PAINT_CANVAS_X/Y or run with an XWayland-capable paint app" >&2
+  echo "         run with PEEKABOOX_STRICT=1 for a failing smoke test, or try an XWayland-capable paint app" >&2
   if [[ "$STRICT" == "1" ]]; then
     maybe_close_paint_app
     exit 1
