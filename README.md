@@ -74,9 +74,9 @@ cargo run -q -p peekaboox-cli -- hotkey --dry-run ctrl+s
 
 Remove `--dry-run` to perform the action. The current input implementation
 prefers direct `/dev/uinput` pointer events on Wayland, uses `ydotool` for
-Wayland hotkeys and text where available, uses `wtype` as a Wayland text
-fallback, and prefers `xdotool` on X11. Semantic click targets use AT-SPI and
-resolve to the center of the matching UI element.
+Wayland hotkeys, prefers `wtype` for Wayland text where available with
+`ydotool` as fallback, and prefers `xdotool` on X11. Semantic click targets use
+AT-SPI and resolve to the center of the matching UI element.
 
 Use the higher-level desktop helper when an action needs app focus, screenshot
 layout detection, and guards around state-sensitive targets:
@@ -88,13 +88,17 @@ cargo run -q -p peekaboox-cli -- desktop locate --app telegram --target search-i
 cargo run -q -p peekaboox-cli -- desktop type-into --app telegram --target search-input --clear "Saved Messages"
 cargo run -q -p peekaboox-cli -- desktop assert --app telegram --target send-button --not-active
 cargo run -q -p peekaboox-cli -- desktop drag --app drawing --target canvas --from-ratio 0.2,0.3 --to-ratio 0.8,0.3
+cargo run -q -p peekaboox-cli -- desktop type-into --app text-editor --target document --window-title notes.txt --clear "PeekabooX"
 ```
 
-The built-in profiles include `telegram`, `paint`, `drawing`, `pinta`, and
-`kolourpaint`. They use the safest available path in order: existing window
-focus where window enumeration is available, GNOME Overview or application
-launch fallback, then app-specific visual layout targets such as Telegram's
-`search-input` and `message-input` or Paint's `canvas`.
+The built-in profiles include `telegram`, `paint`, `drawing`, `pinta`,
+`kolourpaint`, and `text-editor`. They use the safest available path in order:
+existing window focus where window enumeration is available, GNOME Overview or
+application launch fallback, then app-specific visual layout targets such as
+Telegram's `search-input` and `message-input`, Paint's `canvas`, or Text
+Editor's `document`. Pass `--window-title <text>` to `desktop focus`, `locate`,
+`click`, `drag`, `type-into`, or `assert` when an action must target one
+specific window instead of the currently focused matching app.
 
 List visible desktop windows:
 

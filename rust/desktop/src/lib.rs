@@ -93,12 +93,21 @@ const PAINT_COMMANDS: &[CommandSpec] = &[
         args: NO_ARGS,
     },
 ];
+const TEXT_EDITOR_PROFILE_ID: &str = "text-editor";
+const TEXT_EDITOR_SEARCH_NAME: &str = "Text Editor";
+const TEXT_EDITOR_DESKTOP_IDS: &[&str] = &["org.gnome.TextEditor", "gnome-text-editor"];
+const TEXT_EDITOR_ALIASES: &[&str] = &["text-editor", "gnome-text-editor", "org.gnome.TextEditor"];
+const TEXT_EDITOR_COMMANDS: &[CommandSpec] = &[CommandSpec {
+    program: "gnome-text-editor",
+    args: NO_ARGS,
+}];
 const SUPPORTED_APPS: &[&str] = &[
     TELEGRAM_PROFILE_ID,
     PAINT_PROFILE_ID,
     DRAWING_PROFILE_ID,
     PINTA_PROFILE_ID,
     KOLOURPAINT_PROFILE_ID,
+    TEXT_EDITOR_PROFILE_ID,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +148,7 @@ pub struct FocusOptions {
     pub launch_if_needed: bool,
     pub wait_after_focus_ms: u64,
     pub overview_wait_ms: u64,
+    pub window_title: Option<String>,
 }
 
 impl Default for FocusOptions {
@@ -148,6 +158,7 @@ impl Default for FocusOptions {
             launch_if_needed: true,
             wait_after_focus_ms: DEFAULT_FOCUS_WAIT_MS,
             overview_wait_ms: DEFAULT_OVERVIEW_WAIT_MS,
+            window_title: None,
         }
     }
 }
@@ -156,6 +167,7 @@ impl Default for FocusOptions {
 pub struct LocateOptions {
     pub image: Option<PathBuf>,
     pub prefer_accessibility: bool,
+    pub window_title: Option<String>,
 }
 
 impl Default for LocateOptions {
@@ -163,6 +175,7 @@ impl Default for LocateOptions {
         Self {
             image: None,
             prefer_accessibility: true,
+            window_title: None,
         }
     }
 }
@@ -236,12 +249,10 @@ pub fn supported_apps() -> &'static [&'static str] {
 
 pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResult> {
     let profile = resolve_profile(app)?;
+    let title_hint = normalized_title_hint(options.window_title.as_deref());
 
     if let Ok(metadata) = peekaboox_windows::list_windows()
-        && let Some(window) = metadata
-            .windows
-            .iter()
-            .find(|window| profile.matches_window(window))
+        && let Some(window) = preferred_profile_window(profile, &metadata.windows, title_hint)
     {
         if window.focused {
             sleep_after_focus(options);
@@ -267,6 +278,12 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                 backend_name: metadata.backend_name,
             });
         }
+    }
+
+    if let Some(title_hint) = title_hint {
+        return Err(PeekabooXError::new(format!(
+            "could not find visible app {app:?} window with title containing {title_hint:?}"
+        )));
     }
 
     if options.use_gnome_overview && focus_from_gnome_overview(profile, options).is_ok() {
@@ -313,8 +330,10 @@ pub fn locate_target(
     options: &LocateOptions,
 ) -> Result<ResolvedDesktopTarget> {
     let profile = resolve_profile(app)?;
+    let title_hint = normalized_title_hint(options.window_title.as_deref());
     if options.prefer_accessibility
         && options.image.is_none()
+        && title_hint.is_none()
         && let Some(selector) = profile.accessibility_selector(target)
         && let Ok(resolved) = peekaboox_accessibility::resolve_click_target(selector)
     {
@@ -328,7 +347,7 @@ pub fn locate_target(
     }
 
     let frame = load_or_capture_frame(options.image.as_deref())?;
-    profile.resolve_visual_target(target, &frame)
+    profile.resolve_visual_target(target, &frame, title_hint)
 }
 
 pub fn click_target(
@@ -491,14 +510,26 @@ pub fn assert_target(
             }
         }
         DesktopAssertion::Contains(expected) => {
-            if !target_text_contains(profile, target, expected, options.locate.image.as_deref())? {
+            if !target_text_contains(
+                profile,
+                target,
+                expected,
+                options.locate.image.as_deref(),
+                normalized_title_hint(options.locate.window_title.as_deref()),
+            )? {
                 return Err(PeekabooXError::new(format!(
                     "target {target:?} does not contain {expected:?}"
                 )));
             }
         }
         DesktopAssertion::NotContains(expected) => {
-            if target_text_contains(profile, target, expected, options.locate.image.as_deref())? {
+            if target_text_contains(
+                profile,
+                target,
+                expected,
+                options.locate.image.as_deref(),
+                normalized_title_hint(options.locate.window_title.as_deref()),
+            )? {
                 return Err(PeekabooXError::new(format!(
                     "target {target:?} contains {expected:?} but expected it not to"
                 )));
@@ -518,6 +549,35 @@ fn sleep_after_focus(options: &FocusOptions) {
     if options.wait_after_focus_ms > 0 {
         sleep(Duration::from_millis(options.wait_after_focus_ms));
     }
+}
+
+fn preferred_profile_window<'a>(
+    profile: &AppProfile,
+    windows: &'a [peekaboox_core::WindowInfo],
+    title_hint: Option<&str>,
+) -> Option<&'a peekaboox_core::WindowInfo> {
+    windows
+        .iter()
+        .filter(|window| {
+            profile.matches_window(window)
+                && window.bounds.width > 0
+                && window.bounds.height > 0
+                && title_hint.is_none_or(|hint| contains_case_insensitive(&window.title, hint))
+        })
+        .max_by_key(|window| {
+            let area = u64::from(window.bounds.width) * u64::from(window.bounds.height);
+            let focus_bonus = if window.focused { u64::MAX / 2 } else { 0 };
+            focus_bonus.saturating_add(area)
+        })
+}
+
+fn profile_window_rect(profile: &AppProfile, title_hint: Option<&str>) -> Option<Rect> {
+    let metadata = peekaboox_windows::list_windows().ok()?;
+    preferred_profile_window(profile, &metadata.windows, title_hint).map(|window| window.bounds)
+}
+
+fn normalized_title_hint(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn focus_from_gnome_overview(profile: &AppProfile, options: &FocusOptions) -> Result<()> {
@@ -634,9 +694,12 @@ fn target_text_contains(
     target: &str,
     expected: &str,
     image: Option<&Path>,
+    window_title: Option<&str>,
 ) -> Result<bool> {
     let frame = load_or_capture_frame(image)?;
-    let rect = profile.resolve_visual_target(target, &frame)?.rect;
+    let rect = profile
+        .resolve_visual_target(target, &frame, window_title)?
+        .rect;
 
     if accessibility_contains(expected, rect).unwrap_or(false) {
         return Ok(true);
@@ -692,6 +755,7 @@ fn resolve_profile(app: &str) -> Result<&'static AppProfile> {
         &PINTA_PROFILE,
         &KOLOURPAINT_PROFILE,
         &PAINT_PROFILE,
+        &TEXT_EDITOR_PROFILE,
     ] {
         if profile.matches_id(app) {
             return Ok(profile);
@@ -714,6 +778,7 @@ struct CommandSpec {
 enum ProfileKind {
     Telegram,
     Paint,
+    TextEditor,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -747,6 +812,7 @@ impl AppProfile {
     fn accessibility_selector(self, target: &str) -> Option<&'static str> {
         match (self.kind, target) {
             (ProfileKind::Paint, "save-button") => Some("Save"),
+            (ProfileKind::TextEditor, "save-button") => Some("Save"),
             _ => None,
         }
     }
@@ -755,6 +821,7 @@ impl AppProfile {
         self,
         target: &str,
         frame: &CaptureFrame,
+        window_title: Option<&str>,
     ) -> Result<ResolvedDesktopTarget> {
         let visual = match (self.kind, target) {
             (ProfileKind::Telegram, "overview-icon") => locate_overview_icon(frame)?,
@@ -766,10 +833,17 @@ impl AppProfile {
             (ProfileKind::Telegram, "header") => locate_header(frame)?,
             (ProfileKind::Paint, "canvas") => locate_paint_canvas(frame)?,
             (ProfileKind::Paint, "save-button") => locate_paint_save_button(frame)?,
+            (ProfileKind::TextEditor, "document") => {
+                locate_text_editor_document(self, frame, window_title)?
+            }
+            (ProfileKind::TextEditor, "save-button") => {
+                locate_text_editor_save_button(self, frame, window_title)?
+            }
             _ => {
                 let supported_targets = match self.kind {
                     ProfileKind::Telegram => telegram_supported_targets(),
                     ProfileKind::Paint => paint_supported_targets(),
+                    ProfileKind::TextEditor => text_editor_supported_targets(),
                 };
                 return Err(PeekabooXError::new(format!(
                     "unsupported target {target:?} for app {}; supported targets: {}",
@@ -843,6 +917,15 @@ static KOLOURPAINT_PROFILE: AppProfile = AppProfile {
     kind: ProfileKind::Paint,
 };
 
+static TEXT_EDITOR_PROFILE: AppProfile = AppProfile {
+    id: TEXT_EDITOR_PROFILE_ID,
+    aliases: TEXT_EDITOR_ALIASES,
+    search_name: TEXT_EDITOR_SEARCH_NAME,
+    desktop_ids: TEXT_EDITOR_DESKTOP_IDS,
+    commands: TEXT_EDITOR_COMMANDS,
+    kind: ProfileKind::TextEditor,
+};
+
 fn telegram_supported_targets() -> &'static [&'static str] {
     &[
         "overview-icon",
@@ -857,6 +940,10 @@ fn telegram_supported_targets() -> &'static [&'static str] {
 
 fn paint_supported_targets() -> &'static [&'static str] {
     &["canvas", "save-button"]
+}
+
+fn text_editor_supported_targets() -> &'static [&'static str] {
+    &["document", "save-button"]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1132,6 +1219,96 @@ fn locate_paint_save_button(frame: &CaptureFrame) -> Result<VisualTarget> {
         Point::new(x, y),
         Rect::new(max(0, x - 24), max(0, y - 24), 48, 48),
     ))
+}
+
+fn locate_text_editor_document(
+    profile: AppProfile,
+    frame: &CaptureFrame,
+    window_title: Option<&str>,
+) -> Result<VisualTarget> {
+    let rect = match profile_window_rect(&profile, window_title) {
+        Some(window) => text_editor_document_rect(window),
+        None if window_title.is_some() => {
+            return Err(PeekabooXError::new(format!(
+                "could not locate visible {} window with title containing {:?}",
+                profile.id,
+                window_title.unwrap_or_default()
+            )));
+        }
+        None => {
+            let view = FrameView::new(frame);
+            Rect::new(
+                max(0, view.width() * 8 / 100),
+                max(0, view.height() * 14 / 100),
+                positive_extent(view.width() * 84 / 100),
+                positive_extent(view.height() * 74 / 100),
+            )
+        }
+    };
+    Ok(VisualTarget::with_rect(
+        point_in_rect_ratio(rect, (0.5, 0.35))?,
+        rect,
+    ))
+}
+
+fn locate_text_editor_save_button(
+    profile: AppProfile,
+    frame: &CaptureFrame,
+    window_title: Option<&str>,
+) -> Result<VisualTarget> {
+    let rect = match profile_window_rect(&profile, window_title) {
+        Some(window) => window,
+        None if window_title.is_some() => {
+            return Err(PeekabooXError::new(format!(
+                "could not locate visible {} window with title containing {:?}",
+                profile.id,
+                window_title.unwrap_or_default()
+            )));
+        }
+        None => {
+            let view = FrameView::new(frame);
+            Rect::new(
+                0,
+                0,
+                positive_extent(view.width()),
+                positive_extent(view.height()),
+            )
+        }
+    };
+    let x = rect.x + i32::try_from(rect.width).unwrap_or(0) - 76;
+    let y = rect.y + 38;
+    Ok(VisualTarget::with_rect(
+        Point::new(x, y),
+        Rect::new(max(0, x - 36), max(0, y - 18), 72, 36),
+    ))
+}
+
+fn text_editor_document_rect(window: Rect) -> Rect {
+    let header_height = min(
+        96_i32,
+        max(58_i32, i32::try_from(window.height / 10).unwrap_or(58)),
+    );
+    let horizontal_margin = min(
+        48_i32,
+        max(18_i32, i32::try_from(window.width / 40).unwrap_or(18)),
+    );
+    let bottom_margin = min(
+        52_i32,
+        max(24_i32, i32::try_from(window.height / 18).unwrap_or(24)),
+    );
+    let width = i32::try_from(window.width)
+        .unwrap_or(0)
+        .saturating_sub(horizontal_margin * 2);
+    let height = i32::try_from(window.height)
+        .unwrap_or(0)
+        .saturating_sub(header_height + bottom_margin);
+
+    Rect::new(
+        window.x + horizontal_margin,
+        window.y + header_height,
+        positive_extent(width),
+        positive_extent(height),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1420,10 +1597,21 @@ mod tests {
     fn supported_apps_contains_desktop_profiles() {
         assert_eq!(
             supported_apps(),
-            &["telegram", "paint", "drawing", "pinta", "kolourpaint"]
+            &[
+                "telegram",
+                "paint",
+                "drawing",
+                "pinta",
+                "kolourpaint",
+                "text-editor"
+            ]
         );
         assert!(resolve_profile("telegram-desktop").is_ok());
         assert_eq!(resolve_profile("pinta").unwrap().id, "pinta");
+        assert_eq!(
+            resolve_profile("gnome-text-editor").unwrap().id,
+            "text-editor"
+        );
     }
 
     #[test]
@@ -1487,6 +1675,41 @@ mod tests {
         let point = point_in_rect_ratio(Rect::new(100, 200, 401, 201), (0.25, 0.5)).unwrap();
 
         assert_eq!(point, Point::new(200, 300));
+    }
+
+    #[test]
+    fn text_editor_document_rect_stays_inside_window_chrome() {
+        let rect = text_editor_document_rect(Rect::new(10, 20, 1_000, 700));
+
+        assert_eq!(rect, Rect::new(35, 90, 950, 592));
+    }
+
+    #[test]
+    fn preferred_profile_window_respects_title_hint() {
+        let windows = vec![
+            peekaboox_core::WindowInfo {
+                id: "focused-user-doc".to_owned(),
+                title: "notes.txt - Text Editor".to_owned(),
+                app_id: Some("gnome-text-editor".to_owned()),
+                bounds: Rect::new(0, 0, 900, 700),
+                focused: true,
+                state: peekaboox_core::WindowState::Normal,
+            },
+            peekaboox_core::WindowInfo {
+                id: "draft".to_owned(),
+                title: "peekaboox-draft.txt - Text Editor".to_owned(),
+                app_id: Some("gnome-text-editor".to_owned()),
+                bounds: Rect::new(200, 120, 700, 520),
+                focused: false,
+                state: peekaboox_core::WindowState::Normal,
+            },
+        ];
+
+        let selected =
+            preferred_profile_window(&TEXT_EDITOR_PROFILE, &windows, Some("peekaboox-draft"))
+                .unwrap();
+
+        assert_eq!(selected.id, "draft");
     }
 
     fn synthetic_telegram_frame(active_send: bool) -> CaptureFrame {

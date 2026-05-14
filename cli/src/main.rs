@@ -382,6 +382,7 @@ struct DesktopFocusArgs {
     launch_if_needed: bool,
     wait_after_focus_ms: u64,
     overview_wait_ms: u64,
+    window_title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -390,6 +391,7 @@ struct DesktopLocateArgs {
     target: String,
     image: Option<PathBuf>,
     prefer_accessibility: bool,
+    window_title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -398,6 +400,7 @@ struct DesktopClickArgs {
     target: String,
     image: Option<PathBuf>,
     prefer_accessibility: bool,
+    window_title: Option<String>,
     button: MouseButton,
     dry_run: bool,
 }
@@ -408,6 +411,7 @@ struct DesktopDragArgs {
     target: String,
     image: Option<PathBuf>,
     prefer_accessibility: bool,
+    window_title: Option<String>,
     button: MouseButton,
     from_ratio: (f32, f32),
     to_ratio: (f32, f32),
@@ -422,6 +426,7 @@ struct DesktopTypeIntoArgs {
     text: String,
     image: Option<PathBuf>,
     prefer_accessibility: bool,
+    window_title: Option<String>,
     clear: bool,
     dry_run: bool,
 }
@@ -432,6 +437,7 @@ struct DesktopAssertArgs {
     target: String,
     image: Option<PathBuf>,
     prefer_accessibility: bool,
+    window_title: Option<String>,
     assertion: DesktopAssertion,
 }
 
@@ -2156,6 +2162,7 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                     launch_if_needed: args.launch_if_needed,
                     wait_after_focus_ms: args.wait_after_focus_ms,
                     overview_wait_ms: args.overview_wait_ms,
+                    window_title: args.window_title,
                 },
             )
             .map_err(|error| CliError::Failure(error.to_string()))?;
@@ -2169,6 +2176,7 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 &LocateOptions {
                     image: args.image,
                     prefer_accessibility: args.prefer_accessibility,
+                    window_title: args.window_title,
                 },
             )
             .map_err(|error| CliError::Failure(error.to_string()))?;
@@ -2194,6 +2202,7 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                     locate: LocateOptions {
                         image: args.image,
                         prefer_accessibility: args.prefer_accessibility,
+                        window_title: args.window_title,
                     },
                     button: args.button,
                     dry_run: args.dry_run,
@@ -2211,6 +2220,7 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                     locate: LocateOptions {
                         image: args.image,
                         prefer_accessibility: args.prefer_accessibility,
+                        window_title: args.window_title,
                     },
                     from_ratio: args.from_ratio,
                     to_ratio: args.to_ratio,
@@ -2232,6 +2242,7 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                     locate: LocateOptions {
                         image: args.image,
                         prefer_accessibility: args.prefer_accessibility,
+                        window_title: args.window_title,
                     },
                     clear: args.clear,
                     dry_run: args.dry_run,
@@ -2249,6 +2260,7 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                     locate: LocateOptions {
                         image: args.image,
                         prefer_accessibility: args.prefer_accessibility,
+                        window_title: args.window_title,
                     },
                     assertion: args.assertion,
                 },
@@ -2306,11 +2318,15 @@ fn parse_desktop_focus_args(args: Vec<String>) -> Result<DesktopCommand, CliErro
     let mut launch_if_needed = true;
     let mut wait_after_focus_ms = 1_000_u64;
     let mut overview_wait_ms = 800_u64;
+    let mut window_title = None;
     let mut index = 0;
 
     while index < args.len() {
         match args[index].as_str() {
             "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
+            "--window-title" | "--title" => {
+                window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
+            }
             "--no-overview" => use_gnome_overview = false,
             "--no-launch" => launch_if_needed = false,
             "--wait-ms" => {
@@ -2347,6 +2363,7 @@ fn parse_desktop_focus_args(args: Vec<String>) -> Result<DesktopCommand, CliErro
         launch_if_needed,
         wait_after_focus_ms,
         overview_wait_ms,
+        window_title,
     }))
 }
 
@@ -2355,12 +2372,16 @@ fn parse_desktop_locate_args(args: Vec<String>) -> Result<DesktopCommand, CliErr
     let mut target = None;
     let mut image = None;
     let mut prefer_accessibility = true;
+    let mut window_title = None;
     let mut index = 0;
 
     while index < args.len() {
         match args[index].as_str() {
             "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
             "--target" | "-t" => target = Some(parse_next_string(&args, &mut index, "--target")?),
+            "--window-title" | "--title" => {
+                window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
+            }
             "--image" | "-i" => {
                 image = Some(PathBuf::from(parse_next_string(
                     &args, &mut index, "--image",
@@ -2389,6 +2410,7 @@ fn parse_desktop_locate_args(args: Vec<String>) -> Result<DesktopCommand, CliErr
         target: target.ok_or_else(|| CliError::Failure("missing --target".to_owned()))?,
         image,
         prefer_accessibility,
+        window_title,
     }))
 }
 
@@ -2397,6 +2419,7 @@ fn parse_desktop_click_args(args: Vec<String>) -> Result<DesktopCommand, CliErro
     let mut target = None;
     let mut image = None;
     let mut prefer_accessibility = true;
+    let mut window_title = None;
     let mut button = MouseButton::Left;
     let mut dry_run = false;
     let mut index = 0;
@@ -2405,6 +2428,9 @@ fn parse_desktop_click_args(args: Vec<String>) -> Result<DesktopCommand, CliErro
         match args[index].as_str() {
             "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
             "--target" | "-t" => target = Some(parse_next_string(&args, &mut index, "--target")?),
+            "--window-title" | "--title" => {
+                window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
+            }
             "--image" | "-i" => {
                 image = Some(PathBuf::from(parse_next_string(
                     &args, &mut index, "--image",
@@ -2437,6 +2463,7 @@ fn parse_desktop_click_args(args: Vec<String>) -> Result<DesktopCommand, CliErro
         target: target.ok_or_else(|| CliError::Failure("missing --target".to_owned()))?,
         image,
         prefer_accessibility,
+        window_title,
         button,
         dry_run,
     }))
@@ -2447,6 +2474,7 @@ fn parse_desktop_drag_args(args: Vec<String>) -> Result<DesktopCommand, CliError
     let mut target = None;
     let mut image = None;
     let mut prefer_accessibility = true;
+    let mut window_title = None;
     let mut button = MouseButton::Left;
     let mut from_ratio = None;
     let mut to_ratio = None;
@@ -2458,6 +2486,9 @@ fn parse_desktop_drag_args(args: Vec<String>) -> Result<DesktopCommand, CliError
         match args[index].as_str() {
             "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
             "--target" | "-t" => target = Some(parse_next_string(&args, &mut index, "--target")?),
+            "--window-title" | "--title" => {
+                window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
+            }
             "--image" | "-i" => {
                 image = Some(PathBuf::from(parse_next_string(
                     &args, &mut index, "--image",
@@ -2508,6 +2539,7 @@ fn parse_desktop_drag_args(args: Vec<String>) -> Result<DesktopCommand, CliError
         target: target.ok_or_else(|| CliError::Failure("missing --target".to_owned()))?,
         image,
         prefer_accessibility,
+        window_title,
         button,
         from_ratio: from_ratio
             .ok_or_else(|| CliError::Failure("missing --from-ratio".to_owned()))?,
@@ -2522,6 +2554,7 @@ fn parse_desktop_type_into_args(args: Vec<String>) -> Result<DesktopCommand, Cli
     let mut target = None;
     let mut image = None;
     let mut prefer_accessibility = true;
+    let mut window_title = None;
     let mut clear = false;
     let mut dry_run = false;
     let mut text_parts = Vec::new();
@@ -2531,6 +2564,9 @@ fn parse_desktop_type_into_args(args: Vec<String>) -> Result<DesktopCommand, Cli
         match args[index].as_str() {
             "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
             "--target" | "-t" => target = Some(parse_next_string(&args, &mut index, "--target")?),
+            "--window-title" | "--title" => {
+                window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
+            }
             "--image" | "-i" => {
                 image = Some(PathBuf::from(parse_next_string(
                     &args, &mut index, "--image",
@@ -2563,6 +2599,7 @@ fn parse_desktop_type_into_args(args: Vec<String>) -> Result<DesktopCommand, Cli
         text,
         image,
         prefer_accessibility,
+        window_title,
         clear,
         dry_run,
     }))
@@ -2573,6 +2610,7 @@ fn parse_desktop_assert_args(args: Vec<String>, negated: bool) -> Result<Desktop
     let mut target = None;
     let mut image = None;
     let mut prefer_accessibility = true;
+    let mut window_title = None;
     let mut assertion = None;
     let mut index = 0;
 
@@ -2580,6 +2618,9 @@ fn parse_desktop_assert_args(args: Vec<String>, negated: bool) -> Result<Desktop
         match args[index].as_str() {
             "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
             "--target" | "-t" => target = Some(parse_next_string(&args, &mut index, "--target")?),
+            "--window-title" | "--title" => {
+                window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
+            }
             "--image" | "-i" => {
                 image = Some(PathBuf::from(parse_next_string(
                     &args, &mut index, "--image",
@@ -2637,6 +2678,7 @@ fn parse_desktop_assert_args(args: Vec<String>, negated: bool) -> Result<Desktop
         target: target.ok_or_else(|| CliError::Failure("missing --target".to_owned()))?,
         image,
         prefer_accessibility,
+        window_title,
         assertion: assertion.unwrap_or({
             if negated {
                 DesktopAssertion::NotPresent
@@ -3671,25 +3713,25 @@ fn print_vision_elements_usage() {
 fn print_desktop_usage() {
     println!("Usage: peekaboox desktop profiles");
     println!(
-        "Usage: peekaboox desktop focus --app <app> [--no-overview] [--no-launch] [--wait-ms <ms>] [--overview-wait-ms <ms>]"
+        "Usage: peekaboox desktop focus --app <app> [--window-title <text>] [--no-overview] [--no-launch] [--wait-ms <ms>] [--overview-wait-ms <ms>]"
     );
     println!(
-        "Usage: peekaboox desktop locate --app <app> --target <target> [--image <path>] [--no-accessibility]"
+        "Usage: peekaboox desktop locate --app <app> --target <target> [--window-title <text>] [--image <path>] [--no-accessibility]"
     );
     println!(
-        "Usage: peekaboox desktop click --app <app> --target <target> [--button left|middle|right] [--image <path>] [--dry-run] [--no-accessibility]"
+        "Usage: peekaboox desktop click --app <app> --target <target> [--window-title <text>] [--button left|middle|right] [--image <path>] [--dry-run] [--no-accessibility]"
     );
     println!(
-        "Usage: peekaboox desktop drag --app <app> --target <target> --from-ratio <x,y> --to-ratio <x,y> [--duration-ms <ms>] [--button left|middle|right] [--image <path>] [--dry-run] [--no-accessibility]"
+        "Usage: peekaboox desktop drag --app <app> --target <target> --from-ratio <x,y> --to-ratio <x,y> [--window-title <text>] [--duration-ms <ms>] [--button left|middle|right] [--image <path>] [--dry-run] [--no-accessibility]"
     );
     println!(
-        "Usage: peekaboox desktop type-into --app <app> --target <target> [--clear] [--image <path>] [--dry-run] <text>"
+        "Usage: peekaboox desktop type-into --app <app> --target <target> [--window-title <text>] [--clear] [--image <path>] [--dry-run] <text>"
     );
     println!(
-        "Usage: peekaboox desktop assert --app <app> --target <target> [--present|--active|--not-active|--contains <text>] [--image <path>]"
+        "Usage: peekaboox desktop assert --app <app> --target <target> [--window-title <text>] [--present|--active|--not-active|--contains <text>] [--image <path>]"
     );
     println!(
-        "       peekaboox desktop assert-not --app <app> --target <target> [--present|--active|--contains <text>]"
+        "       peekaboox desktop assert-not --app <app> --target <target> [--window-title <text>] [--present|--active|--contains <text>]"
     );
 }
 
@@ -4289,7 +4331,33 @@ mod tests {
                 use_gnome_overview: false,
                 launch_if_needed: true,
                 wait_after_focus_ms: 250,
-                overview_wait_ms: 125
+                overview_wait_ms: 125,
+                window_title: None
+            })
+        );
+    }
+
+    #[test]
+    fn desktop_focus_accepts_window_title_filter() {
+        let command = parse_desktop_args(vec![
+            "focus".to_owned(),
+            "--app".to_owned(),
+            "text-editor".to_owned(),
+            "--window-title".to_owned(),
+            "peekaboox-draft.txt".to_owned(),
+            "--no-launch".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DesktopCommand::Focus(DesktopFocusArgs {
+                app: "text-editor".to_owned(),
+                use_gnome_overview: true,
+                launch_if_needed: false,
+                wait_after_focus_ms: 1_000,
+                overview_wait_ms: 800,
+                window_title: Some("peekaboox-draft.txt".to_owned())
             })
         );
     }
@@ -4309,7 +4377,8 @@ mod tests {
                 app: "telegram".to_owned(),
                 target: "send-button".to_owned(),
                 image: None,
-                prefer_accessibility: true
+                prefer_accessibility: true,
+                window_title: None
             })
         );
     }
@@ -4338,6 +4407,7 @@ mod tests {
                 target: "search-input".to_owned(),
                 image: Some(PathBuf::from("screen.png")),
                 prefer_accessibility: false,
+                window_title: None,
                 button: MouseButton::Right,
                 dry_run: true
             })
@@ -4369,6 +4439,7 @@ mod tests {
                 target: "canvas".to_owned(),
                 image: None,
                 prefer_accessibility: true,
+                window_title: None,
                 button: MouseButton::Left,
                 from_ratio: (0.2, 0.3),
                 to_ratio: (0.8, 0.7),
@@ -4398,6 +4469,7 @@ mod tests {
                 text: "PeekabooX Example".to_owned(),
                 image: None,
                 prefer_accessibility: true,
+                window_title: None,
                 clear: true,
                 dry_run: false
             })
@@ -4423,6 +4495,7 @@ mod tests {
                 target: "send-button".to_owned(),
                 image: None,
                 prefer_accessibility: true,
+                window_title: None,
                 assertion: DesktopAssertion::NotActive
             })
         );
@@ -4446,6 +4519,7 @@ mod tests {
                 target: "header".to_owned(),
                 image: None,
                 prefer_accessibility: true,
+                window_title: None,
                 assertion: DesktopAssertion::NotContains("Alerts".to_owned())
             })
         );

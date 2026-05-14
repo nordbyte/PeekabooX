@@ -25,6 +25,7 @@ accessibility, and input backends:
 ```bash
 bash examples/desktop/live_smoke.sh
 bash examples/desktop/paint_draw_and_save.sh
+bash examples/desktop/text_editor_save_dialog.sh
 bash examples/desktop/telegram_saved_messages.sh
 ```
 
@@ -39,6 +40,17 @@ draws with ratio-based `desktop drag` actions, saves with `hotkey ctrl+s`, falls
 back to the detected Save toolbar button when needed, and verifies that the
 output file changed. Override `PEEKABOOX_PAINT_APP` to force a specific paint
 application.
+
+`examples/desktop/text_editor_save_dialog.sh` launches GNOME Text Editor on a
+unique draft file, locates the document target while passing
+`--window-title <draft>` to the desktop commands, types example text, opens the
+native Save dialog, saves to a unique absolute path via the dialog's location
+entry, accepts GNOME Text Editor's automatic `.txt` extension, and verifies the
+resulting file content. The save path is pasted through the clipboard when
+`wl-copy`, `xclip`, or `xsel` is available so keyboard layout mapping cannot
+corrupt path separators. It refuses to overwrite existing files. Override
+`PEEKABOOX_TEXT_EDITOR_TEXT`, `PEEKABOOX_TEXT_EDITOR_OUTPUT`, or
+`PEEKABOOX_TEXT_EDITOR_FOCUS_WAIT_MS` for custom runs.
 
 `examples/desktop/telegram_saved_messages.sh` opens or focuses Telegram Desktop
 through the reusable `peekaboox desktop focus` helper, locates Telegram's

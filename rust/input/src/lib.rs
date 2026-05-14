@@ -313,8 +313,13 @@ pub fn candidate_backends(
     match environment.session_type {
         SessionType::Wayland => {
             candidates.push(InputTool::Uinput);
-            candidates.push(InputTool::Ydotool);
-            candidates.push(InputTool::Wtype);
+            if matches!(action, InputAction::TypeText(_)) {
+                candidates.push(InputTool::Wtype);
+                candidates.push(InputTool::Ydotool);
+            } else {
+                candidates.push(InputTool::Ydotool);
+                candidates.push(InputTool::Wtype);
+            }
             candidates.push(InputTool::Xdotool);
         }
         SessionType::X11 => {
@@ -969,6 +974,16 @@ mod tests {
     fn selects_wtype_for_wayland_typing_without_uinput() {
         let environment = environment(SessionType::Wayland, ["ydotool", "wtype"], false);
         let action = InputAction::TypeText("hello".to_owned());
+
+        let backend = candidate_backends(&environment, &action).remove(0);
+
+        assert_eq!(backend.tool, InputTool::Wtype);
+    }
+
+    #[test]
+    fn selects_wtype_for_wayland_typing_before_ydotool() {
+        let environment = environment(SessionType::Wayland, ["ydotool", "wtype"], true);
+        let action = InputAction::TypeText("/tmp/peekaboox-output.txt".to_owned());
 
         let backend = candidate_backends(&environment, &action).remove(0);
 
