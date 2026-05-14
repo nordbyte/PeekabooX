@@ -432,7 +432,7 @@ fn ydotool_hotkey(keys: &[String]) -> Result<()> {
     let sequence = hotkey_sequence(keys)?;
     run_command(
         "ydotool",
-        ["key", "--delay", "0", "--key-delay", "12", &sequence],
+        ["key", "--delay", "100", "--key-delay", "60", &sequence],
     )
 }
 
@@ -819,7 +819,7 @@ fn interpolate_point(from: Point, to: Point, step: u32, steps: u32) -> Point {
 
 fn xdotool_hotkey(keys: &[String]) -> Result<()> {
     let sequence = hotkey_sequence(keys)?;
-    run_command("xdotool", ["key", "--delay", "0", &sequence])
+    run_command("xdotool", ["key", "--delay", "60", &sequence])
 }
 
 fn hotkey_sequence(keys: &[String]) -> Result<String> {
