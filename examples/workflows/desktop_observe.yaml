@@ -1,0 +1,8 @@
+name: desktop-observe-live-smoke
+steps:
+  - action: observe
+    verify: false
+  - action: list_windows
+    verify: false
+  - action: get_desktop_state
+    verify: false
