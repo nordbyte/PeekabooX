@@ -12,6 +12,8 @@ CANVAS_X="${PEEKABOOX_PAINT_CANVAS_X:-360}"
 CANVAS_Y="${PEEKABOOX_PAINT_CANVAS_Y:-360}"
 STROKE_W="${PEEKABOOX_PAINT_STROKE_W:-260}"
 STROKE_H="${PEEKABOOX_PAINT_STROKE_H:-160}"
+SAVE_X="${PEEKABOOX_PAINT_SAVE_X:-285}"
+SAVE_Y="${PEEKABOOX_PAINT_SAVE_Y:-181}"
 LAUNCH_DELAY="${PEEKABOOX_PAINT_LAUNCH_DELAY:-3}"
 failures=0
 paint_pid=""
@@ -132,6 +134,7 @@ cp "$OUT_FILE" "$BEFORE_FILE"
 
 echo "PeekabooX paint example output: $OUT_DIR"
 echo "Canvas origin: $CANVAS_X,$CANVAS_Y"
+echo "Save button: $SAVE_X,$SAVE_Y"
 
 if ! paint_app="$(find_paint_app)"; then
   echo "warning: no supported paint app found; install drawing, pinta, or kolourpaint" >&2
@@ -155,6 +158,10 @@ run_step "draw diagonal stroke" \
 run_step "draw vertical stroke" \
   run_peekaboox drag --from "$((CANVAS_X + 80)),$((CANVAS_Y + 20))" --to "$((CANVAS_X + 80)),$((CANVAS_Y + STROKE_H))" --duration-ms 250
 run_step "save drawing with ctrl+s" run_peekaboox hotkey ctrl+s
+sleep 1
+if cmp -s "$BEFORE_FILE" "$OUT_FILE"; then
+  run_step "save drawing from toolbar" run_peekaboox click --x "$SAVE_X" --y "$SAVE_Y"
+fi
 sleep 1
 run_step "capture desktop after drawing" run_peekaboox capture --output "$AFTER_CAPTURE"
 

@@ -34,11 +34,11 @@ headless environments.
 
 `examples/desktop/paint_draw_and_save.sh` opens a blank PNG in `drawing`,
 `pinta`, or `kolourpaint`, draws with `move` and `drag`, saves with
-`hotkey ctrl+s`, and verifies that the output file changed. Override
-`PEEKABOOX_PAINT_APP`, `PEEKABOOX_PAINT_CANVAS_X`, or
-`PEEKABOOX_PAINT_CANVAS_Y` if your desktop layout needs different coordinates.
-On Wayland, set `PEEKABOOX_PAINT_FORCE_XWAYLAND=1` only when your paint app can
-run through XWayland and you want to test the current `xdotool` drag path.
+`hotkey ctrl+s`, falls back to the visible Save toolbar button when needed, and
+verifies that the output file changed. Override `PEEKABOOX_PAINT_APP`,
+`PEEKABOOX_PAINT_CANVAS_X`, `PEEKABOOX_PAINT_CANVAS_Y`,
+`PEEKABOOX_PAINT_SAVE_X`, or `PEEKABOOX_PAINT_SAVE_Y` if your desktop layout
+needs different coordinates.
 
 `examples/workflows/desktop_observe.yaml` and
 `examples/workflows/input_actions.yaml` are editable workflow files for

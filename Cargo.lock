@@ -785,6 +785,7 @@ version = "1.0.0"
 name = "peekaboox-input"
 version = "1.0.0"
 dependencies = [
+ "libc",
  "peekaboox-core",
 ]
 

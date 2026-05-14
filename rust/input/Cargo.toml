@@ -6,8 +6,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+libc = "0.2"
 peekaboox-core = { path = "../core" }
 
 [lib]
 path = "src/lib.rs"
-

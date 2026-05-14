@@ -73,11 +73,10 @@ cargo run -q -p peekaboox-cli -- hotkey --dry-run ctrl+s
 ```
 
 Remove `--dry-run` to perform the action. The current input implementation
-prefers `ydotool` with `/dev/uinput` access on Wayland, uses `wtype` as a
-Wayland text fallback, and prefers `xdotool` on X11. Pointer drags currently
-use `xdotool`; hotkeys use `ydotool` where `/dev/uinput` is available or
-`xdotool` on X11. Semantic click targets use AT-SPI and resolve to the center
-of the matching UI element.
+prefers direct `/dev/uinput` pointer events on Wayland, uses `ydotool` for
+Wayland hotkeys and text where available, uses `wtype` as a Wayland text
+fallback, and prefers `xdotool` on X11. Semantic click targets use AT-SPI and
+resolve to the center of the matching UI element.
 
 List visible desktop windows:
 
