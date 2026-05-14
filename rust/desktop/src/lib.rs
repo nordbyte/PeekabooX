@@ -1284,18 +1284,13 @@ fn locate_text_editor_save_button(
 }
 
 fn text_editor_document_rect(window: Rect) -> Rect {
-    let header_height = min(
-        96_i32,
-        max(58_i32, i32::try_from(window.height / 10).unwrap_or(58)),
-    );
-    let horizontal_margin = min(
-        48_i32,
-        max(18_i32, i32::try_from(window.width / 40).unwrap_or(18)),
-    );
-    let bottom_margin = min(
-        52_i32,
-        max(24_i32, i32::try_from(window.height / 18).unwrap_or(24)),
-    );
+    let header_height = i32::try_from(window.height / 10)
+        .unwrap_or(58)
+        .clamp(58, 96);
+    let horizontal_margin = i32::try_from(window.width / 40).unwrap_or(18).clamp(18, 48);
+    let bottom_margin = i32::try_from(window.height / 18)
+        .unwrap_or(24)
+        .clamp(24, 52);
     let width = i32::try_from(window.width)
         .unwrap_or(0)
         .saturating_sub(horizontal_margin * 2);
