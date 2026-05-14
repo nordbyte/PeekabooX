@@ -87,6 +87,12 @@ def workflow_step_from_dict(value: Any, index: int = 0) -> WorkflowStep:
         value=_optional_string(value, "value"),
         x=_optional_int(value, "x"),
         y=_optional_int(value, "y"),
+        from_x=_optional_int(value, "from_x"),
+        from_y=_optional_int(value, "from_y"),
+        to_x=_optional_int(value, "to_x"),
+        to_y=_optional_int(value, "to_y"),
+        button=_optional_string(value, "button"),
+        duration_ms=_optional_int(value, "duration_ms"),
         vision_fallback=_optional_bool(value, "vision_fallback", default=False),
         verify=_optional_bool(value, "verify", default=True),
     )
@@ -102,6 +108,18 @@ def workflow_step_to_dict(step: WorkflowStep) -> dict[str, object]:
         value["x"] = step.x
     if step.y is not None:
         value["y"] = step.y
+    if step.from_x is not None:
+        value["from_x"] = step.from_x
+    if step.from_y is not None:
+        value["from_y"] = step.from_y
+    if step.to_x is not None:
+        value["to_x"] = step.to_x
+    if step.to_y is not None:
+        value["to_y"] = step.to_y
+    if step.button is not None:
+        value["button"] = step.button
+    if step.duration_ms is not None:
+        value["duration_ms"] = step.duration_ms
     if step.vision_fallback:
         value["vision_fallback"] = step.vision_fallback
     if not step.verify:

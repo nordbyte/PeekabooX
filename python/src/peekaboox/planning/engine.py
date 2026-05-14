@@ -141,8 +141,25 @@ def _validate_step(step: WorkflowStep, index: int) -> None:
         has_coordinates = step.x is not None and step.y is not None
         if has_selector == has_coordinates:
             raise ValueError(f"steps[{index}] click requires selector or x/y")
+    if action in {"move", "move_mouse"}:
+        if step.x is None or step.y is None:
+            raise ValueError(f"steps[{index}] move_mouse requires x/y")
+    if action == "drag":
+        if (
+            step.from_x is None
+            or step.from_y is None
+            or step.to_x is None
+            or step.to_y is None
+        ):
+            raise ValueError(f"steps[{index}] drag requires from_x/from_y/to_x/to_y")
+        if step.duration_ms is not None and step.duration_ms < 0:
+            raise ValueError(f"steps[{index}].duration_ms must be non-negative")
+        if step.button is not None and step.button.casefold() not in {"left", "middle", "right"}:
+            raise ValueError(f"steps[{index}].button must be left, middle, or right")
     if action in {"type", "type_text"} and step.value is None:
         raise ValueError(f"steps[{index}].value is required for type_text")
+    if action == "hotkey" and step.value is None:
+        raise ValueError(f"steps[{index}].value is required for hotkey")
 
 
 _SUPPORTED_ACTIONS = {
@@ -151,8 +168,12 @@ _SUPPORTED_ACTIONS = {
     "capture_screen",
     "find_element",
     "click",
+    "move",
+    "move_mouse",
+    "drag",
     "type",
     "type_text",
+    "hotkey",
     "list_windows",
     "get_desktop_state",
 }

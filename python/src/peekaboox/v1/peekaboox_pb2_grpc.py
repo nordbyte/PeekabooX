@@ -44,14 +44,29 @@ class PeekabooXStub(object):
                 request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.CaptureDeltaRequest.SerializeToString,
                 response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.CaptureDeltaResponse.FromString,
                 _registered_method=True)
+        self.MoveMouse = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/MoveMouse',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.MoveMouseRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.FromString,
+                _registered_method=True)
         self.Click = channel.unary_unary(
                 '/peekaboox.v1.PeekabooX/Click',
                 request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.ClickRequest.SerializeToString,
                 response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.FromString,
                 _registered_method=True)
+        self.Drag = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/Drag',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DragRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.FromString,
+                _registered_method=True)
         self.TypeText = channel.unary_unary(
                 '/peekaboox.v1.PeekabooX/TypeText',
                 request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.TypeTextRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.FromString,
+                _registered_method=True)
+        self.Hotkey = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/Hotkey',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.HotkeyRequest.SerializeToString,
                 response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.FromString,
                 _registered_method=True)
         self.FindElement = channel.unary_unary(
@@ -106,13 +121,31 @@ class PeekabooXServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def MoveMouse(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Click(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Drag(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def TypeText(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Hotkey(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -173,14 +206,29 @@ def add_PeekabooXServicer_to_server(servicer, server):
                     request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.CaptureDeltaRequest.FromString,
                     response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.CaptureDeltaResponse.SerializeToString,
             ),
+            'MoveMouse': grpc.unary_unary_rpc_method_handler(
+                    servicer.MoveMouse,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.MoveMouseRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.SerializeToString,
+            ),
             'Click': grpc.unary_unary_rpc_method_handler(
                     servicer.Click,
                     request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.ClickRequest.FromString,
                     response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.SerializeToString,
             ),
+            'Drag': grpc.unary_unary_rpc_method_handler(
+                    servicer.Drag,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DragRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.SerializeToString,
+            ),
             'TypeText': grpc.unary_unary_rpc_method_handler(
                     servicer.TypeText,
                     request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.TypeTextRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.SerializeToString,
+            ),
+            'Hotkey': grpc.unary_unary_rpc_method_handler(
+                    servicer.Hotkey,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.HotkeyRequest.FromString,
                     response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.SerializeToString,
             ),
             'FindElement': grpc.unary_unary_rpc_method_handler(
@@ -284,6 +332,33 @@ class PeekabooX(object):
             _registered_method=True)
 
     @staticmethod
+    def MoveMouse(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/MoveMouse',
+            peekaboox_dot_v1_dot_peekaboox__pb2.MoveMouseRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def Click(request,
             target,
             options=(),
@@ -311,6 +386,33 @@ class PeekabooX(object):
             _registered_method=True)
 
     @staticmethod
+    def Drag(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/Drag',
+            peekaboox_dot_v1_dot_peekaboox__pb2.DragRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def TypeText(request,
             target,
             options=(),
@@ -326,6 +428,33 @@ class PeekabooX(object):
             target,
             '/peekaboox.v1.PeekabooX/TypeText',
             peekaboox_dot_v1_dot_peekaboox__pb2.TypeTextRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Hotkey(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/Hotkey',
+            peekaboox_dot_v1_dot_peekaboox__pb2.HotkeyRequest.SerializeToString,
             peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.FromString,
             options,
             channel_credentials,

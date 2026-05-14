@@ -42,7 +42,10 @@ run_step "screen capture" run_peekaboox capture --output "$OUT_DIR/screenshot.pn
 run_step "window enumeration" run_peekaboox windows
 run_step "semantic element scan" run_peekaboox elements --limit 10
 run_step "dry-run click at 10,10" run_peekaboox click --x 10 --y 10 --dry-run
+run_step "dry-run pointer move" run_peekaboox move --x 10 --y 10 --dry-run
+run_step "dry-run pointer drag" run_peekaboox drag --from 10,10 --to 30,30 --dry-run
 run_step "dry-run text input" run_peekaboox type --dry-run "PeekabooX live smoke"
+run_step "dry-run hotkey" run_peekaboox hotkey --dry-run ctrl+s
 
 if [[ -f "$OUT_DIR/screenshot.png" ]]; then
   run_step "self-compare captured screenshot" \

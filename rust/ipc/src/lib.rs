@@ -86,8 +86,31 @@ pub enum ApiRequest {
         button: MouseButtonDto,
         dry_run: bool,
     },
+    MoveMouse {
+        x: i32,
+        y: i32,
+        #[serde(default)]
+        dry_run: bool,
+    },
+    Drag {
+        from_x: i32,
+        from_y: i32,
+        to_x: i32,
+        to_y: i32,
+        #[serde(default)]
+        button: MouseButtonDto,
+        #[serde(default = "default_drag_duration_ms")]
+        duration_ms: u32,
+        #[serde(default)]
+        dry_run: bool,
+    },
     TypeText {
         text: String,
+        dry_run: bool,
+    },
+    Hotkey {
+        keys: Vec<String>,
+        #[serde(default)]
         dry_run: bool,
     },
     ListWindows,
@@ -127,9 +150,10 @@ pub enum ApiRequest {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MouseButtonDto {
+    #[default]
     Left,
     Middle,
     Right,
@@ -176,7 +200,10 @@ pub enum ApiResult {
     DmaBufProbe(DmaBufProbeResultDto),
     Plugins(PluginListResultDto),
     Click(ActionResultDto),
+    MoveMouse(ActionResultDto),
+    Drag(ActionResultDto),
     TypeText(ActionResultDto),
+    Hotkey(ActionResultDto),
     ListWindows(WindowListResultDto),
     FindElements(ElementListResultDto),
     Ocr(OcrResultDto),
@@ -449,6 +476,10 @@ fn default_low_bandwidth() -> bool {
     true
 }
 
+fn default_drag_duration_ms() -> u32 {
+    250
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -469,6 +500,48 @@ mod tests {
             x: 10,
             y: 20,
             button: MouseButtonDto::Left,
+            dry_run: true,
+        });
+        let payload = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(decode_request(&payload).unwrap(), request);
+    }
+
+    #[test]
+    fn move_mouse_request_round_trips_as_json() {
+        let request = ApiRequestEnvelope::new(ApiRequest::MoveMouse {
+            x: 10,
+            y: 20,
+            dry_run: true,
+        });
+        let payload = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(decode_request(&payload).unwrap(), request);
+    }
+
+    #[test]
+    fn drag_request_defaults_button_duration_and_dry_run() {
+        let payload = r#"{"version":"peekaboox.v1","request":{"method":"drag","from_x":10,"from_y":20,"to_x":30,"to_y":40}}"#;
+        let request = decode_request(payload).unwrap();
+
+        assert_eq!(
+            request,
+            ApiRequestEnvelope::new(ApiRequest::Drag {
+                from_x: 10,
+                from_y: 20,
+                to_x: 30,
+                to_y: 40,
+                button: MouseButtonDto::Left,
+                duration_ms: 250,
+                dry_run: false,
+            })
+        );
+    }
+
+    #[test]
+    fn hotkey_request_round_trips_as_json() {
+        let request = ApiRequestEnvelope::new(ApiRequest::Hotkey {
+            keys: vec!["ctrl".to_owned(), "s".to_owned()],
             dry_run: true,
         });
         let payload = serde_json::to_string(&request).unwrap();

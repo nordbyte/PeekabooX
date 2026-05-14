@@ -5,8 +5,11 @@ package peekaboox.v1;
 service PeekabooX {
   rpc CaptureScreen(CaptureScreenRequest) returns (CaptureScreenResponse);
   rpc CaptureDelta(CaptureDeltaRequest) returns (CaptureDeltaResponse);
+  rpc MoveMouse(MoveMouseRequest) returns (ActionResponse);
   rpc Click(ClickRequest) returns (ActionResponse);
+  rpc Drag(DragRequest) returns (ActionResponse);
   rpc TypeText(TypeTextRequest) returns (ActionResponse);
+  rpc Hotkey(HotkeyRequest) returns (ActionResponse);
   rpc FindElement(FindElementRequest) returns (FindElementResponse);
   rpc ListWindows(ListWindowsRequest) returns (ListWindowsResponse);
   rpc GetDesktopState(GetDesktopStateRequest) returns (DesktopState);
@@ -83,9 +86,31 @@ message ClickRequest {
   bool vision_fallback = 4;
 }
 
+message MoveMouseRequest {
+  Point coordinates = 1;
+}
+
+message DragRequest {
+  Point from = 1;
+  Point to = 2;
+  optional MouseButton button = 3;
+  optional uint32 duration_ms = 4;
+}
+
 message TypeTextRequest {
   string text = 1;
   optional uint32 typing_speed_chars_per_second = 2;
+}
+
+message HotkeyRequest {
+  repeated string keys = 1;
+}
+
+enum MouseButton {
+  MOUSE_BUTTON_UNSPECIFIED = 0;
+  MOUSE_BUTTON_LEFT = 1;
+  MOUSE_BUTTON_MIDDLE = 2;
+  MOUSE_BUTTON_RIGHT = 3;
 }
 
 message FindElementRequest {

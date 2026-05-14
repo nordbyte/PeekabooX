@@ -24,6 +24,7 @@ accessibility, and input backends:
 
 ```bash
 bash examples/desktop/live_smoke.sh
+bash examples/desktop/paint_draw_and_save.sh
 ```
 
 Set `PEEKABOOX_STRICT=1` when you want the live smoke script to fail on the
@@ -31,5 +32,14 @@ first backend error. Without strict mode, unavailable desktop capabilities are
 reported as warnings so the script remains useful across Wayland, X11, and
 headless environments.
 
-`examples/workflows/desktop_observe.yaml` is an editable workflow file for
+`examples/desktop/paint_draw_and_save.sh` opens a blank PNG in `drawing`,
+`pinta`, or `kolourpaint`, draws with `move` and `drag`, saves with
+`hotkey ctrl+s`, and verifies that the output file changed. Override
+`PEEKABOOX_PAINT_APP`, `PEEKABOOX_PAINT_CANVAS_X`, or
+`PEEKABOOX_PAINT_CANVAS_Y` if your desktop layout needs different coordinates.
+On Wayland, set `PEEKABOOX_PAINT_FORCE_XWAYLAND=1` only when your paint app can
+run through XWayland and you want to test the current `xdotool` drag path.
+
+`examples/workflows/desktop_observe.yaml` and
+`examples/workflows/input_actions.yaml` are editable workflow files for
 daemon-backed runtime or MCP execution.

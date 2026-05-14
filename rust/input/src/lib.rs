@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::thread::sleep;
+use std::time::Duration;
 
 use peekaboox_core::{BackendKind, PeekabooXError, Point, Result};
 
@@ -18,6 +20,12 @@ pub enum InputAction {
     Click {
         position: Point,
         button: MouseButton,
+    },
+    Drag {
+        from: Point,
+        to: Point,
+        button: MouseButton,
+        duration_ms: u64,
     },
     TypeText(String),
     Hotkey(Vec<String>),
@@ -156,9 +164,11 @@ impl InputTool {
             (Self::Ydotool, InputAction::MoveMouse(_))
                 | (Self::Ydotool, InputAction::Click { .. })
                 | (Self::Ydotool, InputAction::TypeText(_))
+                | (Self::Ydotool, InputAction::Hotkey(_))
                 | (Self::Wtype, InputAction::TypeText(_))
                 | (Self::Xdotool, InputAction::MoveMouse(_))
                 | (Self::Xdotool, InputAction::Click { .. })
+                | (Self::Xdotool, InputAction::Drag { .. })
                 | (Self::Xdotool, InputAction::TypeText(_))
                 | (Self::Xdotool, InputAction::Hotkey(_))
         )
@@ -255,8 +265,30 @@ pub fn click(position: Point, button: MouseButton) -> Result<InputExecutionMetad
     CommandInputBackend.execute_with_metadata(InputAction::Click { position, button })
 }
 
+pub fn move_mouse(position: Point) -> Result<InputExecutionMetadata> {
+    CommandInputBackend.execute_with_metadata(InputAction::MoveMouse(position))
+}
+
+pub fn drag(
+    from: Point,
+    to: Point,
+    button: MouseButton,
+    duration_ms: u64,
+) -> Result<InputExecutionMetadata> {
+    CommandInputBackend.execute_with_metadata(InputAction::Drag {
+        from,
+        to,
+        button,
+        duration_ms,
+    })
+}
+
 pub fn type_text(text: impl Into<String>) -> Result<InputExecutionMetadata> {
     CommandInputBackend.execute_with_metadata(InputAction::TypeText(text.into()))
+}
+
+pub fn hotkey(keys: Vec<String>) -> Result<InputExecutionMetadata> {
+    CommandInputBackend.execute_with_metadata(InputAction::Hotkey(keys))
 }
 
 pub fn emergency_stop() -> Result<()> {
@@ -315,6 +347,7 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
         (InputTool::Ydotool, InputAction::TypeText(text)) => {
             run_command_with_stdin("ydotool", ["type", "--delay", "0", "--file", "-"], text)
         }
+        (InputTool::Ydotool, InputAction::Hotkey(keys)) => ydotool_hotkey(keys),
         (InputTool::Wtype, InputAction::TypeText(text)) => run_command("wtype", ["--", text]),
         (InputTool::Xdotool, InputAction::MoveMouse(position)) => run_command(
             "xdotool",
@@ -334,18 +367,19 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
                 xdotool_button(*button),
             ],
         ),
+        (
+            InputTool::Xdotool,
+            InputAction::Drag {
+                from,
+                to,
+                button,
+                duration_ms,
+            },
+        ) => xdotool_drag(*from, *to, *button, *duration_ms),
         (InputTool::Xdotool, InputAction::TypeText(text)) => {
             run_command("xdotool", ["type", "--delay", "0", "--", text])
         }
-        (InputTool::Xdotool, InputAction::Hotkey(keys)) => {
-            if keys.is_empty() {
-                return Err(PeekabooXError::new("hotkey must contain at least one key"));
-            }
-            run_command("xdotool", ["key", &keys.join("+")])
-        }
-        (_, InputAction::Hotkey(_)) => Err(PeekabooXError::new(
-            "hotkeys are only implemented for xdotool backend",
-        )),
+        (InputTool::Xdotool, InputAction::Hotkey(keys)) => xdotool_hotkey(keys),
         _ => Err(PeekabooXError::new(format!(
             "{} does not support action {:?}",
             tool.name(),
@@ -367,6 +401,14 @@ fn ydotool_mousemove(position: Point) -> Result<()> {
     )
 }
 
+fn ydotool_hotkey(keys: &[String]) -> Result<()> {
+    let sequence = hotkey_sequence(keys)?;
+    run_command(
+        "ydotool",
+        ["key", "--delay", "0", "--key-delay", "12", &sequence],
+    )
+}
+
 fn ydotool_button(button: MouseButton) -> &'static str {
     match button {
         MouseButton::Left => "1",
@@ -381,6 +423,89 @@ fn xdotool_button(button: MouseButton) -> &'static str {
         MouseButton::Middle => "2",
         MouseButton::Right => "3",
     }
+}
+
+fn xdotool_drag(from: Point, to: Point, button: MouseButton, duration_ms: u64) -> Result<()> {
+    let button = xdotool_button(button);
+
+    run_command(
+        "xdotool",
+        [
+            "mousemove",
+            "--sync",
+            &from.x.to_string(),
+            &from.y.to_string(),
+            "mousedown",
+            button,
+        ],
+    )?;
+
+    let steps = drag_steps(duration_ms, from, to);
+    let sleep_per_step = if steps == 0 {
+        0
+    } else {
+        duration_ms / u64::from(steps)
+    };
+
+    for step in 1..=steps {
+        let next = interpolate_point(from, to, step, steps);
+        if let Err(error) = run_command(
+            "xdotool",
+            [
+                "mousemove",
+                "--sync",
+                &next.x.to_string(),
+                &next.y.to_string(),
+            ],
+        ) {
+            let _ = run_command("xdotool", ["mouseup", button]);
+            return Err(error);
+        }
+
+        if sleep_per_step > 0 {
+            sleep(Duration::from_millis(sleep_per_step));
+        }
+    }
+
+    run_command("xdotool", ["mouseup", button])
+}
+
+fn drag_steps(duration_ms: u64, from: Point, to: Point) -> u32 {
+    if from == to {
+        return 1;
+    }
+
+    let distance = (from.x.abs_diff(to.x).max(from.y.abs_diff(to.y)) / 32).max(1);
+    let timing = ((duration_ms / 16).max(1)).min(120);
+    distance.max(timing as u32).min(120)
+}
+
+fn interpolate_point(from: Point, to: Point, step: u32, steps: u32) -> Point {
+    Point::new(
+        from.x + (((to.x - from.x) as i64 * i64::from(step)) / i64::from(steps)) as i32,
+        from.y + (((to.y - from.y) as i64 * i64::from(step)) / i64::from(steps)) as i32,
+    )
+}
+
+fn xdotool_hotkey(keys: &[String]) -> Result<()> {
+    let sequence = hotkey_sequence(keys)?;
+    run_command("xdotool", ["key", "--delay", "0", &sequence])
+}
+
+fn hotkey_sequence(keys: &[String]) -> Result<String> {
+    if keys.is_empty() {
+        return Err(PeekabooXError::new("hotkey must contain at least one key"));
+    }
+
+    if keys.iter().any(|key| key.trim().is_empty()) {
+        return Err(PeekabooXError::new("hotkey keys must not be empty"));
+    }
+
+    Ok(keys
+        .iter()
+        .map(|key| key.trim())
+        .collect::<Vec<_>>()
+        .join("+"))
 }
 
 fn release_modifiers() -> Result<()> {
@@ -556,6 +681,58 @@ mod tests {
         let backend = candidate_backends(&environment, &action).remove(0);
 
         assert_eq!(backend.tool, InputTool::Xdotool);
+    }
+
+    #[test]
+    fn selects_ydotool_for_wayland_hotkeys_when_uinput_is_accessible() {
+        let environment = environment(SessionType::Wayland, ["ydotool", "xdotool"], true);
+        let action = InputAction::Hotkey(vec!["ctrl".to_owned(), "s".to_owned()]);
+
+        let backend = candidate_backends(&environment, &action).remove(0);
+
+        assert_eq!(backend.tool, InputTool::Ydotool);
+    }
+
+    #[test]
+    fn selects_xdotool_for_drags() {
+        let environment = environment(SessionType::X11, ["xdotool", "ydotool"], true);
+        let action = InputAction::Drag {
+            from: Point::new(10, 20),
+            to: Point::new(30, 40),
+            button: MouseButton::Left,
+            duration_ms: 150,
+        };
+
+        let backend = candidate_backends(&environment, &action).remove(0);
+
+        assert_eq!(backend.tool, InputTool::Xdotool);
+    }
+
+    #[test]
+    fn drag_has_no_wayland_backend_without_xdotool() {
+        let environment = environment(SessionType::Wayland, ["ydotool", "wtype"], true);
+        let action = InputAction::Drag {
+            from: Point::new(10, 20),
+            to: Point::new(30, 40),
+            button: MouseButton::Left,
+            duration_ms: 150,
+        };
+
+        assert!(candidate_backends(&environment, &action).is_empty());
+    }
+
+    #[test]
+    fn hotkey_sequence_joins_trimmed_keys() {
+        let sequence = super::hotkey_sequence(&[" ctrl ".to_owned(), "s".to_owned()]).unwrap();
+
+        assert_eq!(sequence, "ctrl+s");
+    }
+
+    #[test]
+    fn drag_steps_are_never_zero() {
+        let steps = super::drag_steps(0, Point::new(10, 20), Point::new(10, 20));
+
+        assert_eq!(steps, 1);
     }
 
     #[test]

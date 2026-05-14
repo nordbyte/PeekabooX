@@ -130,11 +130,35 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some("move") | Some("move-mouse") => match move_mouse(args.collect(), &global.context) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("move failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("drag") => match drag(args.collect(), &global.context) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("drag failed: {error}");
+                std::process::exit(1);
+            }
+        },
         Some("type") => match type_text(args.collect(), &global.context) {
             Ok(()) => {}
             Err(CliError::HelpRequested) => {}
             Err(CliError::Failure(error)) => {
                 eprintln!("type failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("hotkey") | Some("key") => match hotkey(args.collect(), &global.context) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("hotkey failed: {error}");
                 std::process::exit(1);
             }
         },
@@ -2262,6 +2286,327 @@ fn parse_click_args(args: Vec<String>) -> Result<ClickCommand, CliError> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct MoveArgs {
+    position: Point,
+    dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MoveCommand {
+    Run(MoveArgs),
+    Help,
+}
+
+fn move_mouse(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
+    let MoveCommand::Run(args) = parse_move_args(args)? else {
+        print_move_usage();
+        return Err(CliError::HelpRequested);
+    };
+
+    let action = peekaboox_input::InputAction::MoveMouse(args.position);
+
+    if context.use_daemon {
+        let result = daemon_request(
+            context,
+            ApiRequest::MoveMouse {
+                x: args.position.x,
+                y: args.position.y,
+                dry_run: args.dry_run,
+            },
+        )?;
+        let ApiResult::MoveMouse(metadata) = result else {
+            return Err(CliError::Failure(
+                "daemon returned unexpected move response".to_owned(),
+            ));
+        };
+        print_move_result(&args, metadata);
+        return Ok(());
+    }
+
+    if args.dry_run {
+        let backend = peekaboox_input::CommandInputBackend
+            .detect_backend_for(&action)
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+        println!(
+            "would move mouse to {},{} via {}",
+            args.position.x,
+            args.position.y,
+            backend.name()
+        );
+        return Ok(());
+    }
+
+    let metadata = peekaboox_input::move_mouse(args.position)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    print_move_result(&args, input_metadata_dto(metadata));
+
+    Ok(())
+}
+
+fn print_move_result(args: &MoveArgs, metadata: ActionResultDto) {
+    if args.dry_run {
+        println!(
+            "would move mouse to {},{} via {}",
+            args.position.x, args.position.y, metadata.backend_name
+        );
+    } else {
+        println!(
+            "moved mouse to {},{} via {}",
+            args.position.x, args.position.y, metadata.backend_name
+        );
+    }
+}
+
+fn parse_move_args(args: Vec<String>) -> Result<MoveCommand, CliError> {
+    let mut x = None;
+    let mut y = None;
+    let mut dry_run = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--x" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --x".to_owned()));
+                };
+                x = Some(parse_i32("--x", value)?);
+            }
+            "--y" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --y".to_owned()));
+                };
+                y = Some(parse_i32("--y", value)?);
+            }
+            "--dry-run" => dry_run = true,
+            "--help" | "-h" => return Ok(MoveCommand::Help),
+            unknown => {
+                return Err(CliError::Failure(format!(
+                    "unknown move argument: {unknown}"
+                )));
+            }
+        }
+
+        index += 1;
+    }
+
+    let position = match (x, y) {
+        (Some(x), Some(y)) => Point::new(x, y),
+        (Some(_), None) => return Err(CliError::Failure("missing required --y".to_owned())),
+        (None, Some(_)) => return Err(CliError::Failure("missing required --x".to_owned())),
+        (None, None) => {
+            return Err(CliError::Failure(
+                "missing move target; provide --x and --y".to_owned(),
+            ));
+        }
+    };
+
+    Ok(MoveCommand::Run(MoveArgs { position, dry_run }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DragArgs {
+    from: Point,
+    to: Point,
+    button: MouseButton,
+    duration_ms: u32,
+    dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DragCommand {
+    Run(DragArgs),
+    Help,
+}
+
+fn drag(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
+    let DragCommand::Run(args) = parse_drag_args(args)? else {
+        print_drag_usage();
+        return Err(CliError::HelpRequested);
+    };
+
+    let action = peekaboox_input::InputAction::Drag {
+        from: args.from,
+        to: args.to,
+        button: args.button,
+        duration_ms: u64::from(args.duration_ms),
+    };
+
+    if context.use_daemon {
+        let result = daemon_request(
+            context,
+            ApiRequest::Drag {
+                from_x: args.from.x,
+                from_y: args.from.y,
+                to_x: args.to.x,
+                to_y: args.to.y,
+                button: mouse_button_dto(args.button),
+                duration_ms: args.duration_ms,
+                dry_run: args.dry_run,
+            },
+        )?;
+        let ApiResult::Drag(metadata) = result else {
+            return Err(CliError::Failure(
+                "daemon returned unexpected drag response".to_owned(),
+            ));
+        };
+        print_drag_result(&args, metadata);
+        return Ok(());
+    }
+
+    if args.dry_run {
+        let backend = peekaboox_input::CommandInputBackend
+            .detect_backend_for(&action)
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+        println!(
+            "would drag from {},{} to {},{} via {}",
+            args.from.x,
+            args.from.y,
+            args.to.x,
+            args.to.y,
+            backend.name()
+        );
+        return Ok(());
+    }
+
+    let metadata =
+        peekaboox_input::drag(args.from, args.to, args.button, u64::from(args.duration_ms))
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+    print_drag_result(&args, input_metadata_dto(metadata));
+
+    Ok(())
+}
+
+fn print_drag_result(args: &DragArgs, metadata: ActionResultDto) {
+    if args.dry_run {
+        println!(
+            "would drag from {},{} to {},{} via {}",
+            args.from.x, args.from.y, args.to.x, args.to.y, metadata.backend_name
+        );
+    } else {
+        println!(
+            "dragged from {},{} to {},{} with {:?} via {}",
+            args.from.x, args.from.y, args.to.x, args.to.y, args.button, metadata.backend_name
+        );
+    }
+}
+
+fn parse_drag_args(args: Vec<String>) -> Result<DragCommand, CliError> {
+    let mut from = None;
+    let mut to = None;
+    let mut from_x = None;
+    let mut from_y = None;
+    let mut to_x = None;
+    let mut to_y = None;
+    let mut button = MouseButton::Left;
+    let mut duration_ms = 250_u32;
+    let mut dry_run = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--from" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --from".to_owned()));
+                };
+                from = Some(parse_point("--from", value)?);
+            }
+            "--to" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --to".to_owned()));
+                };
+                to = Some(parse_point("--to", value)?);
+            }
+            "--from-x" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --from-x".to_owned()));
+                };
+                from_x = Some(parse_i32("--from-x", value)?);
+            }
+            "--from-y" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --from-y".to_owned()));
+                };
+                from_y = Some(parse_i32("--from-y", value)?);
+            }
+            "--to-x" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --to-x".to_owned()));
+                };
+                to_x = Some(parse_i32("--to-x", value)?);
+            }
+            "--to-y" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --to-y".to_owned()));
+                };
+                to_y = Some(parse_i32("--to-y", value)?);
+            }
+            "--button" | "-b" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --button".to_owned()));
+                };
+                button = parse_mouse_button(value)?;
+            }
+            "--duration-ms" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --duration-ms".to_owned(),
+                    ));
+                };
+                duration_ms = parse_u32("--duration-ms", value)?;
+            }
+            "--dry-run" => dry_run = true,
+            "--help" | "-h" => return Ok(DragCommand::Help),
+            unknown => {
+                return Err(CliError::Failure(format!(
+                    "unknown drag argument: {unknown}"
+                )));
+            }
+        }
+
+        index += 1;
+    }
+
+    let from = merge_drag_point("--from", from, from_x, from_y)?;
+    let to = merge_drag_point("--to", to, to_x, to_y)?;
+
+    Ok(DragCommand::Run(DragArgs {
+        from,
+        to,
+        button,
+        duration_ms,
+        dry_run,
+    }))
+}
+
+fn merge_drag_point(
+    name: &str,
+    point: Option<Point>,
+    x: Option<i32>,
+    y: Option<i32>,
+) -> Result<Point, CliError> {
+    match (point, x, y) {
+        (Some(point), None, None) => Ok(point),
+        (None, Some(x), Some(y)) => Ok(Point::new(x, y)),
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => Err(CliError::Failure(format!(
+            "provide either {name} or {name}-x/{name}-y, not both"
+        ))),
+        (None, None, None) => Err(CliError::Failure(format!("missing required {name}"))),
+        (None, Some(_), None) => Err(CliError::Failure(format!("missing required {name}-y"))),
+        (None, None, Some(_)) => Err(CliError::Failure(format!("missing required {name}-x"))),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct TypeArgs {
     text: String,
     dry_run: bool,
@@ -2350,6 +2695,120 @@ fn parse_type_args(args: Vec<String>) -> Result<TypeCommand, CliError> {
     Ok(TypeCommand::Run(TypeArgs { text, dry_run }))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HotkeyArgs {
+    keys: Vec<String>,
+    dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HotkeyCommand {
+    Run(HotkeyArgs),
+    Help,
+}
+
+fn hotkey(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
+    let HotkeyCommand::Run(args) = parse_hotkey_args(args)? else {
+        print_hotkey_usage();
+        return Err(CliError::HelpRequested);
+    };
+
+    let action = peekaboox_input::InputAction::Hotkey(args.keys.clone());
+
+    if context.use_daemon {
+        let result = daemon_request(
+            context,
+            ApiRequest::Hotkey {
+                keys: args.keys.clone(),
+                dry_run: args.dry_run,
+            },
+        )?;
+        let ApiResult::Hotkey(metadata) = result else {
+            return Err(CliError::Failure(
+                "daemon returned unexpected hotkey response".to_owned(),
+            ));
+        };
+        print_hotkey_result(&args, metadata);
+        return Ok(());
+    }
+
+    if args.dry_run {
+        let backend = peekaboox_input::CommandInputBackend
+            .detect_backend_for(&action)
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+        println!(
+            "would press hotkey {} via {}",
+            args.keys.join("+"),
+            backend.name()
+        );
+        return Ok(());
+    }
+
+    let metadata = peekaboox_input::hotkey(args.keys.clone())
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    print_hotkey_result(&args, input_metadata_dto(metadata));
+
+    Ok(())
+}
+
+fn print_hotkey_result(args: &HotkeyArgs, metadata: ActionResultDto) {
+    if args.dry_run {
+        println!(
+            "would press hotkey {} via {}",
+            args.keys.join("+"),
+            metadata.backend_name
+        );
+    } else {
+        println!(
+            "pressed hotkey {} via {}",
+            args.keys.join("+"),
+            metadata.backend_name
+        );
+    }
+}
+
+fn parse_hotkey_args(args: Vec<String>) -> Result<HotkeyCommand, CliError> {
+    let mut keys = Vec::new();
+    let mut dry_run = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--key" | "-k" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --key".to_owned()));
+                };
+                keys.push(value.to_owned());
+            }
+            "--dry-run" => dry_run = true,
+            "--help" | "-h" => return Ok(HotkeyCommand::Help),
+            value if value.starts_with('-') => {
+                return Err(CliError::Failure(format!(
+                    "unknown hotkey argument: {value}"
+                )));
+            }
+            value => keys.push(value.to_owned()),
+        }
+
+        index += 1;
+    }
+
+    if keys.is_empty() {
+        return Err(CliError::Failure(
+            "missing hotkey; provide one or more keys".to_owned(),
+        ));
+    }
+
+    if keys.iter().any(|key| key.trim().is_empty()) {
+        return Err(CliError::Failure(
+            "hotkey keys must not be empty".to_owned(),
+        ));
+    }
+
+    Ok(HotkeyCommand::Run(HotkeyArgs { keys, dry_run }))
+}
+
 fn parse_i32(name: &str, value: &str) -> Result<i32, CliError> {
     value
         .parse::<i32>()
@@ -2362,10 +2821,14 @@ fn parse_usize(name: &str, value: &str) -> Result<usize, CliError> {
         .map_err(|_| CliError::Failure(format!("{name} must be an integer, got {value:?}")))
 }
 
-fn parse_positive_u32(name: &str, value: &str) -> Result<u32, CliError> {
-    let parsed = value
+fn parse_u32(name: &str, value: &str) -> Result<u32, CliError> {
+    value
         .parse::<u32>()
-        .map_err(|_| CliError::Failure(format!("{name} must be an integer, got {value:?}")))?;
+        .map_err(|_| CliError::Failure(format!("{name} must be an integer, got {value:?}")))
+}
+
+fn parse_positive_u32(name: &str, value: &str) -> Result<u32, CliError> {
+    let parsed = parse_u32(name, value)?;
     if parsed == 0 {
         return Err(CliError::Failure(format!(
             "{name} must be greater than zero"
@@ -2424,6 +2887,25 @@ fn parse_rect(name: &str, value: &str) -> Result<Rect, CliError> {
     Ok(Rect::new(x, y, width, height))
 }
 
+fn parse_point(name: &str, value: &str) -> Result<Point, CliError> {
+    let parts = value
+        .split([',', ':', ';', '/'])
+        .flat_map(str::split_whitespace)
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() != 2 {
+        return Err(CliError::Failure(format!(
+            "{name} must be x,y, got {value:?}"
+        )));
+    }
+
+    Ok(Point::new(
+        parse_i32(name, parts[0])?,
+        parse_i32(name, parts[1])?,
+    ))
+}
+
 fn non_empty_cli_string(value: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty() {
@@ -2452,6 +2934,13 @@ fn mouse_button_dto(button: MouseButton) -> MouseButtonDto {
     }
 }
 
+fn input_metadata_dto(metadata: peekaboox_input::InputExecutionMetadata) -> ActionResultDto {
+    ActionResultDto {
+        backend_name: metadata.backend_name,
+        backend_kind: format!("{:?}", metadata.backend_kind).to_ascii_lowercase(),
+    }
+}
+
 fn daemon_request(context: &CliContext, request: ApiRequest) -> Result<ApiResult, CliError> {
     let response = send_request(&context.socket, request).map_err(|error| {
         CliError::Failure(format!(
@@ -2468,7 +2957,7 @@ fn daemon_request(context: &CliContext, request: ApiRequest) -> Result<ApiResult
 
 fn print_usage() {
     println!(
-        "Usage: peekaboox [--daemon] [--socket <path>] <capture|capture-delta|capture-backends|capture-dmabuf|plugins|windows|elements|ocr|compare|state|vision-elements|click|type>"
+        "Usage: peekaboox [--daemon] [--socket <path>] <capture|capture-delta|capture-backends|capture-dmabuf|plugins|windows|elements|ocr|compare|state|vision-elements|click|move|drag|type|hotkey>"
     );
     println!("Try:   peekaboox capture --output screenshot.png");
     println!("Try:   peekaboox --daemon capture-delta --stream agent-loop");
@@ -2484,7 +2973,10 @@ fn print_usage() {
     println!("Try:   peekaboox vision-elements screenshot.png --min-width 8");
     println!("Try:   peekaboox click --x 100 --y 200");
     println!("Try:   peekaboox click --text \"Submit\"");
+    println!("Try:   peekaboox move --x 100 --y 200");
+    println!("Try:   peekaboox drag --from 100,200 --to 300,240 --duration-ms 350");
     println!("Try:   peekaboox type \"Hello World\"");
+    println!("Try:   peekaboox hotkey ctrl+s");
 }
 
 fn print_capture_usage() {
@@ -2550,8 +3042,22 @@ fn print_click_usage() {
     );
 }
 
+fn print_move_usage() {
+    println!("Usage: peekaboox move --x <pixels> --y <pixels> [--dry-run]");
+}
+
+fn print_drag_usage() {
+    println!(
+        "Usage: peekaboox drag (--from x,y --to x,y | --from-x <px> --from-y <px> --to-x <px> --to-y <px>) [--button left|middle|right] [--duration-ms <ms>] [--dry-run]"
+    );
+}
+
 fn print_type_usage() {
     println!("Usage: peekaboox type [--dry-run] <text>");
+}
+
+fn print_hotkey_usage() {
+    println!("Usage: peekaboox hotkey [--dry-run] <key-or-combo> [more-keys]");
 }
 
 #[cfg(test)]
@@ -2563,13 +3069,15 @@ mod tests {
     use super::{
         CaptureArgs, CaptureBackendsCommand, CaptureCommand, CaptureDeltaArgs, CaptureDeltaCommand,
         CaptureDmaBufArgs, CaptureDmaBufCommand, CaptureDmaBufImportTarget, CliContext, CliError,
-        ClickArgs, ClickCommand, ClickTarget, CompareArgs, CompareCommand, ElementsArgs,
-        ElementsCommand, GlobalArgs, OcrArgs, OcrCommand, PluginsArgs, PluginsCommand, TypeArgs,
-        TypeCommand, UiStateArgs, UiStateCommand, VisionElementsArgs, VisionElementsCommand,
-        WindowsCommand, parse_capture_args, parse_capture_backends_args, parse_capture_delta_args,
-        parse_capture_dmabuf_args, parse_click_args, parse_compare_args, parse_elements_args,
-        parse_global_args, parse_ocr_args, parse_plugins_args, parse_type_args,
-        parse_ui_state_args, parse_vision_elements_args, parse_windows_args,
+        ClickArgs, ClickCommand, ClickTarget, CompareArgs, CompareCommand, DragArgs, DragCommand,
+        ElementsArgs, ElementsCommand, GlobalArgs, HotkeyArgs, HotkeyCommand, MoveArgs,
+        MoveCommand, OcrArgs, OcrCommand, PluginsArgs, PluginsCommand, TypeArgs, TypeCommand,
+        UiStateArgs, UiStateCommand, VisionElementsArgs, VisionElementsCommand, WindowsCommand,
+        parse_capture_args, parse_capture_backends_args, parse_capture_delta_args,
+        parse_capture_dmabuf_args, parse_click_args, parse_compare_args, parse_drag_args,
+        parse_elements_args, parse_global_args, parse_hotkey_args, parse_move_args, parse_ocr_args,
+        parse_plugins_args, parse_type_args, parse_ui_state_args, parse_vision_elements_args,
+        parse_windows_args,
     };
     use peekaboox_core::{Point, Rect};
 
@@ -3189,6 +3697,104 @@ mod tests {
     }
 
     #[test]
+    fn move_accepts_coordinates_and_dry_run() {
+        let command = parse_move_args(vec![
+            "--x".to_owned(),
+            "10".to_owned(),
+            "--y".to_owned(),
+            "20".to_owned(),
+            "--dry-run".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            MoveCommand::Run(MoveArgs {
+                position: Point::new(10, 20),
+                dry_run: true
+            })
+        );
+    }
+
+    #[test]
+    fn move_requires_y_coordinate() {
+        let error = parse_move_args(vec!["--x".to_owned(), "10".to_owned()]).unwrap_err();
+
+        assert_eq!(error, CliError::Failure("missing required --y".to_owned()));
+    }
+
+    #[test]
+    fn drag_accepts_compact_points() {
+        let command = parse_drag_args(vec![
+            "--from".to_owned(),
+            "10,20".to_owned(),
+            "--to".to_owned(),
+            "40,80".to_owned(),
+            "--button".to_owned(),
+            "middle".to_owned(),
+            "--duration-ms".to_owned(),
+            "500".to_owned(),
+            "--dry-run".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DragCommand::Run(DragArgs {
+                from: Point::new(10, 20),
+                to: Point::new(40, 80),
+                button: MouseButton::Middle,
+                duration_ms: 500,
+                dry_run: true
+            })
+        );
+    }
+
+    #[test]
+    fn drag_accepts_split_points() {
+        let command = parse_drag_args(vec![
+            "--from-x".to_owned(),
+            "10".to_owned(),
+            "--from-y".to_owned(),
+            "20".to_owned(),
+            "--to-x".to_owned(),
+            "40".to_owned(),
+            "--to-y".to_owned(),
+            "80".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DragCommand::Run(DragArgs {
+                from: Point::new(10, 20),
+                to: Point::new(40, 80),
+                button: MouseButton::Left,
+                duration_ms: 250,
+                dry_run: false
+            })
+        );
+    }
+
+    #[test]
+    fn drag_rejects_mixed_point_styles() {
+        let error = parse_drag_args(vec![
+            "--from".to_owned(),
+            "10,20".to_owned(),
+            "--from-x".to_owned(),
+            "10".to_owned(),
+            "--to".to_owned(),
+            "40,80".to_owned(),
+        ])
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            CliError::Failure("provide either --from or --from-x/--from-y, not both".to_owned())
+        );
+    }
+
+    #[test]
     fn type_joins_remaining_text_arguments() {
         let command = parse_type_args(vec!["hello".to_owned(), "world".to_owned()]).unwrap();
 
@@ -3211,6 +3817,34 @@ mod tests {
                 text: "hello".to_owned(),
                 dry_run: true
             })
+        );
+    }
+
+    #[test]
+    fn hotkey_accepts_positional_keys_and_dry_run() {
+        let command = parse_hotkey_args(vec![
+            "--dry-run".to_owned(),
+            "ctrl".to_owned(),
+            "s".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            HotkeyCommand::Run(HotkeyArgs {
+                keys: vec!["ctrl".to_owned(), "s".to_owned()],
+                dry_run: true
+            })
+        );
+    }
+
+    #[test]
+    fn hotkey_requires_keys() {
+        let error = parse_hotkey_args(vec![]).unwrap_err();
+
+        assert_eq!(
+            error,
+            CliError::Failure("missing hotkey; provide one or more keys".to_owned())
         );
     }
 }

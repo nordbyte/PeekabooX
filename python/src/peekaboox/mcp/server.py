@@ -50,6 +50,12 @@ WORKFLOW_STEP_SCHEMA: dict[str, Any] = {
         "value": {"type": "string"},
         "x": {"type": "integer"},
         "y": {"type": "integer"},
+        "from_x": {"type": "integer"},
+        "from_y": {"type": "integer"},
+        "to_x": {"type": "integer"},
+        "to_y": {"type": "integer"},
+        "button": {"type": "string", "enum": ["left", "middle", "right"]},
+        "duration_ms": {"type": "integer", "minimum": 0},
         "vision_fallback": {"type": "boolean", "default": False},
         "verify": {"type": "boolean", "default": True},
     },
@@ -273,6 +279,34 @@ class McpServer:
                 self._click,
             ),
             self._tool(
+                "move_mouse",
+                "Move the pointer to screen coordinates through the daemon input backend.",
+                _schema(
+                    {
+                        "x": {"type": "integer"},
+                        "y": {"type": "integer"},
+                    },
+                    required=["x", "y"],
+                ),
+                self._move_mouse,
+            ),
+            self._tool(
+                "drag",
+                "Drag from one screen coordinate to another through the daemon input backend.",
+                _schema(
+                    {
+                        "from_x": {"type": "integer"},
+                        "from_y": {"type": "integer"},
+                        "to_x": {"type": "integer"},
+                        "to_y": {"type": "integer"},
+                        "button": {"type": "string", "enum": ["left", "middle", "right"]},
+                        "duration_ms": {"type": "integer", "minimum": 0, "default": 250},
+                    },
+                    required=["from_x", "from_y", "to_x", "to_y"],
+                ),
+                self._drag,
+            ),
+            self._tool(
                 "type_text",
                 "Type text through the daemon input backend.",
                 _schema(
@@ -283,6 +317,21 @@ class McpServer:
                     required=["text"],
                 ),
                 self._type_text,
+            ),
+            self._tool(
+                "hotkey",
+                "Press a keyboard shortcut through the daemon input backend.",
+                _schema(
+                    {
+                        "keys": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                        },
+                    },
+                    required=["keys"],
+                ),
+                self._hotkey,
             ),
             self._tool(
                 "find_element",
@@ -688,6 +737,29 @@ class McpServer:
             )
         )
 
+    def _move_mouse(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return _to_mcp_value(
+            self._require_runtime().move_mouse(
+                int(arguments["x"]),
+                int(arguments["y"]),
+            )
+        )
+
+    def _drag(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        duration_ms = int(arguments.get("duration_ms", 250))
+        if duration_ms < 0:
+            raise ValueError("duration_ms must be non-negative")
+        return _to_mcp_value(
+            self._require_runtime().drag(
+                int(arguments["from_x"]),
+                int(arguments["from_y"]),
+                int(arguments["to_x"]),
+                int(arguments["to_y"]),
+                button=_optional_string(arguments, "button") or "left",
+                duration_ms=duration_ms,
+            )
+        )
+
     def _type_text(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return _to_mcp_value(
             self._require_runtime().type_text(
@@ -697,6 +769,12 @@ class McpServer:
                 ),
             )
         )
+
+    def _hotkey(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        keys = arguments.get("keys")
+        if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
+            raise ValueError("keys must be a list of strings")
+        return _to_mcp_value(self._require_runtime().hotkey(keys))
 
     def _find_element(self, arguments: dict[str, Any]) -> list[dict[str, Any]]:
         return _to_mcp_value(

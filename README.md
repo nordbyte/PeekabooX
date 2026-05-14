@@ -66,13 +66,18 @@ Check or execute basic input automation:
 ```bash
 cargo run -q -p peekaboox-cli -- click --x 100 --y 200 --dry-run
 cargo run -q -p peekaboox-cli -- click --text "Submit" --dry-run
+cargo run -q -p peekaboox-cli -- move --x 100 --y 200 --dry-run
+cargo run -q -p peekaboox-cli -- drag --from 100,200 --to 320,240 --dry-run
 cargo run -q -p peekaboox-cli -- type --dry-run "Hello World"
+cargo run -q -p peekaboox-cli -- hotkey --dry-run ctrl+s
 ```
 
 Remove `--dry-run` to perform the action. The current input implementation
 prefers `ydotool` with `/dev/uinput` access on Wayland, uses `wtype` as a
-Wayland text fallback, and prefers `xdotool` on X11. Semantic click targets use
-AT-SPI and resolve to the center of the matching UI element.
+Wayland text fallback, and prefers `xdotool` on X11. Pointer drags currently
+use `xdotool`; hotkeys use `ydotool` where `/dev/uinput` is available or
+`xdotool` on X11. Semantic click targets use AT-SPI and resolve to the center
+of the matching UI element.
 
 List visible desktop windows:
 
@@ -94,8 +99,8 @@ cargo run -q -p peekaboox-cli -- --daemon windows
 The daemon listens on `127.0.0.1:47777` for gRPC by default using
 `proto/peekaboox/v1/peekaboox.proto`. It also listens on
 `$XDG_RUNTIME_DIR/peekabooxd.sock` for the CLI's newline-delimited JSON protocol:
-`ping`, `capture`, `capture_delta`, `click`, `type_text`, `list_windows`,
-`find_elements`, `ocr`, `compare_images`, `detect_ui_state`,
+`ping`, `capture`, `capture_delta`, `move_mouse`, `click`, `drag`, `type_text`,
+`hotkey`, `list_windows`, `find_elements`, `ocr`, `compare_images`, `detect_ui_state`,
 `detect_ui_elements`, `probe_dmabuf`, and `list_plugins`.
 Daemon-side semantic queries use a short AT-SPI cache with a 500ms default TTL;
 override it with `peekabooxd run --accessibility-cache-ttl-ms <ms>`. The daemon
@@ -220,6 +225,9 @@ print(runtime.compare_image_files("before.png", "after.png").matches)
 print(runtime.detect_ui_state_from_image_files(["frame1.png", "frame2.png"]).state)
 print(runtime.detect_ui_elements_from_image_file("screenshot.png").elements)
 runtime.click_selector("role=push button,label=Submit", vision_fallback=True)
+runtime.move_mouse(100, 200)
+runtime.drag(100, 200, 320, 240, duration_ms=350)
+runtime.hotkey(["ctrl", "s"])
 ```
 
 The Python runtime and MCP tool surface share granular capability profiles:
@@ -229,15 +237,16 @@ callers, with in-memory audit events available through
 `runtime.capability_audit()`. The daemon's separate `--profile operator` or
 `--allow-input` gate still controls real input injection.
 An optional `ConfirmationPolicy` can require application-provided confirmation
-before dangerous `click`, `type_text`, or `execute_workflow` operations; its
-decisions are available through `runtime.confirmation_audit()`.
+before dangerous `click`, `type_text`, or `execute_workflow` operations. Pointer
+movement, drags, and hotkeys use the `click` confirmation gate. Decisions are
+available through `runtime.confirmation_audit()`.
 Pass `audit_log_path` or run `peekaboox-mcp --audit-log <path>` to persist those
 runtime security checks as JSONL.
 
 The runtime also has a deterministic workflow execution loop. `WorkflowStep`
-actions such as `find_element`, `click`, `type_text`, and `observe` are retried
-according to `AgentRuntime.retries`, verified after execution, and return
-structured attempt and recovery metadata:
+actions such as `find_element`, `click`, `move_mouse`, `drag`, `hotkey`,
+`type_text`, and `observe` are retried according to `AgentRuntime.retries`,
+verified after execution, and return structured attempt and recovery metadata:
 
 ```python
 from peekaboox.workflows import Workflow, WorkflowStep

@@ -56,6 +56,9 @@ from peekaboox.workflows import (
 class FakeClient:
     def __init__(self) -> None:
         self.clicked_at: tuple[int, int] | None = None
+        self.moved_to: tuple[int, int] | None = None
+        self.dragged: tuple[int, int, int, int, str, int] | None = None
+        self.hotkeys: list[tuple[str, ...]] = []
         self.last_vision_fallback = False
         self.typed_text: str | None = None
         self.last_find_selector: str | None = None
@@ -136,6 +139,23 @@ class FakeClient:
 
     def click_selector(self, selector: str, vision_fallback: bool = False) -> ActionResult:
         return self.click(semantic_selector=selector, vision_fallback=vision_fallback)
+
+    def move_mouse(self, x: int, y: int) -> ActionResult:
+        self.moved_to = (x, y)
+        return ActionResult(ok=True, message="moved")
+
+    def drag(
+        self,
+        from_x: int,
+        from_y: int,
+        to_x: int,
+        to_y: int,
+        *,
+        button: str = "left",
+        duration_ms: int = 250,
+    ) -> ActionResult:
+        self.dragged = (from_x, from_y, to_x, to_y, button, duration_ms)
+        return ActionResult(ok=True, message="dragged")
 
     def ocr_screen(
         self,
@@ -294,6 +314,14 @@ class FakeClient:
         self.typed_text = text
         return ActionResult(ok=True, message=f"typed {len(text)} chars")
 
+    def hotkey(self, keys: list[str] | tuple[str, ...] | str) -> ActionResult:
+        if isinstance(keys, str):
+            key_values = tuple(keys.split("+"))
+        else:
+            key_values = tuple(keys)
+        self.hotkeys.append(key_values)
+        return ActionResult(ok=True, message="hotkey")
+
     def find_element(self, selector: str, vision_fallback: bool = False) -> tuple[UiElement, ...]:
         self.last_find_selector = selector
         self.last_vision_fallback = vision_fallback
@@ -415,6 +443,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("get_desktop_state", server.tools)
         self.assertIn("find_element", server.tools)
         self.assertIn("click", server.tools)
+        self.assertIn("move_mouse", server.tools)
+        self.assertIn("drag", server.tools)
         self.assertIn("execute_goal", server.tools)
         self.assertIn("generate_workflow", server.tools)
         self.assertIn("save_generated_workflow", server.tools)
@@ -432,6 +462,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("desktop_graph_status", server.tools)
         self.assertIn("refresh_desktop_graph", server.tools)
         self.assertIn("query_desktop_graph", server.tools)
+        self.assertIn("hotkey", server.tools)
         self.assertIn("vision_fallback", server.tools["find_element"].input_schema["properties"])
 
     def test_agent_runtime_delegates_to_daemon_client(self) -> None:
@@ -441,6 +472,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.list_windows()[0].title, "Terminal")
         self.assertTrue(runtime.click(10, 20).ok)
         self.assertEqual(fake_client.clicked_at, (10, 20))
+        self.assertTrue(runtime.move_mouse(30, 40).ok)
+        self.assertEqual(fake_client.moved_to, (30, 40))
+        self.assertTrue(runtime.drag(1, 2, 3, 4, button="middle", duration_ms=500).ok)
+        self.assertEqual(fake_client.dragged, (1, 2, 3, 4, "middle", 500))
+        self.assertTrue(runtime.hotkey(["ctrl", "s"]).ok)
+        self.assertEqual(fake_client.hotkeys[-1], ("ctrl", "s"))
         self.assertEqual(runtime.ocr_region(Rect(x=1, y=2, width=3, height=4)).text, "Submit")
         self.assertEqual(runtime.capture_delta(stream_id="agent-loop").stream_id, "agent-loop")
         self.assertTrue(runtime.compare_images(b"a", b"b").matches)
@@ -1055,6 +1092,34 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(fake_client.typed_text, "Hello")
         self.assertTrue(fake_client.last_vision_fallback)
 
+    def test_agent_runtime_executes_pointer_and_hotkey_workflow_steps(self) -> None:
+        fake_client = FakeClient()
+        runtime = AgentRuntime(client=fake_client)
+        workflow = Workflow(
+            name="input",
+            steps=[
+                WorkflowStep(action="move_mouse", x=10, y=20, verify=False),
+                WorkflowStep(
+                    action="drag",
+                    from_x=10,
+                    from_y=20,
+                    to_x=30,
+                    to_y=40,
+                    button="right",
+                    duration_ms=100,
+                    verify=False,
+                ),
+                WorkflowStep(action="hotkey", value="ctrl+s", verify=False),
+            ],
+        )
+
+        result = runtime.execute_workflow(workflow)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(fake_client.moved_to, (10, 20))
+        self.assertEqual(fake_client.dragged, (10, 20, 30, 40, "right", 100))
+        self.assertEqual(fake_client.hotkeys[-1], ("ctrl", "s"))
+
     def test_agent_runtime_retries_failed_actions_and_records_attempts(self) -> None:
         fake_client = FlakyActionClient(failures_before_success=1)
         runtime = AgentRuntime(client=fake_client, retries=2)
@@ -1240,6 +1305,15 @@ class RuntimeTests(unittest.TestCase):
                     "steps": [
                         {"action": "find_element", "selector": "role=push button"},
                         {"action": "type_text", "value": "Hello", "verify": False},
+                        {
+                            "action": "drag",
+                            "from_x": 1,
+                            "from_y": 2,
+                            "to_x": 3,
+                            "to_y": 4,
+                            "button": "middle",
+                            "duration_ms": 150,
+                        },
                     ],
                 }
             )
@@ -1261,6 +1335,9 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(json_workflow.name, "json-submit")
         self.assertEqual(json_workflow.steps[1].value, "Hello")
+        self.assertEqual(json_workflow.steps[2].from_x, 1)
+        self.assertEqual(json_workflow.steps[2].button, "middle")
+        self.assertEqual(json_workflow.steps[2].duration_ms, 150)
         self.assertEqual(yaml_workflow.name, "yaml-submit")
         self.assertTrue(yaml_workflow.steps[1].vision_fallback)
         self.assertFalse(yaml_workflow.steps[1].verify)
@@ -1359,6 +1436,25 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(loaded.name, "manual")
         self.assertEqual(loaded.steps[2].value, "Hello")
 
+    def test_agent_runtime_records_pointer_and_hotkey_actions(self) -> None:
+        runtime = AgentRuntime(client=FakeClient())
+
+        runtime.start_recording("input")
+        runtime.move_mouse(10, 20)
+        runtime.drag(10, 20, 30, 40, button="middle", duration_ms=125)
+        runtime.hotkey("ctrl+s")
+        workflow = runtime.stop_recording()
+
+        self.assertEqual(
+            [step.action for step in workflow.steps],
+            ["move_mouse", "drag", "hotkey"],
+        )
+        self.assertEqual(workflow.steps[0].x, 10)
+        self.assertEqual(workflow.steps[1].from_x, 10)
+        self.assertEqual(workflow.steps[1].button, "middle")
+        self.assertEqual(workflow.steps[1].duration_ms, 125)
+        self.assertEqual(workflow.steps[2].value, "ctrl+s")
+
     def test_agent_runtime_requires_client_for_rpc_calls(self) -> None:
         runtime = AgentRuntime()
 
@@ -1416,7 +1512,20 @@ class RuntimeTests(unittest.TestCase):
             {"selector": "role=push button,label=Submit", "vision_fallback": True},
         )
         click = server.call_tool("click", {"selector": "role=push button", "vision_fallback": True})
+        moved = server.call_tool("move_mouse", {"x": 30, "y": 40})
+        dragged = server.call_tool(
+            "drag",
+            {
+                "from_x": 1,
+                "from_y": 2,
+                "to_x": 3,
+                "to_y": 4,
+                "button": "right",
+                "duration_ms": 75,
+            },
+        )
         typed = server.call_tool("type_text", {"text": "Hello"})
+        hotkey = server.call_tool("hotkey", {"keys": ["ctrl", "s"]})
         state = server.call_tool("get_desktop_state", {})
 
         self.assertEqual(capture["image_base64"], "cG5n")
@@ -1429,8 +1538,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(fake_client.last_vision_fallback)
         self.assertTrue(click["ok"])
         self.assertEqual(fake_client.clicked_at, None)
+        self.assertTrue(moved["ok"])
+        self.assertEqual(fake_client.moved_to, (30, 40))
+        self.assertTrue(dragged["ok"])
+        self.assertEqual(fake_client.dragged, (1, 2, 3, 4, "right", 75))
         self.assertEqual(fake_client.typed_text, "Hello")
         self.assertEqual(typed["message"], "typed 5 chars")
+        self.assertTrue(hotkey["ok"])
+        self.assertEqual(fake_client.hotkeys[-1], ("ctrl", "s"))
         self.assertEqual(state["active_window"]["title"], "Terminal")
 
     def test_mcp_server_calls_list_plugins_tool(self) -> None:
@@ -2157,6 +2272,40 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(stub.request.semantic_selector, "role=push button,label=Submit")
         self.assertTrue(stub.request.vision_fallback)
+
+    @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
+    def test_python_client_builds_generated_pointer_and_hotkey_requests(self) -> None:
+        from peekaboox.v1 import peekaboox_pb2
+
+        class Stub:
+            def __init__(self) -> None:
+                self.requests = []
+
+            def MoveMouse(self, request, timeout):
+                self.requests.append(("move", request))
+                return peekaboox_pb2.ActionResponse(ok=True, message="ok")
+
+            def Drag(self, request, timeout):
+                self.requests.append(("drag", request))
+                return peekaboox_pb2.ActionResponse(ok=True, message="ok")
+
+            def Hotkey(self, request, timeout):
+                self.requests.append(("hotkey", request))
+                return peekaboox_pb2.ActionResponse(ok=True, message="ok")
+
+        stub = Stub()
+        client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
+
+        self.assertTrue(client.move_mouse(7, 9).ok)
+        self.assertTrue(client.drag(1, 2, 3, 4, button="right", duration_ms=500).ok)
+        self.assertTrue(client.hotkey(["ctrl", "s"]).ok)
+
+        self.assertEqual(stub.requests[0][1].coordinates.x, 7)
+        self.assertEqual(getattr(stub.requests[1][1], "from").x, 1)
+        self.assertEqual(stub.requests[1][1].to.y, 4)
+        self.assertEqual(stub.requests[1][1].button, peekaboox_pb2.MOUSE_BUTTON_RIGHT)
+        self.assertEqual(stub.requests[1][1].duration_ms, 500)
+        self.assertEqual(list(stub.requests[2][1].keys), ["ctrl", "s"])
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_python_client_maps_generated_ui_elements(self) -> None:

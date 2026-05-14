@@ -397,6 +397,33 @@ class PeekabooXClient:
     def click_selector(self, selector: str, vision_fallback: bool = False) -> ActionResult:
         return self.click(semantic_selector=selector, vision_fallback=vision_fallback)
 
+    def move_mouse(self, x: int, y: int) -> ActionResult:
+        request = self.messages.MoveMouseRequest(
+            coordinates=self.messages.Point(x=x, y=y),
+        )
+        return _action_result_from_proto(self._call("MoveMouse", request))
+
+    def drag(
+        self,
+        from_x: int,
+        from_y: int,
+        to_x: int,
+        to_y: int,
+        button: str = "left",
+        duration_ms: int = 250,
+    ) -> ActionResult:
+        if duration_ms < 0:
+            raise ValueError("duration_ms must be non-negative")
+        request = self.messages.DragRequest(
+            **{
+                "from": self.messages.Point(x=from_x, y=from_y),
+                "to": self.messages.Point(x=to_x, y=to_y),
+                "button": _mouse_button_to_proto(self.messages, button),
+                "duration_ms": duration_ms,
+            }
+        )
+        return _action_result_from_proto(self._call("Drag", request))
+
     def type_text(
         self,
         text: str,
@@ -407,6 +434,16 @@ class PeekabooXClient:
             request_kwargs["typing_speed_chars_per_second"] = typing_speed_chars_per_second
         request = self.messages.TypeTextRequest(**request_kwargs)
         return _action_result_from_proto(self._call("TypeText", request))
+
+    def hotkey(self, keys: Sequence[str] | str) -> ActionResult:
+        if isinstance(keys, str):
+            key_values = [keys]
+        else:
+            key_values = list(keys)
+        if not key_values or any(not str(key).strip() for key in key_values):
+            raise ValueError("hotkey requires at least one non-empty key")
+        request = self.messages.HotkeyRequest(keys=[str(key) for key in key_values])
+        return _action_result_from_proto(self._call("Hotkey", request))
 
     def find_element(self, selector: str, vision_fallback: bool = False) -> tuple[UiElement, ...]:
         response = self._call(
@@ -585,6 +622,26 @@ def _rect_from_proto(rect: Any | None) -> Rect:
 
 def _rect_to_proto(messages: Any, rect: Rect) -> Any:
     return messages.Rect(x=rect.x, y=rect.y, width=rect.width, height=rect.height)
+
+
+def _mouse_button_to_proto(messages: Any, button: str) -> int:
+    normalized = button.strip().casefold().replace("-", "_")
+    names = {
+        "left": "MOUSE_BUTTON_LEFT",
+        "middle": "MOUSE_BUTTON_MIDDLE",
+        "right": "MOUSE_BUTTON_RIGHT",
+    }
+    try:
+        name = names[normalized]
+    except KeyError as error:
+        raise ValueError("button must be left, middle, or right") from error
+
+    if hasattr(messages, name):
+        return int(getattr(messages, name))
+    enum = getattr(messages, "MouseButton", None)
+    if enum is not None and hasattr(enum, "Value"):
+        return int(enum.Value(name))
+    return {"MOUSE_BUTTON_LEFT": 1, "MOUSE_BUTTON_MIDDLE": 2, "MOUSE_BUTTON_RIGHT": 3}[name]
 
 
 def _capture_metadata_from_proto(metadata: Any) -> CaptureMetadata:

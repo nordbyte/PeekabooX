@@ -817,6 +817,69 @@ class AgentRuntime:
         )
         return result
 
+    def move_mouse(self, x: int, y: int) -> ActionResult:
+        self._require_capability(Capability.CLICK, "move_mouse", x=x, y=y)
+        self._require_confirmation(DangerousAction.CLICK, "move_mouse", x=x, y=y)
+        result = self._require_client().move_mouse(x, y)
+        self._record_step(WorkflowStep(action="move_mouse", x=x, y=y))
+        return result
+
+    def drag(
+        self,
+        from_x: int,
+        from_y: int,
+        to_x: int,
+        to_y: int,
+        *,
+        button: str = "left",
+        duration_ms: int = 250,
+    ) -> ActionResult:
+        if duration_ms < 0:
+            raise ValueError("duration_ms must be non-negative")
+        button = button.strip().casefold()
+        if button not in {"left", "middle", "right"}:
+            raise ValueError("button must be left, middle, or right")
+        self._require_capability(
+            Capability.CLICK,
+            "drag",
+            from_x=from_x,
+            from_y=from_y,
+            to_x=to_x,
+            to_y=to_y,
+            button=button,
+            duration_ms=duration_ms,
+        )
+        self._require_confirmation(
+            DangerousAction.CLICK,
+            "drag",
+            from_x=from_x,
+            from_y=from_y,
+            to_x=to_x,
+            to_y=to_y,
+            button=button,
+            duration_ms=duration_ms,
+        )
+        result = self._require_client().drag(
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            button=button,
+            duration_ms=duration_ms,
+        )
+        self._record_step(
+            WorkflowStep(
+                action="drag",
+                from_x=from_x,
+                from_y=from_y,
+                to_x=to_x,
+                to_y=to_y,
+                button=button,
+                duration_ms=duration_ms,
+            )
+        )
+        return result
+
     def type_text(
         self,
         text: str,
@@ -831,6 +894,18 @@ class AgentRuntime:
         )
         result = self._require_client().type_text(text, typing_speed_chars_per_second)
         self._record_step(WorkflowStep(action="type_text", value=text))
+        return result
+
+    def hotkey(self, keys: Sequence[str] | str) -> ActionResult:
+        key_values = _hotkey_keys(keys)
+        self._require_capability(Capability.CLICK, "hotkey", key_count=len(key_values))
+        self._require_confirmation(
+            DangerousAction.CLICK,
+            "hotkey",
+            key_count=len(key_values),
+        )
+        result = self._require_client().hotkey(key_values)
+        self._record_step(WorkflowStep(action="hotkey", value="+".join(key_values)))
         return result
 
     def find_element(self, selector: str, vision_fallback: bool = False) -> tuple[UiElement, ...]:
@@ -872,10 +947,34 @@ class AgentRuntime:
             if step.x is None or step.y is None:
                 raise ValueError("click step requires selector or x/y coordinates")
             return self.click(x=step.x, y=step.y, vision_fallback=step.vision_fallback)
+        if action in {"move", "move_mouse"}:
+            if step.x is None or step.y is None:
+                raise ValueError("move_mouse step requires x/y coordinates")
+            return self.move_mouse(step.x, step.y)
+        if action == "drag":
+            if (
+                step.from_x is None
+                or step.from_y is None
+                or step.to_x is None
+                or step.to_y is None
+            ):
+                raise ValueError("drag step requires from_x/from_y/to_x/to_y")
+            return self.drag(
+                step.from_x,
+                step.from_y,
+                step.to_x,
+                step.to_y,
+                button=step.button or "left",
+                duration_ms=step.duration_ms if step.duration_ms is not None else 250,
+            )
         if action in {"type", "type_text"}:
             if step.value is None:
                 raise ValueError("type_text step requires value")
             return self.type_text(step.value)
+        if action == "hotkey":
+            if step.value is None:
+                raise ValueError("hotkey step requires value")
+            return self.hotkey(step.value)
         if action == "list_windows":
             return self.list_windows()
         if action == "get_desktop_state":
@@ -915,7 +1014,7 @@ class AgentRuntime:
         if not step.verify:
             return VerificationResult(ok=True, message="verification skipped")
 
-        if action in {"click", "type", "type_text"}:
+        if action in {"click", "move", "move_mouse", "drag", "type", "type_text", "hotkey"}:
             state = self.get_desktop_state()
             self.ingest_desktop_snapshot(state)
             return VerificationResult(
@@ -1077,6 +1176,17 @@ def _candidate_selectors_for_element(element: UiElement) -> tuple[str, ...]:
     add(bounds)
 
     return tuple(dict.fromkeys(selectors))
+
+
+def _hotkey_keys(keys: Sequence[str] | str) -> list[str]:
+    if isinstance(keys, str):
+        key_values = [part.strip() for part in keys.split("+")]
+    else:
+        key_values = [str(key).strip() for key in keys]
+    key_values = [key for key in key_values if key]
+    if not key_values:
+        raise ValueError("hotkey requires at least one key")
+    return key_values
 
 
 def _selector_value(value: str | None) -> str | None:

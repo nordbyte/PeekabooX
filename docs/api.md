@@ -6,8 +6,11 @@ Core RPCs:
 
 - `CaptureScreen`
 - `CaptureDelta`
+- `MoveMouse`
 - `Click`
+- `Drag`
 - `TypeText`
+- `Hotkey`
 - `FindElement`
 - `ListWindows`
 - `GetDesktopState`
@@ -97,9 +100,12 @@ Current gRPC method coverage:
 - `CaptureScreen` for full-screen PNG capture
 - `CaptureDelta` for persistent low-bandwidth full-screen or region deltas with
   raw changed-rectangle patch bytes, plus explicit full-frame mode
+- `MoveMouse` for absolute pointer movement
 - `Click` for coordinate clicks and AT-SPI `semantic_selector` clicks, with
   optional `vision_fallback`
+- `Drag` for coordinate drags with button and duration controls
 - `TypeText`
+- `Hotkey` for keyboard shortcuts such as `ctrl+s`
 - `FindElement` through AT-SPI selector queries, with optional `vision_fallback`
 - `ListWindows`
 - `GetDesktopState` with windows, active-window metadata, and AT-SPI UI elements
@@ -128,8 +134,9 @@ for vision-based fallback if accessibility lookup fails or finds no matching
 element. The same fallback can be enabled for all daemon requests with
 `--vision-fallback` or `PEEKABOOX_VISION_FALLBACK=1`.
 
-Daemon-routed `Click` and `TypeText` requests require the daemon to be started
-with `--profile operator`, `--allow-input`, or `PEEKABOOX_ALLOW_INPUT=1`.
+Daemon-routed `MoveMouse`, `Click`, `Drag`, `TypeText`, and `Hotkey` requests
+require the daemon to be started with `--profile operator`, `--allow-input`, or
+`PEEKABOOX_ALLOW_INPUT=1`.
 
 ## Python Runtime Client
 
@@ -164,6 +171,9 @@ delta = runtime.capture_delta(
 diff = runtime.compare_image_files("before.png", "after.png", max_changed_ratio=0.01)
 ui_state = runtime.detect_ui_state_from_image_files(["frame1.png", "frame2.png", "frame3.png"])
 runtime.click_selector("role=push button,label=Submit", vision_fallback=True)
+runtime.move_mouse(100, 200)
+runtime.drag(100, 200, 360, 260, button="left", duration_ms=350)
+runtime.hotkey(["ctrl", "s"])
 ```
 
 `AgentRuntime` accepts either a custom `CapabilityPolicy` or a
@@ -180,9 +190,10 @@ requires `peekabooxd run --profile operator`, `--allow-input`, or
 
 `ConfirmationPolicy` adds optional confirmation checks for dangerous runtime
 operations before execution. The dangerous action names are `click`,
-`type_text`, and `workflow_execute`. Required confirmations without a configured
-confirmer raise `ConfirmationRequiredError`; rejected confirmations raise
-`ConfirmationDeniedError`. Audit events are available through
+`type_text`, and `workflow_execute`; pointer movement, drags, and hotkeys are
+confirmed under the `click` action gate. Required confirmations without a
+configured confirmer raise `ConfirmationRequiredError`; rejected confirmations
+raise `ConfirmationDeniedError`. Audit events are available through
 `runtime.confirmation_audit()`.
 When `audit_log_path` is set, capability and confirmation checks are also
 persisted as newline-delimited JSON records.

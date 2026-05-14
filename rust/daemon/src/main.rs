@@ -1417,26 +1417,84 @@ fn dispatch_request(
             };
             Ok(ApiResult::Click(metadata))
         }
+        ApiRequest::MoveMouse { x, y, dry_run } => {
+            let action = peekaboox_input::InputAction::MoveMouse(Point::new(x, y));
+            let metadata = if dry_run {
+                let backend = peekaboox_input::CommandInputBackend
+                    .detect_backend_for(&action)
+                    .map_err(|error| error.to_string())?;
+                detected_input_backend_dto(backend)
+            } else {
+                ensure_input_allowed(config)?;
+                let metadata = peekaboox_input::move_mouse(Point::new(x, y))
+                    .map_err(|error| error.to_string())?;
+                input_metadata_dto(metadata)
+            };
+            Ok(ApiResult::MoveMouse(metadata))
+        }
+        ApiRequest::Drag {
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            button,
+            duration_ms,
+            dry_run,
+        } => {
+            let button = mouse_button(button);
+            let action = peekaboox_input::InputAction::Drag {
+                from: Point::new(from_x, from_y),
+                to: Point::new(to_x, to_y),
+                button,
+                duration_ms: u64::from(duration_ms),
+            };
+            let metadata = if dry_run {
+                let backend = peekaboox_input::CommandInputBackend
+                    .detect_backend_for(&action)
+                    .map_err(|error| error.to_string())?;
+                detected_input_backend_dto(backend)
+            } else {
+                ensure_input_allowed(config)?;
+                let metadata = peekaboox_input::drag(
+                    Point::new(from_x, from_y),
+                    Point::new(to_x, to_y),
+                    button,
+                    u64::from(duration_ms),
+                )
+                .map_err(|error| error.to_string())?;
+                input_metadata_dto(metadata)
+            };
+            Ok(ApiResult::Drag(metadata))
+        }
         ApiRequest::TypeText { text, dry_run } => {
             let action = peekaboox_input::InputAction::TypeText(text.clone());
             let metadata = if dry_run {
                 let backend = peekaboox_input::CommandInputBackend
                     .detect_backend_for(&action)
                     .map_err(|error| error.to_string())?;
-                ActionResultDto {
-                    backend_name: backend.name().to_owned(),
-                    backend_kind: backend_kind_name(backend.backend_kind()),
-                }
+                detected_input_backend_dto(backend)
             } else {
                 ensure_input_allowed(config)?;
                 let metadata =
                     peekaboox_input::type_text(text).map_err(|error| error.to_string())?;
-                ActionResultDto {
-                    backend_name: metadata.backend_name,
-                    backend_kind: backend_kind_name(metadata.backend_kind),
-                }
+                input_metadata_dto(metadata)
             };
             Ok(ApiResult::TypeText(metadata))
+        }
+        ApiRequest::Hotkey { keys, dry_run } => {
+            validate_hotkey_keys(&keys).map_err(|status| status.message().to_owned())?;
+            let action = peekaboox_input::InputAction::Hotkey(keys.clone());
+            let metadata = if dry_run {
+                let backend = peekaboox_input::CommandInputBackend
+                    .detect_backend_for(&action)
+                    .map_err(|error| error.to_string())?;
+                detected_input_backend_dto(backend)
+            } else {
+                ensure_input_allowed(config)?;
+                let metadata = peekaboox_input::hotkey(keys).map_err(|error| error.to_string())?;
+                input_metadata_dto(metadata)
+            };
+            Ok(ApiResult::Hotkey(metadata))
         }
         ApiRequest::ListWindows => {
             let metadata = peekaboox_windows::list_windows().map_err(|error| error.to_string())?;
@@ -1635,6 +1693,37 @@ impl PeekabooX for GrpcPeekabooXService {
         result.map(Response::new)
     }
 
+    async fn move_mouse(
+        &self,
+        request: Request<proto::MoveMouseRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({
+            "has_coordinates": request.coordinates.is_some()
+        });
+
+        let result = grpc_move_mouse(request, &self.config);
+        audit_grpc_result(&self.audit, "grpc.move_mouse", &result, details);
+        result.map(Response::new)
+    }
+
+    async fn drag(
+        &self,
+        request: Request<proto::DragRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({
+            "has_from": request.from.is_some(),
+            "has_to": request.to.is_some(),
+            "button": request.button,
+            "duration_ms": request.duration_ms
+        });
+
+        let result = grpc_drag(request, &self.config);
+        audit_grpc_result(&self.audit, "grpc.drag", &result, details);
+        result.map(Response::new)
+    }
+
     async fn type_text(
         &self,
         request: Request<proto::TypeTextRequest>,
@@ -1647,6 +1736,20 @@ impl PeekabooX for GrpcPeekabooXService {
 
         let result = grpc_type_text(request, &self.config);
         audit_grpc_result(&self.audit, "grpc.type_text", &result, details);
+        result.map(Response::new)
+    }
+
+    async fn hotkey(
+        &self,
+        request: Request<proto::HotkeyRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({
+            "key_count": request.keys.len()
+        });
+
+        let result = grpc_hotkey(request, &self.config);
+        audit_grpc_result(&self.audit, "grpc.hotkey", &result, details);
         result.map(Response::new)
     }
 
@@ -2204,6 +2307,62 @@ fn grpc_click(
     })
 }
 
+fn grpc_move_mouse(
+    request: proto::MoveMouseRequest,
+    config: &ServerConfig,
+) -> Result<proto::ActionResponse, Status> {
+    ensure_input_allowed(config).map_err(Status::permission_denied)?;
+    let coordinates = request
+        .coordinates
+        .ok_or_else(|| Status::invalid_argument("coordinates are required"))?;
+    let position = Point::new(coordinates.x, coordinates.y);
+    let metadata = peekaboox_input::move_mouse(position)
+        .map_err(|error| Status::internal(error.to_string()))?;
+
+    Ok(proto::ActionResponse {
+        ok: true,
+        message: format!(
+            "moved mouse to {},{} using {}/{}",
+            position.x,
+            position.y,
+            metadata.backend_name,
+            backend_kind_name(metadata.backend_kind)
+        ),
+    })
+}
+
+fn grpc_drag(
+    request: proto::DragRequest,
+    config: &ServerConfig,
+) -> Result<proto::ActionResponse, Status> {
+    ensure_input_allowed(config).map_err(Status::permission_denied)?;
+    let from = request
+        .from
+        .ok_or_else(|| Status::invalid_argument("from coordinates are required"))?;
+    let to = request
+        .to
+        .ok_or_else(|| Status::invalid_argument("to coordinates are required"))?;
+    let button = proto_mouse_button(request.button)?;
+    let duration_ms = u64::from(request.duration_ms.unwrap_or(250));
+    let from = Point::new(from.x, from.y);
+    let to = Point::new(to.x, to.y);
+    let metadata = peekaboox_input::drag(from, to, button, duration_ms)
+        .map_err(|error| Status::internal(error.to_string()))?;
+
+    Ok(proto::ActionResponse {
+        ok: true,
+        message: format!(
+            "dragged from {},{} to {},{} using {}/{}",
+            from.x,
+            from.y,
+            to.x,
+            to.y,
+            metadata.backend_name,
+            backend_kind_name(metadata.backend_kind)
+        ),
+    })
+}
+
 fn resolve_click_target_with_optional_vision_fallback(
     selector: &str,
     use_vision_fallback: bool,
@@ -2264,6 +2423,25 @@ fn grpc_type_text(
         ok: true,
         message: format!(
             "typed text using {}/{}",
+            metadata.backend_name,
+            backend_kind_name(metadata.backend_kind)
+        ),
+    })
+}
+
+fn grpc_hotkey(
+    request: proto::HotkeyRequest,
+    config: &ServerConfig,
+) -> Result<proto::ActionResponse, Status> {
+    ensure_input_allowed(config).map_err(Status::permission_denied)?;
+    validate_hotkey_keys(&request.keys)?;
+    let metadata = peekaboox_input::hotkey(request.keys)
+        .map_err(|error| Status::internal(error.to_string()))?;
+
+    Ok(proto::ActionResponse {
+        ok: true,
+        message: format!(
+            "pressed hotkey using {}/{}",
             metadata.backend_name,
             backend_kind_name(metadata.backend_kind)
         ),
@@ -2942,6 +3120,43 @@ fn mouse_button(button: MouseButtonDto) -> MouseButton {
     }
 }
 
+fn proto_mouse_button(button: Option<i32>) -> Result<MouseButton, Status> {
+    match proto::MouseButton::try_from(button.unwrap_or(proto::MouseButton::Left as i32)) {
+        Ok(proto::MouseButton::Unspecified) | Ok(proto::MouseButton::Left) => Ok(MouseButton::Left),
+        Ok(proto::MouseButton::Middle) => Ok(MouseButton::Middle),
+        Ok(proto::MouseButton::Right) => Ok(MouseButton::Right),
+        Err(_) => Err(Status::invalid_argument("unknown mouse button")),
+    }
+}
+
+fn input_metadata_dto(metadata: peekaboox_input::InputExecutionMetadata) -> ActionResultDto {
+    ActionResultDto {
+        backend_name: metadata.backend_name,
+        backend_kind: backend_kind_name(metadata.backend_kind),
+    }
+}
+
+fn detected_input_backend_dto(backend: peekaboox_input::DetectedInputBackend) -> ActionResultDto {
+    ActionResultDto {
+        backend_name: backend.name().to_owned(),
+        backend_kind: backend_kind_name(backend.backend_kind()),
+    }
+}
+
+fn validate_hotkey_keys(keys: &[String]) -> Result<(), Status> {
+    if keys.is_empty() {
+        return Err(Status::invalid_argument(
+            "hotkey must contain at least one key",
+        ));
+    }
+
+    if keys.iter().any(|key| key.trim().is_empty()) {
+        return Err(Status::invalid_argument("hotkey keys must not be empty"));
+    }
+
+    Ok(())
+}
+
 fn backend_kind_name(kind: BackendKind) -> String {
     format!("{kind:?}").to_ascii_lowercase()
 }
@@ -3096,7 +3311,10 @@ fn request_method(request: &ApiRequest) -> &'static str {
         ApiRequest::ProbeDmaBuf { .. } => "probe_dmabuf",
         ApiRequest::ListPlugins { .. } => "list_plugins",
         ApiRequest::Click { .. } => "click",
+        ApiRequest::MoveMouse { .. } => "move_mouse",
+        ApiRequest::Drag { .. } => "drag",
         ApiRequest::TypeText { .. } => "type_text",
+        ApiRequest::Hotkey { .. } => "hotkey",
         ApiRequest::ListWindows => "list_windows",
         ApiRequest::FindElements { .. } => "find_elements",
         ApiRequest::Ocr { .. } => "ocr",
@@ -3140,8 +3358,33 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             "button": format!("{button:?}").to_ascii_lowercase(),
             "dry_run": dry_run
         }),
+        ApiRequest::MoveMouse { x, y, dry_run } => json!({
+            "x": x,
+            "y": y,
+            "dry_run": dry_run
+        }),
+        ApiRequest::Drag {
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            button,
+            duration_ms,
+            dry_run,
+        } => json!({
+            "from_x": from_x,
+            "from_y": from_y,
+            "to_x": to_x,
+            "to_y": to_y,
+            "button": format!("{button:?}").to_ascii_lowercase(),
+            "duration_ms": duration_ms,
+            "dry_run": dry_run
+        }),
         ApiRequest::TypeText { text, dry_run } => {
             json!({ "text_length": text.chars().count(), "dry_run": dry_run })
+        }
+        ApiRequest::Hotkey { keys, dry_run } => {
+            json!({ "key_count": keys.len(), "dry_run": dry_run })
         }
         ApiRequest::ListWindows => json!({}),
         ApiRequest::FindElements {
