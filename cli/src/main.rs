@@ -166,6 +166,14 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some("paste") => match paste_text(args.collect(), &global.context) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("paste failed: {error}");
+                std::process::exit(1);
+            }
+        },
         Some("hotkey") | Some("key") => match hotkey(args.collect(), &global.context) {
             Ok(()) => {}
             Err(CliError::HelpRequested) => {}
@@ -3250,6 +3258,7 @@ fn merge_drag_point(
 struct TypeArgs {
     text: String,
     dry_run: bool,
+    paste: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3264,9 +3273,33 @@ fn type_text(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         return Err(CliError::HelpRequested);
     };
 
-    let action = peekaboox_input::InputAction::TypeText(args.text.clone());
+    run_text_input(args, context)
+}
+
+fn paste_text(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
+    let TypeCommand::Run(mut args) = parse_type_args(args)? else {
+        print_paste_usage();
+        return Err(CliError::HelpRequested);
+    };
+    args.paste = true;
+
+    run_text_input(args, context)
+}
+
+fn run_text_input(args: TypeArgs, context: &CliContext) -> Result<(), CliError> {
+    let action = if args.paste {
+        peekaboox_input::InputAction::PasteText(args.text.clone())
+    } else {
+        peekaboox_input::InputAction::TypeText(args.text.clone())
+    };
 
     if context.use_daemon {
+        if args.paste {
+            return Err(CliError::Failure(
+                "paste is local-only because it uses the active desktop clipboard; run without --daemon".to_owned(),
+            ));
+        }
+
         let result = daemon_request(
             context,
             ApiRequest::TypeText {
@@ -3287,12 +3320,22 @@ fn type_text(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         let backend = peekaboox_input::CommandInputBackend
             .detect_backend_for(&action)
             .map_err(|error| CliError::Failure(error.to_string()))?;
-        println!("would type via {}", backend.name());
+        print_type_result(
+            &args,
+            ActionResultDto {
+                backend_name: backend.name().to_owned(),
+                backend_kind: format!("{:?}", backend.backend_kind()).to_ascii_lowercase(),
+            },
+        );
         return Ok(());
     }
 
-    let metadata = peekaboox_input::type_text(args.text.clone())
-        .map_err(|error| CliError::Failure(error.to_string()))?;
+    let metadata = if args.paste {
+        peekaboox_input::paste_text(args.text.clone())
+    } else {
+        peekaboox_input::type_text(args.text.clone())
+    }
+    .map_err(|error| CliError::Failure(error.to_string()))?;
     print_type_result(
         &args,
         ActionResultDto {
@@ -3305,21 +3348,24 @@ fn type_text(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
 }
 
 fn print_type_result(args: &TypeArgs, metadata: ActionResultDto) {
-    if args.dry_run {
-        println!("would type via {}", metadata.backend_name);
-    } else {
-        println!("typed text via {}", metadata.backend_name);
+    match (args.dry_run, args.paste) {
+        (true, true) => println!("would paste via {}", metadata.backend_name),
+        (true, false) => println!("would type via {}", metadata.backend_name),
+        (false, true) => println!("pasted text via {}", metadata.backend_name),
+        (false, false) => println!("typed text via {}", metadata.backend_name),
     }
 }
 
 fn parse_type_args(args: Vec<String>) -> Result<TypeCommand, CliError> {
     let mut dry_run = false;
+    let mut paste = false;
     let mut text_parts = Vec::new();
     let mut index = 0;
 
     while index < args.len() {
         match args[index].as_str() {
             "--dry-run" => dry_run = true,
+            "--paste" => paste = true,
             "--help" | "-h" => return Ok(TypeCommand::Help),
             value => text_parts.push(value.to_owned()),
         }
@@ -3332,7 +3378,11 @@ fn parse_type_args(args: Vec<String>) -> Result<TypeCommand, CliError> {
         return Err(CliError::Failure("missing text to type".to_owned()));
     }
 
-    Ok(TypeCommand::Run(TypeArgs { text, dry_run }))
+    Ok(TypeCommand::Run(TypeArgs {
+        text,
+        dry_run,
+        paste,
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3629,7 +3679,7 @@ fn daemon_request(context: &CliContext, request: ApiRequest) -> Result<ApiResult
 
 fn print_usage() {
     println!(
-        "Usage: peekaboox [--daemon] [--socket <path>] <capture|capture-delta|capture-backends|capture-dmabuf|plugins|windows|elements|ocr|compare|state|vision-elements|desktop|click|move|drag|type|hotkey>"
+        "Usage: peekaboox [--daemon] [--socket <path>] <capture|capture-delta|capture-backends|capture-dmabuf|plugins|windows|elements|ocr|compare|state|vision-elements|desktop|click|move|drag|type|paste|hotkey>"
     );
     println!("Try:   peekaboox capture --output screenshot.png");
     println!("Try:   peekaboox --daemon capture-delta --stream agent-loop");
@@ -3752,7 +3802,11 @@ fn print_drag_usage() {
 }
 
 fn print_type_usage() {
-    println!("Usage: peekaboox type [--dry-run] <text>");
+    println!("Usage: peekaboox type [--dry-run] [--paste] <text>");
+}
+
+fn print_paste_usage() {
+    println!("Usage: peekaboox paste [--dry-run] <text>");
 }
 
 fn print_hotkey_usage() {
@@ -4725,7 +4779,8 @@ mod tests {
             command,
             TypeCommand::Run(TypeArgs {
                 text: "hello world".to_owned(),
-                dry_run: false
+                dry_run: false,
+                paste: false
             })
         );
     }
@@ -4738,7 +4793,22 @@ mod tests {
             command,
             TypeCommand::Run(TypeArgs {
                 text: "hello".to_owned(),
-                dry_run: true
+                dry_run: true,
+                paste: false
+            })
+        );
+    }
+
+    #[test]
+    fn type_accepts_paste_flag() {
+        let command = parse_type_args(vec!["--paste".to_owned(), "hello".to_owned()]).unwrap();
+
+        assert_eq!(
+            command,
+            TypeCommand::Run(TypeArgs {
+                text: "hello".to_owned(),
+                dry_run: false,
+                paste: true
             })
         );
     }

@@ -32,36 +32,6 @@ run_peekaboox() {
   fi
 }
 
-copy_to_clipboard() {
-  local text="$1"
-  if command -v wl-copy >/dev/null 2>&1; then
-    printf '%s' "$text" | wl-copy
-    return 0
-  fi
-
-  if command -v xclip >/dev/null 2>&1; then
-    printf '%s' "$text" | xclip -selection clipboard
-    return 0
-  fi
-
-  if command -v xsel >/dev/null 2>&1; then
-    printf '%s' "$text" | xsel --clipboard --input
-    return 0
-  fi
-
-  return 1
-}
-
-paste_text() {
-  local text="$1"
-  if copy_to_clipboard "$text"; then
-    run_peekaboox hotkey ctrl+v
-    return 0
-  fi
-
-  run_peekaboox type "$text"
-}
-
 run_step() {
   local description="$1"
   shift
@@ -187,7 +157,7 @@ run_step "capture text editor after typing" run_peekaboox capture --output "$AFT
 require_step "open save dialog" run_peekaboox hotkey "$SAVE_HOTKEY"
 sleep "$SAVE_DIALOG_DELAY"
 require_step "open save dialog location entry" run_peekaboox hotkey ctrl+l
-require_step "paste absolute save path" paste_text "$OUT_FILE"
+require_step "paste absolute save path" run_peekaboox paste "$OUT_FILE"
 require_step "confirm save path" run_peekaboox hotkey Enter
 sleep "$SAVE_DELAY"
 run_step "capture desktop after save" run_peekaboox capture --output "$AFTER_SAVE_CAPTURE"

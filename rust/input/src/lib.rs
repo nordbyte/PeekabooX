@@ -30,6 +30,7 @@ pub enum InputAction {
         duration_ms: u64,
     },
     TypeText(String),
+    PasteText(String),
     Hotkey(Vec<String>),
 }
 
@@ -112,7 +113,7 @@ pub struct InputEnvironment {
 
 impl InputEnvironment {
     pub fn detect() -> Self {
-        let command_names = ["ydotool", "wtype", "xdotool"];
+        let command_names = ["ydotool", "wtype", "xdotool", "wl-copy", "xclip", "xsel"];
 
         Self {
             session_type: SessionType::from_value(
@@ -142,6 +143,9 @@ pub enum InputTool {
     Ydotool,
     Wtype,
     Xdotool,
+    WlClipboard,
+    XclipClipboard,
+    XselClipboard,
 }
 
 impl InputTool {
@@ -151,6 +155,9 @@ impl InputTool {
             Self::Ydotool => "ydotool",
             Self::Wtype => "wtype",
             Self::Xdotool => "xdotool",
+            Self::WlClipboard => "wl-copy+hotkey",
+            Self::XclipClipboard => "xclip+hotkey",
+            Self::XselClipboard => "xsel+hotkey",
         }
     }
 
@@ -160,6 +167,8 @@ impl InputTool {
             Self::Ydotool => BackendKind::Uinput,
             Self::Wtype => BackendKind::Wayland,
             Self::Xdotool => BackendKind::X11,
+            Self::WlClipboard => BackendKind::Wayland,
+            Self::XclipClipboard | Self::XselClipboard => BackendKind::X11,
         }
     }
 
@@ -179,6 +188,9 @@ impl InputTool {
                 | (Self::Xdotool, InputAction::Drag { .. })
                 | (Self::Xdotool, InputAction::TypeText(_))
                 | (Self::Xdotool, InputAction::Hotkey(_))
+                | (Self::WlClipboard, InputAction::PasteText(_))
+                | (Self::XclipClipboard, InputAction::PasteText(_))
+                | (Self::XselClipboard, InputAction::PasteText(_))
         )
     }
 
@@ -188,6 +200,16 @@ impl InputTool {
             Self::Ydotool => environment.has_command("ydotool") && environment.uinput_accessible,
             Self::Wtype => environment.has_command("wtype"),
             Self::Xdotool => environment.has_command("xdotool"),
+            Self::WlClipboard => {
+                environment.has_command("wl-copy")
+                    && !paste_hotkey_candidates(environment).is_empty()
+            }
+            Self::XclipClipboard => {
+                environment.has_command("xclip") && !paste_hotkey_candidates(environment).is_empty()
+            }
+            Self::XselClipboard => {
+                environment.has_command("xsel") && !paste_hotkey_candidates(environment).is_empty()
+            }
         }
     }
 }
@@ -296,6 +318,10 @@ pub fn type_text(text: impl Into<String>) -> Result<InputExecutionMetadata> {
     CommandInputBackend.execute_with_metadata(InputAction::TypeText(text.into()))
 }
 
+pub fn paste_text(text: impl Into<String>) -> Result<InputExecutionMetadata> {
+    CommandInputBackend.execute_with_metadata(InputAction::PasteText(text.into()))
+}
+
 pub fn hotkey(keys: Vec<String>) -> Result<InputExecutionMetadata> {
     CommandInputBackend.execute_with_metadata(InputAction::Hotkey(keys))
 }
@@ -312,27 +338,45 @@ pub fn candidate_backends(
 
     match environment.session_type {
         SessionType::Wayland => {
-            candidates.push(InputTool::Uinput);
-            if matches!(action, InputAction::TypeText(_)) {
-                candidates.push(InputTool::Wtype);
-                candidates.push(InputTool::Ydotool);
+            if matches!(action, InputAction::PasteText(_)) {
+                candidates.push(InputTool::WlClipboard);
+                candidates.push(InputTool::XclipClipboard);
+                candidates.push(InputTool::XselClipboard);
             } else {
+                candidates.push(InputTool::Uinput);
+                if matches!(action, InputAction::TypeText(_)) {
+                    candidates.push(InputTool::Wtype);
+                    candidates.push(InputTool::Ydotool);
+                } else {
+                    candidates.push(InputTool::Ydotool);
+                    candidates.push(InputTool::Wtype);
+                }
+                candidates.push(InputTool::Xdotool);
+            }
+        }
+        SessionType::X11 => {
+            if matches!(action, InputAction::PasteText(_)) {
+                candidates.push(InputTool::XclipClipboard);
+                candidates.push(InputTool::XselClipboard);
+                candidates.push(InputTool::WlClipboard);
+            } else {
+                candidates.push(InputTool::Xdotool);
+                candidates.push(InputTool::Uinput);
                 candidates.push(InputTool::Ydotool);
                 candidates.push(InputTool::Wtype);
             }
-            candidates.push(InputTool::Xdotool);
-        }
-        SessionType::X11 => {
-            candidates.push(InputTool::Xdotool);
-            candidates.push(InputTool::Uinput);
-            candidates.push(InputTool::Ydotool);
-            candidates.push(InputTool::Wtype);
         }
         SessionType::Unknown => {
-            candidates.push(InputTool::Ydotool);
-            candidates.push(InputTool::Uinput);
-            candidates.push(InputTool::Xdotool);
-            candidates.push(InputTool::Wtype);
+            if matches!(action, InputAction::PasteText(_)) {
+                candidates.push(InputTool::WlClipboard);
+                candidates.push(InputTool::XclipClipboard);
+                candidates.push(InputTool::XselClipboard);
+            } else {
+                candidates.push(InputTool::Ydotool);
+                candidates.push(InputTool::Uinput);
+                candidates.push(InputTool::Xdotool);
+                candidates.push(InputTool::Wtype);
+            }
         }
     }
 
@@ -412,12 +456,36 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
             run_command("xdotool", ["type", "--delay", "0", "--", text])
         }
         (InputTool::Xdotool, InputAction::Hotkey(keys)) => xdotool_hotkey(keys),
+        (InputTool::WlClipboard, InputAction::PasteText(text))
+        | (InputTool::XclipClipboard, InputAction::PasteText(text))
+        | (InputTool::XselClipboard, InputAction::PasteText(text)) => clipboard_paste(tool, text),
         _ => Err(PeekabooXError::new(format!(
             "{} does not support action {:?}",
             tool.name(),
             action
         ))),
     }
+}
+
+fn clipboard_paste(tool: InputTool, text: &str) -> Result<()> {
+    match tool {
+        InputTool::WlClipboard => run_command_with_stdin("wl-copy", [], text)?,
+        InputTool::XclipClipboard => {
+            run_command_with_stdin("xclip", ["-selection", "clipboard"], text)?
+        }
+        InputTool::XselClipboard => {
+            run_command_with_stdin("xsel", ["--clipboard", "--input"], text)?
+        }
+        _ => {
+            return Err(PeekabooXError::new(format!(
+                "{} is not a clipboard paste backend",
+                tool.name()
+            )));
+        }
+    }
+
+    sleep(Duration::from_millis(80));
+    send_paste_hotkey()
 }
 
 fn ydotool_mousemove(position: Point) -> Result<()> {
@@ -827,6 +895,50 @@ fn xdotool_hotkey(keys: &[String]) -> Result<()> {
     run_command("xdotool", ["key", "--delay", "60", &sequence])
 }
 
+fn send_paste_hotkey() -> Result<()> {
+    let environment = InputEnvironment::detect();
+    let keys = vec!["ctrl".to_owned(), "v".to_owned()];
+    let mut errors = Vec::new();
+
+    for tool in paste_hotkey_candidates(&environment) {
+        let result = match tool {
+            InputTool::Ydotool => ydotool_hotkey(&keys),
+            InputTool::Xdotool => xdotool_hotkey(&keys),
+            _ => continue,
+        };
+
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => errors.push(format!("{}: {}", tool.name(), error.message())),
+        }
+    }
+
+    if errors.is_empty() {
+        return Err(PeekabooXError::new(
+            "paste requires ydotool with /dev/uinput access or xdotool to press ctrl+v",
+        ));
+    }
+
+    Err(PeekabooXError::new(format!(
+        "all paste hotkey backends failed: {}",
+        errors.join("; ")
+    )))
+}
+
+fn paste_hotkey_candidates(environment: &InputEnvironment) -> Vec<InputTool> {
+    let preferred = match environment.session_type {
+        SessionType::Wayland => [InputTool::Ydotool, InputTool::Xdotool],
+        SessionType::X11 => [InputTool::Xdotool, InputTool::Ydotool],
+        SessionType::Unknown => [InputTool::Ydotool, InputTool::Xdotool],
+    };
+
+    let action = InputAction::Hotkey(vec!["ctrl".to_owned(), "v".to_owned()]);
+    preferred
+        .into_iter()
+        .filter(|tool| tool.is_available(environment) && tool.supports(&action))
+        .collect()
+}
+
 fn hotkey_sequence(keys: &[String]) -> Result<String> {
     if keys.is_empty() {
         return Err(PeekabooXError::new("hotkey must contain at least one key"));
@@ -868,7 +980,7 @@ fn release_modifiers() -> Result<()> {
 
 fn missing_backend_error(environment: &InputEnvironment, action: &InputAction) -> PeekabooXError {
     PeekabooXError::new(format!(
-        "no supported input backend found for {:?} in {:?}; install ydotool with /dev/uinput access for Wayland/global control, wtype for Wayland text input, or xdotool for X11",
+        "no supported input backend found for {:?} in {:?}; install ydotool with /dev/uinput access for Wayland/global control, wtype for Wayland text input, xdotool for X11, or wl-copy/xclip/xsel for clipboard paste",
         action, environment.session_type
     ))
 }
@@ -1036,6 +1148,42 @@ mod tests {
         let backend = candidate_backends(&environment, &action).remove(0);
 
         assert_eq!(backend.tool, InputTool::Ydotool);
+    }
+
+    #[test]
+    fn selects_wl_clipboard_for_wayland_paste_when_hotkey_is_available() {
+        let environment = environment(SessionType::Wayland, ["wl-copy", "ydotool"], true);
+        let action = InputAction::PasteText("/tmp/peekaboox-output.txt".to_owned());
+
+        let backend = candidate_backends(&environment, &action).remove(0);
+
+        assert_eq!(backend.tool, InputTool::WlClipboard);
+    }
+
+    #[test]
+    fn selects_xclip_for_x11_paste_when_hotkey_is_available() {
+        let environment = environment(SessionType::X11, ["xclip", "xdotool"], false);
+        let action = InputAction::PasteText("/tmp/peekaboox-output.txt".to_owned());
+
+        let backend = candidate_backends(&environment, &action).remove(0);
+
+        assert_eq!(backend.tool, InputTool::XclipClipboard);
+    }
+
+    #[test]
+    fn paste_has_no_backend_without_clipboard_tool() {
+        let environment = environment(SessionType::Wayland, ["ydotool"], true);
+        let action = InputAction::PasteText("/tmp/peekaboox-output.txt".to_owned());
+
+        assert!(candidate_backends(&environment, &action).is_empty());
+    }
+
+    #[test]
+    fn paste_has_no_backend_without_hotkey_tool() {
+        let environment = environment(SessionType::Wayland, ["wl-copy"], false);
+        let action = InputAction::PasteText("/tmp/peekaboox-output.txt".to_owned());
+
+        assert!(candidate_backends(&environment, &action).is_empty());
     }
 
     #[test]

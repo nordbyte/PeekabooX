@@ -69,14 +69,19 @@ cargo run -q -p peekaboox-cli -- click --text "Submit" --dry-run
 cargo run -q -p peekaboox-cli -- move --x 100 --y 200 --dry-run
 cargo run -q -p peekaboox-cli -- drag --from 100,200 --to 320,240 --dry-run
 cargo run -q -p peekaboox-cli -- type --dry-run "Hello World"
+cargo run -q -p peekaboox-cli -- paste --dry-run "/tmp/PeekabooX Example.txt"
+cargo run -q -p peekaboox-cli -- type --paste --dry-run "/tmp/PeekabooX Example.txt"
 cargo run -q -p peekaboox-cli -- hotkey --dry-run ctrl+s
 ```
 
 Remove `--dry-run` to perform the action. The current input implementation
 prefers direct `/dev/uinput` pointer events on Wayland, uses `ydotool` for
 Wayland hotkeys, prefers `wtype` for Wayland text where available with
-`ydotool` as fallback, and prefers `xdotool` on X11. Semantic click targets use
-AT-SPI and resolve to the center of the matching UI element.
+`ydotool` as fallback, and prefers `xdotool` on X11. Clipboard paste uses
+`wl-copy`, `xclip`, or `xsel` plus the safest available `ctrl+v` hotkey backend,
+which is better than synthetic typing for paths and layout-sensitive text.
+Semantic click targets use AT-SPI and resolve to the center of the matching UI
+element.
 
 Use the higher-level desktop helper when an action needs app focus, screenshot
 layout detection, and guards around state-sensitive targets:

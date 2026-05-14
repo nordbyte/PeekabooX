@@ -46,9 +46,10 @@ unique draft file, locates the document target while passing
 `--window-title <draft>` to the desktop commands, types example text, opens the
 native Save dialog, saves to a unique absolute path via the dialog's location
 entry, accepts GNOME Text Editor's automatic `.txt` extension, and verifies the
-resulting file content. The save path is pasted through the clipboard when
-`wl-copy`, `xclip`, or `xsel` is available so keyboard layout mapping cannot
-corrupt path separators. It refuses to overwrite existing files. Override
+resulting file content. The save path is inserted with `peekaboox paste`, which
+uses `wl-copy`, `xclip`, or `xsel` plus the safest available paste hotkey backend
+so keyboard layout mapping cannot corrupt path separators. It refuses to
+overwrite existing files. Override
 `PEEKABOOX_TEXT_EDITOR_TEXT`, `PEEKABOOX_TEXT_EDITOR_OUTPUT`, or
 `PEEKABOOX_TEXT_EDITOR_FOCUS_WAIT_MS` for custom runs.
 
