@@ -78,6 +78,23 @@ Wayland hotkeys and text where available, uses `wtype` as a Wayland text
 fallback, and prefers `xdotool` on X11. Semantic click targets use AT-SPI and
 resolve to the center of the matching UI element.
 
+Use the higher-level desktop helper when an action needs app focus, screenshot
+layout detection, and guards around state-sensitive targets:
+
+```bash
+cargo run -q -p peekaboox-cli -- desktop profiles
+cargo run -q -p peekaboox-cli -- desktop focus --app telegram
+cargo run -q -p peekaboox-cli -- desktop locate --app telegram --target search-input
+cargo run -q -p peekaboox-cli -- desktop type-into --app telegram --target search-input --clear "Saved Messages"
+cargo run -q -p peekaboox-cli -- desktop assert --app telegram --target send-button --not-active
+```
+
+The first built-in profile is `telegram`. It uses the safest available path in
+order: existing window focus where window enumeration is available, GNOME
+Overview or application launch fallback, then app-specific visual layout targets
+for `search-input`, `search-result`, `message-input`, `send-button`, and
+`header`.
+
 List visible desktop windows:
 
 ```bash

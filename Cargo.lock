@@ -769,6 +769,7 @@ dependencies = [
  "peekaboox-accessibility",
  "peekaboox-capture",
  "peekaboox-core",
+ "peekaboox-desktop",
  "peekaboox-input",
  "peekaboox-ipc",
  "peekaboox-plugins",
@@ -780,6 +781,18 @@ dependencies = [
 [[package]]
 name = "peekaboox-core"
 version = "1.0.0"
+
+[[package]]
+name = "peekaboox-desktop"
+version = "1.0.0"
+dependencies = [
+ "peekaboox-accessibility",
+ "peekaboox-capture",
+ "peekaboox-core",
+ "peekaboox-input",
+ "peekaboox-vision",
+ "peekaboox-windows",
+]
 
 [[package]]
 name = "peekaboox-input"

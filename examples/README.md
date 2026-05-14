@@ -42,26 +42,17 @@ verifies that the output file changed. Override `PEEKABOOX_PAINT_APP`,
 needs different coordinates.
 
 `examples/desktop/telegram_saved_messages.sh` opens or focuses Telegram Desktop
-through GNOME Overview when available, locates Telegram's search field, the
-Saved Messages result, the message input, and the send button from the current
-screenshot, and sends `PeekabooX Example` to that chat. Telegram must already
-be logged in. The coordinate-free layout detection uses
-`examples/desktop/telegram_layout.py` and requires Python Pillow in live desktop
-environments. Override `PEEKABOOX_TELEGRAM_MESSAGE`,
-`PEEKABOOX_TELEGRAM_APP_SEARCH_QUERY`, `PEEKABOOX_TELEGRAM_APP`,
-`PEEKABOOX_TELEGRAM_USE_GNOME_OVERVIEW`, or
-`PEEKABOOX_TELEGRAM_USE_SAVED_MESSAGES_URI` to change the default flow. The
-`tg://savedmessages` URI is disabled by default because some Telegram Desktop
-builds focus the app without switching chats; set
-`PEEKABOOX_TELEGRAM_SKIP_SEARCH=1` only when you have separately guaranteed
-that Saved Messages is already open. Manual coordinate variables
-`PEEKABOOX_TELEGRAM_FOCUS_X/Y`,
-`PEEKABOOX_TELEGRAM_OVERVIEW_RESULT_X/Y`,
-`PEEKABOOX_TELEGRAM_SEARCH_X/Y`, `PEEKABOOX_TELEGRAM_CLEAR_X/Y`,
-`PEEKABOOX_TELEGRAM_RESULT_X/Y`, `PEEKABOOX_TELEGRAM_INPUT_X/Y`, and
-`PEEKABOOX_TELEGRAM_SEND_X/Y` remain available as last-resort overrides.
-`PEEKABOOX_TELEGRAM_WINDOW_GUARD` defaults to `0` because some GNOME Wayland
-and Snap combinations do not expose Telegram through window enumeration.
+through the reusable `peekaboox desktop focus` helper, locates Telegram's
+search field, the Saved Messages result, the message input, and the send button
+with `peekaboox desktop ... --target ...`, and sends `PeekabooX Example` to
+that chat. Telegram must already be logged in. The example no longer depends
+on hard-coded coordinates or Python Pillow; its Telegram layout resolver lives
+in the `peekaboox-desktop` Rust crate. Override `PEEKABOOX_TELEGRAM_MESSAGE`,
+`PEEKABOOX_TELEGRAM_SEARCH_QUERY`, `PEEKABOOX_TELEGRAM_FOCUS_WAIT_MS`, or
+`PEEKABOOX_TELEGRAM_OVERVIEW_WAIT_MS` for slower desktops. Set
+`PEEKABOOX_TELEGRAM_ASSERT_HEADER=1` to additionally verify the `Saved
+Messages` header through accessibility or OCR when those desktop capabilities
+are available.
 
 `examples/workflows/desktop_observe.yaml` and
 `examples/workflows/input_actions.yaml` are editable workflow files for

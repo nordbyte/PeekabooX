@@ -1,0 +1,17 @@
+[package]
+name = "peekaboox-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+peekaboox-accessibility = { path = "../accessibility" }
+peekaboox-capture = { path = "../capture" }
+peekaboox-core = { path = "../core" }
+peekaboox-input = { path = "../input" }
+peekaboox-vision = { path = "../vision" }
+peekaboox-windows = { path = "../windows" }
+
+[lib]
+path = "src/lib.rs"

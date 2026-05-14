@@ -2,6 +2,10 @@ use std::path::PathBuf;
 
 use peekaboox_accessibility::{AccessibilityTreeMetadata, ElementQuery};
 use peekaboox_core::{BackendKind, Point, Rect, UiElement};
+use peekaboox_desktop::{
+    AssertOptions, ClickOptions as DesktopClickOptions, DesktopAssertion, FocusOptions,
+    LocateOptions, TypeIntoOptions,
+};
 use peekaboox_input::MouseButton;
 use peekaboox_ipc::{
     ActionResultDto, ApiRequest, ApiResponse, ApiResult, CaptureDeltaResultDto,
@@ -122,6 +126,14 @@ fn main() {
                 }
             }
         }
+        Some("desktop") => match desktop(args.collect(), &global.context) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("desktop failed: {error}");
+                std::process::exit(1);
+            }
+        },
         Some("click") => match click(args.collect(), &global.context) {
             Ok(()) => {}
             Err(CliError::HelpRequested) => {}
@@ -360,6 +372,64 @@ struct VisionElementsArgs {
 #[derive(Debug, Clone, PartialEq)]
 enum VisionElementsCommand {
     Run(VisionElementsArgs),
+    Help,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesktopFocusArgs {
+    app: String,
+    use_gnome_overview: bool,
+    launch_if_needed: bool,
+    wait_after_focus_ms: u64,
+    overview_wait_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesktopLocateArgs {
+    app: String,
+    target: String,
+    image: Option<PathBuf>,
+    prefer_accessibility: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesktopClickArgs {
+    app: String,
+    target: String,
+    image: Option<PathBuf>,
+    prefer_accessibility: bool,
+    button: MouseButton,
+    dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesktopTypeIntoArgs {
+    app: String,
+    target: String,
+    text: String,
+    image: Option<PathBuf>,
+    prefer_accessibility: bool,
+    clear: bool,
+    dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesktopAssertArgs {
+    app: String,
+    target: String,
+    image: Option<PathBuf>,
+    prefer_accessibility: bool,
+    assertion: DesktopAssertion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DesktopCommand {
+    Profiles,
+    Focus(DesktopFocusArgs),
+    Locate(DesktopLocateArgs),
+    Click(DesktopClickArgs),
+    TypeInto(DesktopTypeIntoArgs),
+    Assert(DesktopAssertArgs),
     Help,
 }
 
@@ -2049,6 +2119,424 @@ fn vision_element_options(
     })
 }
 
+fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
+    if context.use_daemon {
+        return Err(CliError::Failure(
+            "desktop commands orchestrate local capture and input; run without --daemon".to_owned(),
+        ));
+    }
+
+    match parse_desktop_args(args)? {
+        DesktopCommand::Profiles => {
+            println!(
+                "supported apps: {}",
+                peekaboox_desktop::supported_apps().join(", ")
+            );
+            Ok(())
+        }
+        DesktopCommand::Focus(args) => {
+            let result = peekaboox_desktop::focus_app(
+                &args.app,
+                &FocusOptions {
+                    use_gnome_overview: args.use_gnome_overview,
+                    launch_if_needed: args.launch_if_needed,
+                    wait_after_focus_ms: args.wait_after_focus_ms,
+                    overview_wait_ms: args.overview_wait_ms,
+                },
+            )
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+            print_desktop_action_result(result);
+            Ok(())
+        }
+        DesktopCommand::Locate(args) => {
+            let target = peekaboox_desktop::locate_target(
+                &args.app,
+                &args.target,
+                &LocateOptions {
+                    image: args.image,
+                    prefer_accessibility: args.prefer_accessibility,
+                },
+            )
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+            println!(
+                "{} {} {},{} rect={} via {}",
+                target.app,
+                target.target,
+                target.point.x,
+                target.point.y,
+                target
+                    .rect
+                    .map(format_rect)
+                    .unwrap_or_else(|| "-".to_owned()),
+                target.source.label()
+            );
+            Ok(())
+        }
+        DesktopCommand::Click(args) => {
+            let result = peekaboox_desktop::click_target(
+                &args.app,
+                &args.target,
+                &DesktopClickOptions {
+                    locate: LocateOptions {
+                        image: args.image,
+                        prefer_accessibility: args.prefer_accessibility,
+                    },
+                    button: args.button,
+                    dry_run: args.dry_run,
+                },
+            )
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+            print_desktop_action_result(result);
+            Ok(())
+        }
+        DesktopCommand::TypeInto(args) => {
+            let result = peekaboox_desktop::type_into_target(
+                &args.app,
+                &args.target,
+                &args.text,
+                &TypeIntoOptions {
+                    locate: LocateOptions {
+                        image: args.image,
+                        prefer_accessibility: args.prefer_accessibility,
+                    },
+                    clear: args.clear,
+                    dry_run: args.dry_run,
+                },
+            )
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+            print_desktop_action_result(result);
+            Ok(())
+        }
+        DesktopCommand::Assert(args) => {
+            let result = peekaboox_desktop::assert_target(
+                &args.app,
+                &args.target,
+                &AssertOptions {
+                    locate: LocateOptions {
+                        image: args.image,
+                        prefer_accessibility: args.prefer_accessibility,
+                    },
+                    assertion: args.assertion,
+                },
+            )
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+            print_desktop_action_result(result);
+            Ok(())
+        }
+        DesktopCommand::Help => {
+            print_desktop_usage();
+            Err(CliError::HelpRequested)
+        }
+    }
+}
+
+fn print_desktop_action_result(result: peekaboox_desktop::DesktopActionResult) {
+    println!(
+        "{} {}: {} via {}",
+        result.app, result.action, result.detail, result.backend_name
+    );
+}
+
+fn parse_desktop_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
+    let Some((command, rest)) = args.split_first() else {
+        return Ok(DesktopCommand::Help);
+    };
+
+    match command.as_str() {
+        "profiles" | "apps" => {
+            if rest.is_empty() {
+                Ok(DesktopCommand::Profiles)
+            } else {
+                Err(CliError::Failure(
+                    "desktop profiles does not accept arguments".to_owned(),
+                ))
+            }
+        }
+        "focus" => parse_desktop_focus_args(rest.to_vec()),
+        "locate" => parse_desktop_locate_args(rest.to_vec()),
+        "click" => parse_desktop_click_args(rest.to_vec()),
+        "type-into" | "type" => parse_desktop_type_into_args(rest.to_vec()),
+        "assert" => parse_desktop_assert_args(rest.to_vec(), false),
+        "assert-not" => parse_desktop_assert_args(rest.to_vec(), true),
+        "--help" | "-h" | "help" => Ok(DesktopCommand::Help),
+        unknown => Err(CliError::Failure(format!(
+            "unknown desktop command: {unknown}"
+        ))),
+    }
+}
+
+fn parse_desktop_focus_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
+    let mut app = None;
+    let mut use_gnome_overview = true;
+    let mut launch_if_needed = true;
+    let mut wait_after_focus_ms = 1_000_u64;
+    let mut overview_wait_ms = 800_u64;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
+            "--no-overview" => use_gnome_overview = false,
+            "--no-launch" => launch_if_needed = false,
+            "--wait-ms" => {
+                wait_after_focus_ms = parse_u64(
+                    "--wait-ms",
+                    &parse_next_string(&args, &mut index, "--wait-ms")?,
+                )?;
+            }
+            "--overview-wait-ms" => {
+                overview_wait_ms = parse_u64(
+                    "--overview-wait-ms",
+                    &parse_next_string(&args, &mut index, "--overview-wait-ms")?,
+                )?;
+            }
+            "--help" | "-h" => return Ok(DesktopCommand::Help),
+            value if value.starts_with('-') => {
+                return Err(CliError::Failure(format!(
+                    "unknown desktop focus argument: {value}"
+                )));
+            }
+            value if app.is_none() => app = Some(value.to_owned()),
+            value => {
+                return Err(CliError::Failure(format!(
+                    "unexpected desktop focus argument: {value}"
+                )));
+            }
+        }
+        index += 1;
+    }
+
+    Ok(DesktopCommand::Focus(DesktopFocusArgs {
+        app: app.ok_or_else(|| CliError::Failure("missing --app".to_owned()))?,
+        use_gnome_overview,
+        launch_if_needed,
+        wait_after_focus_ms,
+        overview_wait_ms,
+    }))
+}
+
+fn parse_desktop_locate_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
+    let mut app = None;
+    let mut target = None;
+    let mut image = None;
+    let mut prefer_accessibility = true;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
+            "--target" | "-t" => target = Some(parse_next_string(&args, &mut index, "--target")?),
+            "--image" | "-i" => {
+                image = Some(PathBuf::from(parse_next_string(
+                    &args, &mut index, "--image",
+                )?))
+            }
+            "--no-accessibility" => prefer_accessibility = false,
+            "--help" | "-h" => return Ok(DesktopCommand::Help),
+            value if value.starts_with('-') => {
+                return Err(CliError::Failure(format!(
+                    "unknown desktop locate argument: {value}"
+                )));
+            }
+            value if app.is_none() => app = Some(value.to_owned()),
+            value if target.is_none() => target = Some(value.to_owned()),
+            value => {
+                return Err(CliError::Failure(format!(
+                    "unexpected desktop locate argument: {value}"
+                )));
+            }
+        }
+        index += 1;
+    }
+
+    Ok(DesktopCommand::Locate(DesktopLocateArgs {
+        app: app.ok_or_else(|| CliError::Failure("missing --app".to_owned()))?,
+        target: target.ok_or_else(|| CliError::Failure("missing --target".to_owned()))?,
+        image,
+        prefer_accessibility,
+    }))
+}
+
+fn parse_desktop_click_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
+    let mut app = None;
+    let mut target = None;
+    let mut image = None;
+    let mut prefer_accessibility = true;
+    let mut button = MouseButton::Left;
+    let mut dry_run = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
+            "--target" | "-t" => target = Some(parse_next_string(&args, &mut index, "--target")?),
+            "--image" | "-i" => {
+                image = Some(PathBuf::from(parse_next_string(
+                    &args, &mut index, "--image",
+                )?))
+            }
+            "--button" | "-b" => {
+                button = parse_mouse_button(&parse_next_string(&args, &mut index, "--button")?)?
+            }
+            "--dry-run" => dry_run = true,
+            "--no-accessibility" => prefer_accessibility = false,
+            "--help" | "-h" => return Ok(DesktopCommand::Help),
+            value if value.starts_with('-') => {
+                return Err(CliError::Failure(format!(
+                    "unknown desktop click argument: {value}"
+                )));
+            }
+            value if app.is_none() => app = Some(value.to_owned()),
+            value if target.is_none() => target = Some(value.to_owned()),
+            value => {
+                return Err(CliError::Failure(format!(
+                    "unexpected desktop click argument: {value}"
+                )));
+            }
+        }
+        index += 1;
+    }
+
+    Ok(DesktopCommand::Click(DesktopClickArgs {
+        app: app.ok_or_else(|| CliError::Failure("missing --app".to_owned()))?,
+        target: target.ok_or_else(|| CliError::Failure("missing --target".to_owned()))?,
+        image,
+        prefer_accessibility,
+        button,
+        dry_run,
+    }))
+}
+
+fn parse_desktop_type_into_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
+    let mut app = None;
+    let mut target = None;
+    let mut image = None;
+    let mut prefer_accessibility = true;
+    let mut clear = false;
+    let mut dry_run = false;
+    let mut text_parts = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
+            "--target" | "-t" => target = Some(parse_next_string(&args, &mut index, "--target")?),
+            "--image" | "-i" => {
+                image = Some(PathBuf::from(parse_next_string(
+                    &args, &mut index, "--image",
+                )?))
+            }
+            "--clear" => clear = true,
+            "--dry-run" => dry_run = true,
+            "--no-accessibility" => prefer_accessibility = false,
+            "--help" | "-h" => return Ok(DesktopCommand::Help),
+            value if value.starts_with('-') && text_parts.is_empty() => {
+                return Err(CliError::Failure(format!(
+                    "unknown desktop type-into argument: {value}"
+                )));
+            }
+            value if app.is_none() => app = Some(value.to_owned()),
+            value if target.is_none() => target = Some(value.to_owned()),
+            value => text_parts.push(value.to_owned()),
+        }
+        index += 1;
+    }
+
+    let text = text_parts.join(" ");
+    if text.is_empty() {
+        return Err(CliError::Failure("missing text to type".to_owned()));
+    }
+
+    Ok(DesktopCommand::TypeInto(DesktopTypeIntoArgs {
+        app: app.ok_or_else(|| CliError::Failure("missing --app".to_owned()))?,
+        target: target.ok_or_else(|| CliError::Failure("missing --target".to_owned()))?,
+        text,
+        image,
+        prefer_accessibility,
+        clear,
+        dry_run,
+    }))
+}
+
+fn parse_desktop_assert_args(args: Vec<String>, negated: bool) -> Result<DesktopCommand, CliError> {
+    let mut app = None;
+    let mut target = None;
+    let mut image = None;
+    let mut prefer_accessibility = true;
+    let mut assertion = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
+            "--target" | "-t" => target = Some(parse_next_string(&args, &mut index, "--target")?),
+            "--image" | "-i" => {
+                image = Some(PathBuf::from(parse_next_string(
+                    &args, &mut index, "--image",
+                )?))
+            }
+            "--present" => {
+                assertion = Some(if negated {
+                    DesktopAssertion::NotPresent
+                } else {
+                    DesktopAssertion::Present
+                })
+            }
+            "--active" => {
+                assertion = Some(if negated {
+                    DesktopAssertion::NotActive
+                } else {
+                    DesktopAssertion::Active
+                })
+            }
+            "--not-active" => {
+                assertion = Some(if negated {
+                    DesktopAssertion::Active
+                } else {
+                    DesktopAssertion::NotActive
+                })
+            }
+            "--contains" => {
+                let expected = parse_next_string(&args, &mut index, "--contains")?;
+                assertion = Some(if negated {
+                    DesktopAssertion::NotContains(expected)
+                } else {
+                    DesktopAssertion::Contains(expected)
+                });
+            }
+            "--no-accessibility" => prefer_accessibility = false,
+            "--help" | "-h" => return Ok(DesktopCommand::Help),
+            value if value.starts_with('-') => {
+                return Err(CliError::Failure(format!(
+                    "unknown desktop assert argument: {value}"
+                )));
+            }
+            value if app.is_none() => app = Some(value.to_owned()),
+            value if target.is_none() => target = Some(value.to_owned()),
+            value => {
+                return Err(CliError::Failure(format!(
+                    "unexpected desktop assert argument: {value}"
+                )));
+            }
+        }
+        index += 1;
+    }
+
+    Ok(DesktopCommand::Assert(DesktopAssertArgs {
+        app: app.ok_or_else(|| CliError::Failure("missing --app".to_owned()))?,
+        target: target.ok_or_else(|| CliError::Failure("missing --target".to_owned()))?,
+        image,
+        prefer_accessibility,
+        assertion: assertion.unwrap_or({
+            if negated {
+                DesktopAssertion::NotPresent
+            } else {
+                DesktopAssertion::Present
+            }
+        }),
+    }))
+}
+
 fn format_rect(rect: Rect) -> String {
     format!("{},{},{}x{}", rect.x, rect.y, rect.width, rect.height)
 }
@@ -2815,6 +3303,12 @@ fn parse_i32(name: &str, value: &str) -> Result<i32, CliError> {
         .map_err(|_| CliError::Failure(format!("{name} must be an integer, got {value:?}")))
 }
 
+fn parse_u64(name: &str, value: &str) -> Result<u64, CliError> {
+    value
+        .parse::<u64>()
+        .map_err(|_| CliError::Failure(format!("{name} must be an integer, got {value:?}")))
+}
+
 fn parse_usize(name: &str, value: &str) -> Result<usize, CliError> {
     value
         .parse::<usize>()
@@ -2906,6 +3400,13 @@ fn parse_point(name: &str, value: &str) -> Result<Point, CliError> {
     ))
 }
 
+fn parse_next_string(args: &[String], index: &mut usize, name: &str) -> Result<String, CliError> {
+    *index += 1;
+    args.get(*index)
+        .cloned()
+        .ok_or_else(|| CliError::Failure(format!("missing value for {name}")))
+}
+
 fn non_empty_cli_string(value: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty() {
@@ -2957,7 +3458,7 @@ fn daemon_request(context: &CliContext, request: ApiRequest) -> Result<ApiResult
 
 fn print_usage() {
     println!(
-        "Usage: peekaboox [--daemon] [--socket <path>] <capture|capture-delta|capture-backends|capture-dmabuf|plugins|windows|elements|ocr|compare|state|vision-elements|click|move|drag|type|hotkey>"
+        "Usage: peekaboox [--daemon] [--socket <path>] <capture|capture-delta|capture-backends|capture-dmabuf|plugins|windows|elements|ocr|compare|state|vision-elements|desktop|click|move|drag|type|hotkey>"
     );
     println!("Try:   peekaboox capture --output screenshot.png");
     println!("Try:   peekaboox --daemon capture-delta --stream agent-loop");
@@ -2971,6 +3472,8 @@ fn print_usage() {
     println!("Try:   peekaboox compare before.png after.png --max-changed-ratio 0.01");
     println!("Try:   peekaboox state frame1.png frame2.png frame3.png");
     println!("Try:   peekaboox vision-elements screenshot.png --min-width 8");
+    println!("Try:   peekaboox desktop focus --app telegram");
+    println!("Try:   peekaboox desktop click --app telegram --target search-input");
     println!("Try:   peekaboox click --x 100 --y 200");
     println!("Try:   peekaboox click --text \"Submit\"");
     println!("Try:   peekaboox move --x 100 --y 200");
@@ -3036,6 +3539,28 @@ fn print_vision_elements_usage() {
     println!("       peekaboox vision-elements <image-path>");
 }
 
+fn print_desktop_usage() {
+    println!("Usage: peekaboox desktop profiles");
+    println!(
+        "Usage: peekaboox desktop focus --app <app> [--no-overview] [--no-launch] [--wait-ms <ms>] [--overview-wait-ms <ms>]"
+    );
+    println!(
+        "Usage: peekaboox desktop locate --app <app> --target <target> [--image <path>] [--no-accessibility]"
+    );
+    println!(
+        "Usage: peekaboox desktop click --app <app> --target <target> [--button left|middle|right] [--image <path>] [--dry-run] [--no-accessibility]"
+    );
+    println!(
+        "Usage: peekaboox desktop type-into --app <app> --target <target> [--clear] [--image <path>] [--dry-run] <text>"
+    );
+    println!(
+        "Usage: peekaboox desktop assert --app <app> --target <target> [--present|--active|--not-active|--contains <text>] [--image <path>]"
+    );
+    println!(
+        "       peekaboox desktop assert-not --app <app> --target <target> [--present|--active|--contains <text>]"
+    );
+}
+
 fn print_click_usage() {
     println!(
         "Usage: peekaboox click (--x <pixels> --y <pixels> | --text <label> | --selector <query>) [--button left|middle|right] [--dry-run] [--vision-fallback]"
@@ -3069,17 +3594,19 @@ mod tests {
     use super::{
         CaptureArgs, CaptureBackendsCommand, CaptureCommand, CaptureDeltaArgs, CaptureDeltaCommand,
         CaptureDmaBufArgs, CaptureDmaBufCommand, CaptureDmaBufImportTarget, CliContext, CliError,
-        ClickArgs, ClickCommand, ClickTarget, CompareArgs, CompareCommand, DragArgs, DragCommand,
-        ElementsArgs, ElementsCommand, GlobalArgs, HotkeyArgs, HotkeyCommand, MoveArgs,
-        MoveCommand, OcrArgs, OcrCommand, PluginsArgs, PluginsCommand, TypeArgs, TypeCommand,
-        UiStateArgs, UiStateCommand, VisionElementsArgs, VisionElementsCommand, WindowsCommand,
-        parse_capture_args, parse_capture_backends_args, parse_capture_delta_args,
-        parse_capture_dmabuf_args, parse_click_args, parse_compare_args, parse_drag_args,
-        parse_elements_args, parse_global_args, parse_hotkey_args, parse_move_args, parse_ocr_args,
-        parse_plugins_args, parse_type_args, parse_ui_state_args, parse_vision_elements_args,
-        parse_windows_args,
+        ClickArgs, ClickCommand, ClickTarget, CompareArgs, CompareCommand, DesktopAssertArgs,
+        DesktopClickArgs, DesktopCommand, DesktopFocusArgs, DesktopLocateArgs, DesktopTypeIntoArgs,
+        DragArgs, DragCommand, ElementsArgs, ElementsCommand, GlobalArgs, HotkeyArgs,
+        HotkeyCommand, MoveArgs, MoveCommand, OcrArgs, OcrCommand, PluginsArgs, PluginsCommand,
+        TypeArgs, TypeCommand, UiStateArgs, UiStateCommand, VisionElementsArgs,
+        VisionElementsCommand, WindowsCommand, parse_capture_args, parse_capture_backends_args,
+        parse_capture_delta_args, parse_capture_dmabuf_args, parse_click_args, parse_compare_args,
+        parse_desktop_args, parse_drag_args, parse_elements_args, parse_global_args,
+        parse_hotkey_args, parse_move_args, parse_ocr_args, parse_plugins_args, parse_type_args,
+        parse_ui_state_args, parse_vision_elements_args, parse_windows_args,
     };
     use peekaboox_core::{Point, Rect};
+    use peekaboox_desktop::DesktopAssertion;
 
     #[test]
     fn capture_defaults_to_screenshot_png() {
@@ -3599,6 +4126,162 @@ mod tests {
         assert_eq!(
             error,
             CliError::Failure("--threshold must be greater than zero".to_owned())
+        );
+    }
+
+    #[test]
+    fn desktop_profiles_accepts_no_arguments() {
+        let command = parse_desktop_args(vec!["profiles".to_owned()]).unwrap();
+
+        assert_eq!(command, DesktopCommand::Profiles);
+    }
+
+    #[test]
+    fn desktop_focus_accepts_app_and_wait_options() {
+        let command = parse_desktop_args(vec![
+            "focus".to_owned(),
+            "--app".to_owned(),
+            "telegram".to_owned(),
+            "--no-overview".to_owned(),
+            "--wait-ms".to_owned(),
+            "250".to_owned(),
+            "--overview-wait-ms".to_owned(),
+            "125".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DesktopCommand::Focus(DesktopFocusArgs {
+                app: "telegram".to_owned(),
+                use_gnome_overview: false,
+                launch_if_needed: true,
+                wait_after_focus_ms: 250,
+                overview_wait_ms: 125
+            })
+        );
+    }
+
+    #[test]
+    fn desktop_locate_accepts_positional_app_and_target() {
+        let command = parse_desktop_args(vec![
+            "locate".to_owned(),
+            "telegram".to_owned(),
+            "send-button".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DesktopCommand::Locate(DesktopLocateArgs {
+                app: "telegram".to_owned(),
+                target: "send-button".to_owned(),
+                image: None,
+                prefer_accessibility: true
+            })
+        );
+    }
+
+    #[test]
+    fn desktop_click_accepts_button_dry_run_and_image() {
+        let command = parse_desktop_args(vec![
+            "click".to_owned(),
+            "--app".to_owned(),
+            "telegram".to_owned(),
+            "--target".to_owned(),
+            "search-input".to_owned(),
+            "--button".to_owned(),
+            "right".to_owned(),
+            "--image".to_owned(),
+            "screen.png".to_owned(),
+            "--dry-run".to_owned(),
+            "--no-accessibility".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DesktopCommand::Click(DesktopClickArgs {
+                app: "telegram".to_owned(),
+                target: "search-input".to_owned(),
+                image: Some(PathBuf::from("screen.png")),
+                prefer_accessibility: false,
+                button: MouseButton::Right,
+                dry_run: true
+            })
+        );
+    }
+
+    #[test]
+    fn desktop_type_into_joins_text() {
+        let command = parse_desktop_args(vec![
+            "type-into".to_owned(),
+            "telegram".to_owned(),
+            "message-input".to_owned(),
+            "--clear".to_owned(),
+            "PeekabooX".to_owned(),
+            "Example".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DesktopCommand::TypeInto(DesktopTypeIntoArgs {
+                app: "telegram".to_owned(),
+                target: "message-input".to_owned(),
+                text: "PeekabooX Example".to_owned(),
+                image: None,
+                prefer_accessibility: true,
+                clear: true,
+                dry_run: false
+            })
+        );
+    }
+
+    #[test]
+    fn desktop_assert_not_active_maps_to_not_active_guard() {
+        let command = parse_desktop_args(vec![
+            "assert".to_owned(),
+            "--app".to_owned(),
+            "telegram".to_owned(),
+            "--target".to_owned(),
+            "send-button".to_owned(),
+            "--not-active".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DesktopCommand::Assert(DesktopAssertArgs {
+                app: "telegram".to_owned(),
+                target: "send-button".to_owned(),
+                image: None,
+                prefer_accessibility: true,
+                assertion: DesktopAssertion::NotActive
+            })
+        );
+    }
+
+    #[test]
+    fn desktop_assert_not_negates_contains() {
+        let command = parse_desktop_args(vec![
+            "assert-not".to_owned(),
+            "telegram".to_owned(),
+            "header".to_owned(),
+            "--contains".to_owned(),
+            "Alerts".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DesktopCommand::Assert(DesktopAssertArgs {
+                app: "telegram".to_owned(),
+                target: "header".to_owned(),
+                image: None,
+                prefer_accessibility: true,
+                assertion: DesktopAssertion::NotContains("Alerts".to_owned())
+            })
         );
     }
 

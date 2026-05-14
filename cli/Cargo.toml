@@ -9,6 +9,7 @@ repository.workspace = true
 peekaboox-accessibility = { path = "../rust/accessibility" }
 peekaboox-capture = { path = "../rust/capture" }
 peekaboox-core = { path = "../rust/core" }
+peekaboox-desktop = { path = "../rust/desktop" }
 peekaboox-input = { path = "../rust/input" }
 peekaboox-ipc = { path = "../rust/ipc" }
 peekaboox-plugins = { path = "../rust/plugins" }

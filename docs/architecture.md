@@ -9,6 +9,8 @@ The Rust side owns low-latency desktop integration:
 - window management
 - accessibility
 - vision primitives, including a Tesseract-backed OCR provider abstraction
+- reusable desktop-operation helpers that combine app focus, screenshot layout
+  detection, and action guards for app-specific automation profiles
 - IPC contracts
 
 The Python side owns agent orchestration:

@@ -7,6 +7,7 @@ members = [
     "rust/windows",
     "rust/accessibility",
     "rust/vision",
+    "rust/desktop",
     "rust/ipc",
     "rust/plugins",
     "rust/daemon",
