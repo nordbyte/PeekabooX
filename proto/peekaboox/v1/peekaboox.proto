@@ -153,10 +153,33 @@ message FindElementResponse {
   bool vision_fallback_used = 7;
 }
 
-message ListWindowsRequest {}
+message ListWindowsRequest {
+  optional string id = 1;
+  optional string app = 2;
+  optional string title = 3;
+  optional string title_regex = 4;
+  bool focused = 5;
+  optional uint32 limit = 6;
+  optional string sort = 7;
+  optional string backend = 8;
+  bool diagnose = 9;
+}
 
 message ListWindowsResponse {
   repeated WindowInfo windows = 1;
+  string backend_name = 2;
+  string backend_kind = 3;
+  repeated string warnings = 4;
+  repeated WindowBackendReport backend_reports = 5;
+}
+
+message WindowBackendReport {
+  string backend_name = 1;
+  string backend_kind = 2;
+  uint32 raw_window_count = 3;
+  uint32 matched_window_count = 4;
+  bool selected = 5;
+  optional string error = 6;
 }
 
 message GetDesktopStateRequest {}

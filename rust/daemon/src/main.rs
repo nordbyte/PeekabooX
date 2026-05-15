@@ -32,8 +32,8 @@ use peekaboox_ipc::{
     DesktopLocateResultDto, DmaBufImportTargetDto, DmaBufProbeResultDto, ElementDto,
     ElementListResultDto, MouseButtonDto, OcrBlockDto, OcrResultDto, PluginDiscoveryErrorDto,
     PluginDto, PluginListResultDto, PluginToolDto, PluginToolExecutionResultDto, PointDto,
-    UiStateDto, VisualDiffDto, WindowDto, WindowListResultDto, decode_request, default_socket_path,
-    encode_response,
+    UiStateDto, VisualDiffDto, WindowBackendReportDto, WindowDto, WindowListResultDto,
+    decode_request, default_socket_path, encode_response,
 };
 use peekaboox_vision::{
     IncrementalCaptureDelta, IncrementalCaptureOptions, OcrConfig, OcrOptions,
@@ -566,7 +566,9 @@ fn run_server(config: ServerConfig) -> Result<(), String> {
 type SharedAudit = Arc<Mutex<AuditLogger>>;
 type SharedAccessibilityCache = Arc<Mutex<AccessibilityCache>>;
 type SharedIncrementalCaptureState = Arc<Mutex<IncrementalCaptureState>>;
-type WindowListProvider = fn() -> peekaboox_core::Result<peekaboox_windows::WindowListMetadata>;
+type WindowListProvider = fn(
+    peekaboox_windows::WindowQuery,
+) -> peekaboox_core::Result<peekaboox_windows::WindowListMetadata>;
 
 #[derive(Debug, Default)]
 struct IncrementalCaptureState {
@@ -1271,7 +1273,7 @@ fn spawn_grpc_server(
         audit: Arc::clone(&audit),
         accessibility_cache,
         incremental_capture_state,
-        list_windows: peekaboox_windows::list_windows,
+        list_windows: peekaboox_windows::list_windows_with_query,
     };
     let audit_for_thread = Arc::clone(&audit);
 
@@ -1668,14 +1670,31 @@ fn dispatch_request(
             };
             Ok(ApiResult::Hotkey(metadata))
         }
-        ApiRequest::ListWindows => {
-            let metadata = peekaboox_windows::list_windows().map_err(|error| error.to_string())?;
-            Ok(ApiResult::ListWindows(WindowListResultDto {
-                backend_name: metadata.backend_name,
-                backend_kind: backend_kind_name(metadata.backend_kind),
-                warnings: metadata.warnings,
-                windows: metadata.windows.iter().map(WindowDto::from).collect(),
-            }))
+        ApiRequest::ListWindows {
+            id,
+            app,
+            title,
+            title_regex,
+            focused,
+            limit,
+            sort,
+            backend,
+            diagnose,
+        } => {
+            let query = window_query_from_fields(
+                id,
+                app,
+                title,
+                title_regex,
+                focused,
+                limit,
+                sort,
+                backend,
+                diagnose,
+            )?;
+            let metadata = peekaboox_windows::list_windows_with_query(query)
+                .map_err(|error| error.to_string())?;
+            Ok(ApiResult::ListWindows(window_list_result_dto(metadata)))
         }
         ApiRequest::FindElements {
             selector,
@@ -2265,10 +2284,12 @@ impl PeekabooX for GrpcPeekabooXService {
 
     async fn list_windows(
         &self,
-        _request: Request<proto::ListWindowsRequest>,
+        request: Request<proto::ListWindowsRequest>,
     ) -> Result<Response<proto::ListWindowsResponse>, Status> {
-        let result = grpc_list_windows(self.list_windows);
-        audit_grpc_result(&self.audit, "grpc.list_windows", &result, json!({}));
+        let request = request.into_inner();
+        let audit_details = grpc_list_windows_audit_details(&request);
+        let result = grpc_list_windows(self.list_windows, request);
+        audit_grpc_result(&self.audit, "grpc.list_windows", &result, audit_details);
         result.map(Response::new)
     }
 
@@ -3128,12 +3149,119 @@ fn grpc_hotkey(
     })
 }
 
+fn grpc_list_windows_audit_details(request: &proto::ListWindowsRequest) -> serde_json::Value {
+    json!({
+        "id": request.id.as_deref(),
+        "app": request.app.as_deref(),
+        "title": request.title.as_deref(),
+        "title_regex": request.title_regex.as_deref(),
+        "focused": request.focused,
+        "limit": request.limit,
+        "sort": request.sort.as_deref(),
+        "backend": request.backend.as_deref(),
+        "diagnose": request.diagnose,
+    })
+}
+
+fn window_query_from_proto(
+    request: proto::ListWindowsRequest,
+) -> Result<peekaboox_windows::WindowQuery, Status> {
+    window_query_from_fields(
+        request.id,
+        request.app,
+        request.title,
+        request.title_regex,
+        request.focused,
+        request.limit.map(|value| value as usize),
+        request.sort,
+        request.backend,
+        request.diagnose,
+    )
+    .map_err(Status::invalid_argument)
+}
+
+fn window_query_from_fields(
+    id: Option<String>,
+    app: Option<String>,
+    title: Option<String>,
+    title_regex: Option<String>,
+    focused: bool,
+    limit: Option<usize>,
+    sort: Option<String>,
+    backend: Option<String>,
+    diagnose: bool,
+) -> Result<peekaboox_windows::WindowQuery, String> {
+    let sort = match clean_optional_string(sort) {
+        Some(value) => peekaboox_windows::WindowSort::from_name(&value)
+            .ok_or_else(|| format!("invalid windows sort: {value}"))?,
+        None => peekaboox_windows::WindowSort::Backend,
+    };
+    let backend = match clean_optional_string(backend) {
+        Some(value) => peekaboox_windows::WindowBackendSelection::from_name(&value)
+            .ok_or_else(|| format!("invalid windows backend: {value}"))?,
+        None => peekaboox_windows::WindowBackendSelection::Auto,
+    };
+
+    if limit == Some(0) {
+        return Err("windows limit must be greater than zero".to_owned());
+    }
+
+    Ok(peekaboox_windows::WindowQuery {
+        id: clean_optional_string(id),
+        app: clean_optional_string(app),
+        title: clean_optional_string(title),
+        title_regex: clean_optional_string(title_regex),
+        focused_only: focused,
+        limit,
+        sort,
+        backend,
+        diagnose,
+    })
+}
+
+fn clean_optional_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn window_list_result_dto(metadata: peekaboox_windows::WindowListMetadata) -> WindowListResultDto {
+    WindowListResultDto {
+        backend_name: metadata.backend_name,
+        backend_kind: backend_kind_name(metadata.backend_kind),
+        warnings: metadata.warnings,
+        backend_reports: metadata
+            .backend_reports
+            .into_iter()
+            .map(|report| WindowBackendReportDto {
+                backend_name: report.backend_name,
+                backend_kind: backend_kind_name(report.backend_kind),
+                raw_window_count: report.raw_window_count,
+                matched_window_count: report.matched_window_count,
+                selected: report.selected,
+                error: report.error,
+            })
+            .collect(),
+        windows: metadata.windows.iter().map(WindowDto::from).collect(),
+    }
+}
+
 fn grpc_list_windows(
     list_windows: WindowListProvider,
+    request: proto::ListWindowsRequest,
 ) -> Result<proto::ListWindowsResponse, Status> {
-    let metadata = list_windows().map_err(|error| Status::internal(error.to_string()))?;
+    let query = window_query_from_proto(request)?;
+    let metadata = list_windows(query).map_err(|error| Status::internal(error.to_string()))?;
     Ok(proto::ListWindowsResponse {
         windows: metadata.windows.iter().map(proto_window_info).collect(),
+        backend_name: metadata.backend_name,
+        backend_kind: backend_kind_name(metadata.backend_kind),
+        warnings: metadata.warnings,
+        backend_reports: metadata
+            .backend_reports
+            .iter()
+            .map(proto_window_backend_report)
+            .collect(),
     })
 }
 
@@ -3179,7 +3307,8 @@ fn grpc_desktop_state(
     accessibility_cache: &SharedAccessibilityCache,
     list_windows: WindowListProvider,
 ) -> Result<proto::DesktopState, Status> {
-    let metadata = list_windows().map_err(|error| Status::internal(error.to_string()))?;
+    let metadata = list_windows(peekaboox_windows::WindowQuery::default())
+        .map_err(|error| Status::internal(error.to_string()))?;
     let active_window = metadata
         .windows
         .iter()
@@ -3907,6 +4036,19 @@ fn proto_window_info(window: &WindowInfo) -> proto::WindowInfo {
         bounds: Some(proto_rect(window.bounds)),
         focused: window.focused,
         state: format!("{:?}", window.state).to_ascii_lowercase(),
+    }
+}
+
+fn proto_window_backend_report(
+    report: &peekaboox_windows::WindowBackendReport,
+) -> proto::WindowBackendReport {
+    proto::WindowBackendReport {
+        backend_name: report.backend_name.clone(),
+        backend_kind: backend_kind_name(report.backend_kind),
+        raw_window_count: report.raw_window_count as u32,
+        matched_window_count: report.matched_window_count as u32,
+        selected: report.selected,
+        error: report.error.clone(),
     }
 }
 
@@ -4719,7 +4861,7 @@ fn request_method(request: &ApiRequest) -> &'static str {
         ApiRequest::TypeText { .. } => "type_text",
         ApiRequest::PasteText { .. } => "paste_text",
         ApiRequest::Hotkey { .. } => "hotkey",
-        ApiRequest::ListWindows => "list_windows",
+        ApiRequest::ListWindows { .. } => "list_windows",
         ApiRequest::FindElements { .. } => "find_elements",
         ApiRequest::Ocr { .. } => "ocr",
         ApiRequest::CompareImages { .. } => "compare_images",
@@ -4832,7 +4974,27 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
         ApiRequest::Hotkey { keys, dry_run } => {
             json!({ "key_count": keys.len(), "dry_run": dry_run })
         }
-        ApiRequest::ListWindows => json!({}),
+        ApiRequest::ListWindows {
+            id,
+            app,
+            title,
+            title_regex,
+            focused,
+            limit,
+            sort,
+            backend,
+            diagnose,
+        } => json!({
+            "id": id.as_deref(),
+            "app": app.as_deref(),
+            "title": title.as_deref(),
+            "title_regex": title_regex.as_deref(),
+            "focused": focused,
+            "limit": limit,
+            "sort": sort.as_deref(),
+            "backend": backend.as_deref(),
+            "diagnose": diagnose
+        }),
         ApiRequest::FindElements {
             selector,
             vision_fallback,
@@ -5680,7 +5842,12 @@ mod tests {
             .await
             .unwrap();
         let response = client
-            .list_windows(proto::ListWindowsRequest {})
+            .list_windows(proto::ListWindowsRequest {
+                focused: true,
+                sort: Some("focused".to_owned()),
+                diagnose: true,
+                ..Default::default()
+            })
             .await
             .unwrap()
             .into_inner();
@@ -5691,6 +5858,10 @@ mod tests {
                 .iter()
                 .all(|window| window.bounds.is_some())
         );
+        assert_eq!(response.backend_name, "test");
+        assert_eq!(response.backend_kind, "x11");
+        assert_eq!(response.backend_reports.len(), 1);
+        assert!(response.backend_reports[0].selected);
         shutdown_tx.send(()).unwrap();
         server.await.unwrap();
         let _ = std::fs::remove_file(audit_path);
@@ -5798,7 +5969,10 @@ mod tests {
         Arc::new(Mutex::new(IncrementalCaptureState::default()))
     }
 
-    fn test_list_windows() -> peekaboox_core::Result<peekaboox_windows::WindowListMetadata> {
+    fn test_list_windows(
+        query: peekaboox_windows::WindowQuery,
+    ) -> peekaboox_core::Result<peekaboox_windows::WindowListMetadata> {
+        assert!(query.focused_only || query == peekaboox_windows::WindowQuery::default());
         Ok(peekaboox_windows::WindowListMetadata {
             backend_name: "test".to_owned(),
             backend_kind: BackendKind::X11,
@@ -5811,6 +5985,14 @@ mod tests {
                 state: WindowState::Normal,
             }],
             warnings: Vec::new(),
+            backend_reports: vec![peekaboox_windows::WindowBackendReport {
+                backend_name: "test".to_owned(),
+                backend_kind: BackendKind::X11,
+                raw_window_count: 1,
+                matched_window_count: 1,
+                selected: true,
+                error: None,
+            }],
         })
     }
 

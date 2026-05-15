@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 dbus = "0.9"
 peekaboox-core = { path = "../core" }
+regex = "1"
 
 [lib]
 path = "src/lib.rs"

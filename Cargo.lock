@@ -841,6 +841,7 @@ version = "1.0.1"
 dependencies = [
  "dbus",
  "peekaboox-core",
+ "regex",
 ]
 
 [[package]]

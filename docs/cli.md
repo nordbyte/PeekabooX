@@ -154,11 +154,19 @@ List visible desktop windows:
 ```bash
 cargo run -q -p peekaboox-cli -- windows
 cargo run -q -p peekaboox-cli -- windows --json
+cargo run -q -p peekaboox-cli -- windows --focused --limit 1 --sort focused --json
+cargo run -q -p peekaboox-cli -- windows --app calculator --title-regex "Calculator" --diagnose --json
+cargo run -q -p peekaboox-cli -- windows --backend xdotool --diagnose
 ```
 
 Window enumeration tries GNOME Shell Introspect on GNOME, falls back to AT-SPI
 for Wayland-accessible applications, and uses `xdotool` for X11/XWayland
-windows.
+windows. `windows` supports `--id <id>`, `--app <app>`, `--title <text>`,
+`--title-regex <regex>`, `--focused`, `--limit <n>`, `--sort
+backend|focused|title|app|area|id|state`, `--backend
+auto|gnome|at-spi|xdotool`, and `--diagnose`. JSON responses include
+`backend_name`, `backend_kind`, `warnings`, and per-backend diagnostic reports
+so scripts can see which backend was selected and why fallbacks were attempted.
 
 List semantic elements from the CLI:
 

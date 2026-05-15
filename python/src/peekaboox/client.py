@@ -44,6 +44,25 @@ class WindowInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class WindowBackendReport:
+    backend_name: str
+    backend_kind: str
+    raw_window_count: int
+    matched_window_count: int
+    selected: bool
+    error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class WindowListResult:
+    backend_name: str
+    backend_kind: str
+    warnings: tuple[str, ...]
+    backend_reports: tuple[WindowBackendReport, ...]
+    windows: tuple[WindowInfo, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class UiElement:
     id: str
     role: str
@@ -699,9 +718,58 @@ class PeekabooXClient:
             vision_merge_distance=vision_merge_distance,
         ).elements
 
-    def list_windows(self) -> tuple[WindowInfo, ...]:
-        response = self._call("ListWindows", self.messages.ListWindowsRequest())
-        return tuple(_window_from_proto(window) for window in response.windows)
+    def list_windows(
+        self,
+        *,
+        id: str | None = None,
+        app: str | None = None,
+        title: str | None = None,
+        title_regex: str | None = None,
+        focused: bool = False,
+        limit: int | None = None,
+        sort: str | None = None,
+        backend: str | None = None,
+        diagnose: bool = False,
+    ) -> tuple[WindowInfo, ...]:
+        return self.list_windows_result(
+            id=id,
+            app=app,
+            title=title,
+            title_regex=title_regex,
+            focused=focused,
+            limit=limit,
+            sort=sort,
+            backend=backend,
+            diagnose=diagnose,
+        ).windows
+
+    def list_windows_result(
+        self,
+        *,
+        id: str | None = None,
+        app: str | None = None,
+        title: str | None = None,
+        title_regex: str | None = None,
+        focused: bool = False,
+        limit: int | None = None,
+        sort: str | None = None,
+        backend: str | None = None,
+        diagnose: bool = False,
+    ) -> WindowListResult:
+        request = _list_windows_request(
+            self.messages,
+            id=id,
+            app=app,
+            title=title,
+            title_regex=title_regex,
+            focused=focused,
+            limit=limit,
+            sort=sort,
+            backend=backend,
+            diagnose=diagnose,
+        )
+        response = self._call("ListWindows", request)
+        return _window_list_result_from_proto(response)
 
     def get_desktop_state(self) -> DesktopState:
         response = self._call("GetDesktopState", self.messages.GetDesktopStateRequest())
@@ -978,6 +1046,73 @@ def _capture_target(messages: Any, region: Rect | None = None, window_id: str | 
             raise ValueError("window_id must not be empty")
         return messages.CaptureTarget(window_id=window_id)
     return messages.CaptureTarget(full_screen=True)
+
+
+def _list_windows_request(
+    messages: Any,
+    *,
+    id: str | None,
+    app: str | None,
+    title: str | None,
+    title_regex: str | None,
+    focused: bool,
+    limit: int | None,
+    sort: str | None,
+    backend: str | None,
+    diagnose: bool,
+) -> Any:
+    if limit is not None and limit <= 0:
+        raise ValueError("limit must be greater than zero")
+
+    kwargs: dict[str, Any] = {
+        "focused": focused,
+        "diagnose": diagnose,
+    }
+    for key, value in {
+        "id": id,
+        "app": app,
+        "title": title,
+        "title_regex": title_regex,
+        "sort": sort,
+        "backend": backend,
+    }.items():
+        value = _clean_optional_string(value)
+        if value is not None:
+            kwargs[key] = value
+    if limit is not None:
+        kwargs["limit"] = limit
+
+    return messages.ListWindowsRequest(**kwargs)
+
+
+def _window_list_result_from_proto(response: Any) -> WindowListResult:
+    return WindowListResult(
+        backend_name=response.backend_name,
+        backend_kind=response.backend_kind,
+        warnings=tuple(response.warnings),
+        backend_reports=tuple(
+            _window_backend_report_from_proto(report) for report in response.backend_reports
+        ),
+        windows=tuple(_window_from_proto(window) for window in response.windows),
+    )
+
+
+def _window_backend_report_from_proto(report: Any) -> WindowBackendReport:
+    return WindowBackendReport(
+        backend_name=report.backend_name,
+        backend_kind=report.backend_kind,
+        raw_window_count=report.raw_window_count,
+        matched_window_count=report.matched_window_count,
+        selected=report.selected,
+        error=_optional_scalar(report, "error"),
+    )
+
+
+def _clean_optional_string(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
 
 
 def _window_from_proto(window: Any) -> WindowInfo:

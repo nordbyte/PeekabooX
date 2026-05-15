@@ -73,6 +73,8 @@ peekaboox capture --window-id window-1 --output window.png
 
 # Inspect windows and semantic UI elements.
 peekaboox windows --json
+peekaboox windows --focused --limit 1 --sort focused --json
+peekaboox windows --app calculator --title-regex "Calculator" --diagnose --json
 peekaboox elements --selector "role=push button,label=Submit" --vision-fallback
 
 # Drive named desktop targets without hard-coded coordinates.
@@ -91,8 +93,9 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server
 
 Live desktop examples are in [examples/desktop](examples/desktop). They cover
 desktop smoke checks, scoped accessibility element inspection, real Calculator
-element lookup with semantic click dry-runs, visible-window OCR, paint drawing
-and saving, Text Editor save dialogs, and Telegram Saved Messages automation.
+window inventory, real Calculator element lookup with semantic click dry-runs,
+visible-window OCR, paint drawing and saving, Text Editor save dialogs, and
+Telegram Saved Messages automation.
 
 ## Shell completions
 
@@ -112,7 +115,7 @@ Shell-native completion generation is not part of the current CLI surface.
 | [capture-delta](docs/cli.md#capture-delta) | `--stream`, `--low-bandwidth`, `--reset` | Return full-frame or changed-rectangle capture deltas |
 | [capture-backends](docs/cli.md#capture-backends-and-dma-buf) | none | Inspect available screenshot and zero-copy backends |
 | [capture-dmabuf](docs/cli.md#capture-backends-and-dma-buf) | `--import egl`, `--import egl-texture` | Probe optional PipeWire DMA-BUF import paths |
-| [windows](docs/cli.md#windows-and-elements) | `--json` | List visible desktop windows |
+| [windows](docs/cli.md#windows-and-elements) | `--app`, `--title-regex`, `--focused`, `--limit`, `--diagnose`, `--json` | List, filter, and diagnose visible desktop windows |
 | [elements](docs/cli.md#windows-and-elements) | `--selector`, `--role`, `--state`, `--vision-fallback` | Query semantic UI elements |
 | [ocr](docs/cli.md#vision-tools) | `--image`, `--region`, `--window-id`, `--language`, `--psm`, `--json`, `--words` | Run Tesseract-backed OCR |
 | [compare](docs/cli.md#vision-tools) | `--threshold`, `--max-changed-ratio`, `--json` | Compare images or regions |

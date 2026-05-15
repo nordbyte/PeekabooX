@@ -12,7 +12,9 @@ Core RPCs:
 - `TypeText`
 - `Hotkey`
 - `FindElement`
-- `ListWindows`
+- `ListWindows` with optional `id`, `app`, `title`, `title_regex`, `focused`,
+  `limit`, `sort`, `backend`, and `diagnose` fields plus backend metadata in
+  the response
 - `GetDesktopState`
 - `OcrScreen`
 - `CompareImages`
@@ -190,6 +192,8 @@ runtime = AgentRuntime.connect(
     audit_log_path="peekaboox-runtime-audit.jsonl",
 )
 windows = runtime.list_windows()
+focused = runtime.list_windows(focused=True, limit=1, sort="focused")
+window_result = runtime.list_windows_result(app="calculator", diagnose=True)
 state = runtime.get_desktop_state()
 buttons = runtime.find_element("role=push button", vision_fallback=True)
 text = runtime.ocr_region(Rect(x=10, y=20, width=400, height=120), language="eng")
@@ -510,6 +514,7 @@ Route CLI commands through the daemon:
 
 ```bash
 cargo run -q -p peekaboox-cli -- --daemon windows
+cargo run -q -p peekaboox-cli -- --daemon windows --focused --limit 1 --json
 ```
 
 Inspect the installed Python runtime without starting an MCP client:

@@ -14,8 +14,8 @@ use peekaboox_ipc::{
     DesktopActionResultDto, DesktopAssertionDto, DesktopLocateResultDto, DmaBufImportTargetDto,
     DmaBufProbeResultDto, ElementDto, ElementListResultDto, MouseButtonDto, OcrBlockDto,
     OcrResultDto, PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
-    PluginToolExecutionResultDto, RectDto, UiStateDto, VisualDiffDto, WindowDto,
-    WindowListResultDto, default_socket_path, send_request,
+    PluginToolExecutionResultDto, RectDto, UiStateDto, VisualDiffDto, WindowBackendReportDto,
+    WindowDto, WindowListResultDto, default_socket_path, send_request,
 };
 use peekaboox_vision::{
     OcrConfig, OcrOptions, OcrPreprocessingOptions, OcrResult, TesseractOcrBackend,
@@ -349,6 +349,15 @@ enum CliError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WindowsArgs {
     json: bool,
+    id: Option<String>,
+    app: Option<String>,
+    title: Option<String>,
+    title_regex: Option<String>,
+    focused: bool,
+    limit: Option<usize>,
+    sort: peekaboox_windows::WindowSort,
+    backend: peekaboox_windows::WindowBackendSelection,
+    diagnose: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1399,9 +1408,23 @@ fn windows(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         print_windows_usage();
         return Err(CliError::HelpRequested);
     };
+    let query = window_query_from_args(&args);
 
     if context.use_daemon {
-        let result = daemon_request(context, ApiRequest::ListWindows)?;
+        let result = daemon_request(
+            context,
+            ApiRequest::ListWindows {
+                id: args.id.clone(),
+                app: args.app.clone(),
+                title: args.title.clone(),
+                title_regex: args.title_regex.clone(),
+                focused: args.focused,
+                limit: args.limit,
+                sort: Some(args.sort.name().to_owned()),
+                backend: Some(args.backend.name().to_owned()),
+                diagnose: args.diagnose,
+            },
+        )?;
         let ApiResult::ListWindows(metadata) = result else {
             return Err(CliError::Failure(
                 "daemon returned unexpected windows response".to_owned(),
@@ -1410,13 +1433,13 @@ fn windows(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         if args.json {
             print_json_pretty(&metadata)?;
         } else {
-            print_window_dto_table(metadata);
+            print_window_dto_table(metadata, args.diagnose);
         }
         return Ok(());
     }
 
-    let metadata =
-        peekaboox_windows::list_windows().map_err(|error| CliError::Failure(error.to_string()))?;
+    let metadata = peekaboox_windows::list_windows_with_query(query)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
     let metadata = window_list_dto(metadata);
 
     if args.json {
@@ -1424,12 +1447,15 @@ fn windows(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         return Ok(());
     }
 
-    for warning in metadata.warnings {
+    for warning in &metadata.warnings {
         eprintln!("warning: {warning}");
     }
 
     if metadata.windows.is_empty() {
         println!("no windows found via {}", metadata.backend_name);
+        if args.diagnose {
+            print_window_backend_reports(&metadata.backend_reports);
+        }
         return Ok(());
     }
 
@@ -1442,16 +1468,37 @@ fn windows(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         print_window_dto(window);
     }
 
+    if args.diagnose {
+        print_window_backend_reports(&metadata.backend_reports);
+    }
+
     Ok(())
 }
 
-fn print_window_dto_table(metadata: WindowListResultDto) {
-    for warning in metadata.warnings {
+fn window_query_from_args(args: &WindowsArgs) -> peekaboox_windows::WindowQuery {
+    peekaboox_windows::WindowQuery {
+        id: args.id.clone(),
+        app: args.app.clone(),
+        title: args.title.clone(),
+        title_regex: args.title_regex.clone(),
+        focused_only: args.focused,
+        limit: args.limit,
+        sort: args.sort,
+        backend: args.backend,
+        diagnose: args.diagnose,
+    }
+}
+
+fn print_window_dto_table(metadata: WindowListResultDto, diagnose: bool) {
+    for warning in &metadata.warnings {
         eprintln!("warning: {warning}");
     }
 
     if metadata.windows.is_empty() {
         println!("no windows found via {}", metadata.backend_name);
+        if diagnose {
+            print_window_backend_reports(&metadata.backend_reports);
+        }
         return;
     }
 
@@ -1462,6 +1509,10 @@ fn print_window_dto_table(metadata: WindowListResultDto) {
 
     for window in metadata.windows {
         print_window_dto(window);
+    }
+
+    if diagnose {
+        print_window_backend_reports(&metadata.backend_reports);
     }
 }
 
@@ -1478,11 +1529,47 @@ fn print_window_dto(window: WindowDto) {
     );
 }
 
+fn print_window_backend_reports(reports: &[WindowBackendReportDto]) {
+    if reports.is_empty() {
+        return;
+    }
+
+    println!();
+    println!(
+        "{:<24} {:<10} {:<5} {:<7} {:<8} ERROR",
+        "BACKEND", "KIND", "RAW", "MATCH", "SELECTED"
+    );
+
+    for report in reports {
+        println!(
+            "{:<24} {:<10} {:<5} {:<7} {:<8} {}",
+            report.backend_name,
+            report.backend_kind,
+            report.raw_window_count,
+            report.matched_window_count,
+            if report.selected { "yes" } else { "no" },
+            report.error.as_deref().unwrap_or("-")
+        );
+    }
+}
+
 fn window_list_dto(metadata: peekaboox_windows::WindowListMetadata) -> WindowListResultDto {
     WindowListResultDto {
         backend_name: metadata.backend_name,
         backend_kind: backend_kind_label(metadata.backend_kind),
         warnings: metadata.warnings,
+        backend_reports: metadata
+            .backend_reports
+            .into_iter()
+            .map(|report| WindowBackendReportDto {
+                backend_name: report.backend_name,
+                backend_kind: backend_kind_label(report.backend_kind),
+                raw_window_count: report.raw_window_count,
+                matched_window_count: report.matched_window_count,
+                selected: report.selected,
+                error: report.error,
+            })
+            .collect(),
         windows: metadata
             .windows
             .into_iter()
@@ -1500,9 +1587,48 @@ fn window_list_dto(metadata: peekaboox_windows::WindowListMetadata) -> WindowLis
 
 fn parse_windows_args(args: Vec<String>) -> Result<WindowsCommand, CliError> {
     let mut json = false;
-    for arg in args {
+    let mut id = None;
+    let mut app = None;
+    let mut title = None;
+    let mut title_regex = None;
+    let mut focused = false;
+    let mut limit = None;
+    let mut sort = peekaboox_windows::WindowSort::Backend;
+    let mut backend = peekaboox_windows::WindowBackendSelection::Auto;
+    let mut diagnose = false;
+    let mut iter = args.into_iter();
+
+    while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--json" => json = true,
+            "--id" => id = Some(require_next_arg(&mut iter, "--id")?),
+            "--app" => app = Some(require_next_arg(&mut iter, "--app")?),
+            "--title" => title = Some(require_next_arg(&mut iter, "--title")?),
+            "--title-regex" => title_regex = Some(require_next_arg(&mut iter, "--title-regex")?),
+            "--focused" => focused = true,
+            "--limit" => {
+                let value = require_next_arg(&mut iter, "--limit")?;
+                limit = Some(parse_positive_usize("--limit", &value)?);
+            }
+            "--sort" => {
+                let value = require_next_arg(&mut iter, "--sort")?;
+                sort = peekaboox_windows::WindowSort::from_name(&value).ok_or_else(|| {
+                    CliError::Failure(format!(
+                        "invalid windows sort: {value}; expected backend, focused, title, app, area, id, or state"
+                    ))
+                })?;
+            }
+            "--backend" => {
+                let value = require_next_arg(&mut iter, "--backend")?;
+                backend = peekaboox_windows::WindowBackendSelection::from_name(&value).ok_or_else(
+                    || {
+                        CliError::Failure(format!(
+                            "invalid windows backend: {value}; expected auto, gnome, at-spi, or xdotool"
+                        ))
+                    },
+                )?;
+            }
+            "--diagnose" => diagnose = true,
             "--help" | "-h" => return Ok(WindowsCommand::Help),
             unknown => {
                 return Err(CliError::Failure(format!(
@@ -1511,7 +1637,18 @@ fn parse_windows_args(args: Vec<String>) -> Result<WindowsCommand, CliError> {
             }
         }
     }
-    Ok(WindowsCommand::Run(WindowsArgs { json }))
+    Ok(WindowsCommand::Run(WindowsArgs {
+        json,
+        id,
+        app,
+        title,
+        title_regex,
+        focused,
+        limit,
+        sort,
+        backend,
+        diagnose,
+    }))
 }
 
 fn elements(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
@@ -5051,6 +5188,17 @@ fn parse_usize(name: &str, value: &str) -> Result<usize, CliError> {
         .map_err(|_| CliError::Failure(format!("{name} must be an integer, got {value:?}")))
 }
 
+fn parse_positive_usize(name: &str, value: &str) -> Result<usize, CliError> {
+    let parsed = parse_usize(name, value)?;
+    if parsed == 0 {
+        return Err(CliError::Failure(format!(
+            "{name} must be greater than zero"
+        )));
+    }
+
+    Ok(parsed)
+}
+
 fn parse_u32(name: &str, value: &str) -> Result<u32, CliError> {
     value
         .parse::<u32>()
@@ -5228,6 +5376,15 @@ fn parse_next_string(args: &[String], index: &mut usize, name: &str) -> Result<S
         .ok_or_else(|| CliError::Failure(format!("missing value for {name}")))
 }
 
+fn require_next_arg(
+    args: &mut impl Iterator<Item = String>,
+    name: &str,
+) -> Result<String, CliError> {
+    args.next()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| CliError::Failure(format!("missing value for {name}")))
+}
+
 fn non_empty_cli_string(value: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty() {
@@ -5366,7 +5523,9 @@ fn print_plugin_call_usage() {
 }
 
 fn print_windows_usage() {
-    println!("Usage: peekaboox windows [--json]");
+    println!(
+        "Usage: peekaboox windows [--id <id>] [--app <app>] [--title <text>] [--title-regex <regex>] [--focused] [--limit <n>] [--sort backend|focused|title|app|area|id|state] [--backend auto|gnome|at-spi|xdotool] [--diagnose] [--json]"
+    );
 }
 
 fn print_elements_usage() {
@@ -5791,14 +5950,42 @@ mod tests {
     fn windows_accepts_no_arguments() {
         let command = parse_windows_args(vec![]).unwrap();
 
-        assert_eq!(command, WindowsCommand::Run(WindowsArgs { json: false }));
+        assert_eq!(
+            command,
+            WindowsCommand::Run(WindowsArgs {
+                json: false,
+                id: None,
+                app: None,
+                title: None,
+                title_regex: None,
+                focused: false,
+                limit: None,
+                sort: peekaboox_windows::WindowSort::Backend,
+                backend: peekaboox_windows::WindowBackendSelection::Auto,
+                diagnose: false,
+            })
+        );
     }
 
     #[test]
     fn windows_accepts_json() {
         let command = parse_windows_args(vec!["--json".to_owned()]).unwrap();
 
-        assert_eq!(command, WindowsCommand::Run(WindowsArgs { json: true }));
+        assert_eq!(
+            command,
+            WindowsCommand::Run(WindowsArgs {
+                json: true,
+                id: None,
+                app: None,
+                title: None,
+                title_regex: None,
+                focused: false,
+                limit: None,
+                sort: peekaboox_windows::WindowSort::Backend,
+                backend: peekaboox_windows::WindowBackendSelection::Auto,
+                diagnose: false,
+            })
+        );
     }
 
     #[test]
@@ -5806,6 +5993,43 @@ mod tests {
         let command = parse_windows_args(vec!["--help".to_owned()]).unwrap();
 
         assert_eq!(command, WindowsCommand::Help);
+    }
+
+    #[test]
+    fn windows_accepts_filters_sort_backend_and_diagnose() {
+        let command = parse_windows_args(vec![
+            "--focused".to_owned(),
+            "--app".to_owned(),
+            "Calculator".to_owned(),
+            "--title-regex".to_owned(),
+            "Calc.*".to_owned(),
+            "--id".to_owned(),
+            "42".to_owned(),
+            "--limit".to_owned(),
+            "1".to_owned(),
+            "--sort".to_owned(),
+            "focused".to_owned(),
+            "--backend".to_owned(),
+            "xdotool".to_owned(),
+            "--diagnose".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            WindowsCommand::Run(WindowsArgs {
+                json: false,
+                id: Some("42".to_owned()),
+                app: Some("Calculator".to_owned()),
+                title: None,
+                title_regex: Some("Calc.*".to_owned()),
+                focused: true,
+                limit: Some(1),
+                sort: peekaboox_windows::WindowSort::Focused,
+                backend: peekaboox_windows::WindowBackendSelection::Xdotool,
+                diagnose: true,
+            })
+        );
     }
 
     #[test]

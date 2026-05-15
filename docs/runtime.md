@@ -22,6 +22,8 @@ runtime = AgentRuntime.connect(
     audit_log_path="peekaboox-runtime-audit.jsonl",
 )
 print(runtime.list_windows())
+print(runtime.list_windows(focused=True, limit=1, sort="focused"))
+print(runtime.list_windows_result(app="calculator", diagnose=True))
 print(runtime.find_element("role=push button"))
 print(runtime.ocr_screen().text)
 print(

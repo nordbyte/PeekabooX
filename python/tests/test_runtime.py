@@ -2404,6 +2404,18 @@ class RuntimeTests(unittest.TestCase):
                 self.request = request
                 self.timeout = timeout
                 return peekaboox_pb2.ListWindowsResponse(
+                    backend_name="test",
+                    backend_kind="x11",
+                    warnings=["fallback used"],
+                    backend_reports=[
+                        peekaboox_pb2.WindowBackendReport(
+                            backend_name="test",
+                            backend_kind="x11",
+                            raw_window_count=1,
+                            matched_window_count=1,
+                            selected=True,
+                        )
+                    ],
                     windows=[
                         peekaboox_pb2.WindowInfo(
                             id="w1",
@@ -2419,12 +2431,17 @@ class RuntimeTests(unittest.TestCase):
         stub = Stub()
         client = PeekabooXClient(stub=stub, messages=peekaboox_pb2, timeout_seconds=1.25)
 
-        windows = client.list_windows()
+        windows = client.list_windows(focused=True, limit=1, sort="focused", backend="xdotool")
+        result = client.list_windows_result(diagnose=True)
 
         self.assertIsInstance(stub.request, peekaboox_pb2.ListWindowsRequest)
         self.assertEqual(stub.timeout, 1.25)
+        self.assertTrue(stub.request.diagnose)
         self.assertEqual(windows[0].title, "Editor")
         self.assertEqual(windows[0].bounds.width, 1024)
+        self.assertEqual(result.backend_name, "test")
+        self.assertEqual(result.warnings, ("fallback used",))
+        self.assertTrue(result.backend_reports[0].selected)
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_python_client_maps_generated_capture_delta_response(self) -> None:

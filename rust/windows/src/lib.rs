@@ -6,6 +6,7 @@ use dbus::Path;
 use dbus::arg::{PropMap, RefArg, Variant};
 use dbus::blocking::Connection;
 use peekaboox_core::{BackendKind, PeekabooXError, Rect, Result, WindowInfo, WindowState};
+use regex::{Regex, RegexBuilder};
 
 pub trait WindowBackend {
     fn list_windows(&self) -> Result<Vec<WindowInfo>>;
@@ -62,7 +63,7 @@ pub struct WindowEnvironment {
 
 impl WindowEnvironment {
     pub fn detect() -> Self {
-        let command_names = ["xdotool"];
+        let command_names = ["xdotool", "xprop"];
 
         Self {
             session_type: SessionType::from_value(
@@ -123,6 +124,133 @@ impl WindowTool {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowBackendSelection {
+    Auto,
+    GnomeShellIntrospect,
+    AtSpi,
+    Xdotool,
+}
+
+impl Default for WindowBackendSelection {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl WindowBackendSelection {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::GnomeShellIntrospect => "gnome",
+            Self::AtSpi => "at-spi",
+            Self::Xdotool => "xdotool",
+        }
+    }
+
+    pub fn from_name(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "gnome" | "gnome-shell" | "gnome-shell-introspect" => Some(Self::GnomeShellIntrospect),
+            "at-spi" | "atspi" => Some(Self::AtSpi),
+            "xdotool" | "x11" => Some(Self::Xdotool),
+            _ => None,
+        }
+    }
+
+    fn tool(self) -> Option<WindowTool> {
+        match self {
+            Self::Auto => None,
+            Self::GnomeShellIntrospect => Some(WindowTool::GnomeShellIntrospect),
+            Self::AtSpi => Some(WindowTool::AtSpi),
+            Self::Xdotool => Some(WindowTool::Xdotool),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowSort {
+    Backend,
+    Focused,
+    Title,
+    App,
+    Area,
+    Id,
+    State,
+}
+
+impl Default for WindowSort {
+    fn default() -> Self {
+        Self::Backend
+    }
+}
+
+impl WindowSort {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Backend => "backend",
+            Self::Focused => "focused",
+            Self::Title => "title",
+            Self::App => "app",
+            Self::Area => "area",
+            Self::Id => "id",
+            Self::State => "state",
+        }
+    }
+
+    pub fn from_name(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "backend" | "backend-order" => Some(Self::Backend),
+            "focused" | "focus" => Some(Self::Focused),
+            "title" => Some(Self::Title),
+            "app" | "app-id" => Some(Self::App),
+            "area" | "size" => Some(Self::Area),
+            "id" => Some(Self::Id),
+            "state" => Some(Self::State),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowQuery {
+    pub id: Option<String>,
+    pub app: Option<String>,
+    pub title: Option<String>,
+    pub title_regex: Option<String>,
+    pub focused_only: bool,
+    pub limit: Option<usize>,
+    pub sort: WindowSort,
+    pub backend: WindowBackendSelection,
+    pub diagnose: bool,
+}
+
+impl Default for WindowQuery {
+    fn default() -> Self {
+        Self {
+            id: None,
+            app: None,
+            title: None,
+            title_regex: None,
+            focused_only: false,
+            limit: None,
+            sort: WindowSort::Backend,
+            backend: WindowBackendSelection::Auto,
+            diagnose: false,
+        }
+    }
+}
+
+impl WindowQuery {
+    fn has_filters(&self) -> bool {
+        self.id.is_some()
+            || self.app.is_some()
+            || self.title.is_some()
+            || self.title_regex.is_some()
+            || self.focused_only
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedWindowBackend {
     pub tool: WindowTool,
@@ -145,6 +273,17 @@ pub struct WindowListMetadata {
     pub backend_kind: BackendKind,
     pub windows: Vec<WindowInfo>,
     pub warnings: Vec<String>,
+    pub backend_reports: Vec<WindowBackendReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowBackendReport {
+    pub backend_name: String,
+    pub backend_kind: BackendKind,
+    pub raw_window_count: usize,
+    pub matched_window_count: usize,
+    pub selected: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -160,27 +299,100 @@ impl CommandWindowBackend {
     }
 
     pub fn list_windows_with_metadata(&self) -> Result<WindowListMetadata> {
+        self.list_windows_with_query(WindowQuery::default())
+    }
+
+    pub fn list_windows_with_query(&self, query: WindowQuery) -> Result<WindowListMetadata> {
         let environment = WindowEnvironment::detect();
-        let candidates = candidate_backends(&environment);
+        let candidates = candidate_backends_for_query(&environment, query.backend);
 
         if candidates.is_empty() {
             return Err(missing_backend_error(&environment));
         }
 
         let mut warnings = Vec::new();
+        let mut reports = Vec::new();
+        let mut empty_success: Option<WindowListMetadata> = None;
+        let last_candidate_index = candidates.len().saturating_sub(1);
 
-        for backend in candidates {
+        for (index, backend) in candidates.into_iter().enumerate() {
             match list_windows_with_tool(backend.tool) {
                 Ok(windows) => {
-                    return Ok(WindowListMetadata {
+                    let raw_window_count = windows.len();
+                    let matched_windows = apply_window_query(windows, &query)?;
+                    let matched_window_count = matched_windows.len();
+                    let should_select = matched_window_count > 0
+                        || query.backend != WindowBackendSelection::Auto
+                        || index == last_candidate_index
+                        || (!query.has_filters() && raw_window_count > 0);
+
+                    reports.push(WindowBackendReport {
                         backend_name: backend.name().to_owned(),
                         backend_kind: backend.backend_kind(),
-                        windows,
-                        warnings,
+                        raw_window_count,
+                        matched_window_count,
+                        selected: should_select,
+                        error: None,
+                    });
+
+                    if should_select {
+                        return Ok(WindowListMetadata {
+                            backend_name: backend.name().to_owned(),
+                            backend_kind: backend.backend_kind(),
+                            windows: matched_windows,
+                            warnings,
+                            backend_reports: reports,
+                        });
+                    }
+
+                    if raw_window_count == 0 {
+                        warnings.push(format!(
+                            "{} returned no windows; trying next backend",
+                            backend.name()
+                        ));
+                    } else if query.has_filters() && matched_window_count == 0 {
+                        warnings.push(format!(
+                            "{} returned {raw_window_count} windows but none matched the query; trying next backend",
+                            backend.name()
+                        ));
+                    }
+
+                    if empty_success.is_none() {
+                        empty_success = Some(WindowListMetadata {
+                            backend_name: backend.name().to_owned(),
+                            backend_kind: backend.backend_kind(),
+                            windows: Vec::new(),
+                            warnings: warnings.clone(),
+                            backend_reports: reports.clone(),
+                        });
+                    }
+                }
+                Err(error) => {
+                    let message = error.message().to_owned();
+                    warnings.push(format!("{}: {message}", backend.name()));
+                    reports.push(WindowBackendReport {
+                        backend_name: backend.name().to_owned(),
+                        backend_kind: backend.backend_kind(),
+                        raw_window_count: 0,
+                        matched_window_count: 0,
+                        selected: false,
+                        error: Some(message),
                     });
                 }
-                Err(error) => warnings.push(format!("{}: {}", backend.name(), error.message())),
             }
+        }
+
+        if let Some(mut metadata) = empty_success {
+            metadata.warnings = warnings;
+            metadata.backend_reports = reports;
+            if let Some(report) = metadata
+                .backend_reports
+                .iter_mut()
+                .find(|report| report.error.is_none())
+            {
+                report.selected = true;
+            }
+            return Ok(metadata);
         }
 
         Err(PeekabooXError::new(format!(
@@ -188,6 +400,136 @@ impl CommandWindowBackend {
             warnings.join("; ")
         )))
     }
+}
+
+fn apply_window_query(
+    mut windows: Vec<WindowInfo>,
+    query: &WindowQuery,
+) -> Result<Vec<WindowInfo>> {
+    let title_regex = query
+        .title_regex
+        .as_deref()
+        .map(compile_case_insensitive_regex)
+        .transpose()?;
+
+    windows.retain(|window| window_matches_query(window, query, title_regex.as_ref()));
+    sort_windows(&mut windows, query.sort);
+
+    if let Some(limit) = query.limit {
+        windows.truncate(limit);
+    }
+
+    Ok(windows)
+}
+
+fn window_matches_query(
+    window: &WindowInfo,
+    query: &WindowQuery,
+    title_regex: Option<&Regex>,
+) -> bool {
+    if query.id.as_deref().is_some_and(|id| window.id != id) {
+        return false;
+    }
+
+    if query.focused_only && !window.focused {
+        return false;
+    }
+
+    if query
+        .app
+        .as_deref()
+        .is_some_and(|app| !window_matches_app(window, app))
+    {
+        return false;
+    }
+
+    if query
+        .title
+        .as_deref()
+        .is_some_and(|title| !text_contains_case_insensitive(&window.title, title))
+    {
+        return false;
+    }
+
+    if title_regex.is_some_and(|regex| !regex.is_match(&window.title)) {
+        return false;
+    }
+
+    true
+}
+
+fn window_matches_app(window: &WindowInfo, app: &str) -> bool {
+    window
+        .app_id
+        .as_deref()
+        .is_some_and(|app_id| text_contains_case_insensitive(app_id, app))
+        || text_contains_case_insensitive(&window.title, app)
+}
+
+fn text_contains_case_insensitive(value: &str, needle: &str) -> bool {
+    value
+        .to_ascii_lowercase()
+        .contains(&needle.to_ascii_lowercase())
+}
+
+fn compile_case_insensitive_regex(pattern: &str) -> Result<Regex> {
+    RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+        .map_err(|error| PeekabooXError::new(format!("invalid title regex: {error}")))
+}
+
+fn sort_windows(windows: &mut [WindowInfo], sort: WindowSort) {
+    match sort {
+        WindowSort::Backend => {}
+        WindowSort::Focused => windows.sort_by(|left, right| {
+            right
+                .focused
+                .cmp(&left.focused)
+                .then_with(|| normalized_title(left).cmp(&normalized_title(right)))
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+        WindowSort::Title => windows.sort_by(|left, right| {
+            normalized_title(left)
+                .cmp(&normalized_title(right))
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+        WindowSort::App => windows.sort_by(|left, right| {
+            normalized_app(left)
+                .cmp(&normalized_app(right))
+                .then_with(|| normalized_title(left).cmp(&normalized_title(right)))
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+        WindowSort::Area => windows.sort_by(|left, right| {
+            window_area(right)
+                .cmp(&window_area(left))
+                .then_with(|| normalized_title(left).cmp(&normalized_title(right)))
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+        WindowSort::Id => windows.sort_by(|left, right| left.id.cmp(&right.id)),
+        WindowSort::State => windows.sort_by(|left, right| {
+            format!("{:?}", left.state)
+                .cmp(&format!("{:?}", right.state))
+                .then_with(|| normalized_title(left).cmp(&normalized_title(right)))
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+    }
+}
+
+fn normalized_title(window: &WindowInfo) -> String {
+    window.title.to_ascii_lowercase()
+}
+
+fn normalized_app(window: &WindowInfo) -> String {
+    window
+        .app_id
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn window_area(window: &WindowInfo) -> u64 {
+    u64::from(window.bounds.width) * u64::from(window.bounds.height)
 }
 
 impl WindowBackend for CommandWindowBackend {
@@ -213,7 +555,18 @@ pub fn list_windows() -> Result<WindowListMetadata> {
     CommandWindowBackend.list_windows_with_metadata()
 }
 
+pub fn list_windows_with_query(query: WindowQuery) -> Result<WindowListMetadata> {
+    CommandWindowBackend.list_windows_with_query(query)
+}
+
 pub fn candidate_backends(environment: &WindowEnvironment) -> Vec<DetectedWindowBackend> {
+    candidate_backends_for_query(environment, WindowBackendSelection::Auto)
+}
+
+pub fn candidate_backends_for_query(
+    environment: &WindowEnvironment,
+    backend: WindowBackendSelection,
+) -> Vec<DetectedWindowBackend> {
     let mut candidates = Vec::new();
 
     match environment.session_type {
@@ -236,6 +589,7 @@ pub fn candidate_backends(environment: &WindowEnvironment) -> Vec<DetectedWindow
 
     candidates
         .into_iter()
+        .filter(|tool| backend.tool().is_none_or(|selected| *tool == selected))
         .filter_map(|tool| {
             if tool.is_available(environment) {
                 Some(DetectedWindowBackend {
@@ -493,16 +847,33 @@ fn window_from_gnome_properties(id: u64, properties: &PropMap) -> Option<WindowI
     let height = variant_u32(properties, "height").unwrap_or_default();
     let focused = variant_bool(properties, "has-focus").unwrap_or(false);
     let hidden = variant_bool(properties, "is-hidden").unwrap_or(false);
+    let fullscreen =
+        variant_bool_any(properties, &["is-fullscreen", "fullscreen"]).unwrap_or(false);
+    let maximized = variant_bool_any(
+        properties,
+        &[
+            "is-maximized",
+            "maximized",
+            "maximized-horizontally",
+            "maximized-vertically",
+        ],
+    )
+    .unwrap_or(false);
 
     Some(WindowInfo {
         id: id.to_string(),
         title,
         app_id: variant_string(properties, "app-id")
+            .or_else(|| variant_string(properties, "gtk-application-id"))
             .or_else(|| variant_string(properties, "wm-class")),
         bounds: Rect::new(x, y, width, height),
         focused,
         state: if hidden {
             WindowState::Minimized
+        } else if fullscreen {
+            WindowState::Fullscreen
+        } else if maximized {
+            WindowState::Maximized
         } else {
             WindowState::Normal
         },
@@ -548,10 +919,10 @@ fn xdotool_window_info(id: &str, active_window_id: Option<&str>) -> Result<Optio
     Ok(Some(WindowInfo {
         id: id.to_owned(),
         title,
-        app_id: None,
+        app_id: xdotool_window_app_id(id),
         bounds,
         focused: active_window_id.is_some_and(|active_id| active_id == id),
-        state: WindowState::Normal,
+        state: xdotool_window_state(id).unwrap_or(WindowState::Normal),
     }))
 }
 
@@ -579,6 +950,58 @@ pub fn parse_xdotool_geometry(output: &str) -> Option<Rect> {
     Some(Rect::new(x?, y?, width?, height?))
 }
 
+fn xdotool_window_app_id(id: &str) -> Option<String> {
+    if !command_exists("xprop") {
+        return None;
+    }
+
+    run_command_capture("xprop", ["-id", id, "WM_CLASS"])
+        .ok()
+        .and_then(|output| parse_xprop_wm_class(&output))
+}
+
+fn xdotool_window_state(id: &str) -> Option<WindowState> {
+    if !command_exists("xprop") {
+        return None;
+    }
+
+    run_command_capture("xprop", ["-id", id, "_NET_WM_STATE"])
+        .ok()
+        .and_then(|output| parse_xprop_window_state(&output))
+}
+
+pub fn parse_xprop_wm_class(output: &str) -> Option<String> {
+    let quoted_values: Vec<&str> = output.split('"').skip(1).step_by(2).collect();
+    quoted_values
+        .last()
+        .or_else(|| quoted_values.first())
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+pub fn parse_xprop_window_state(output: &str) -> Option<WindowState> {
+    if output.contains("_NET_WM_STATE_FULLSCREEN") {
+        return Some(WindowState::Fullscreen);
+    }
+
+    if output.contains("_NET_WM_STATE_HIDDEN") {
+        return Some(WindowState::Minimized);
+    }
+
+    if output.contains("_NET_WM_STATE_MAXIMIZED_HORZ")
+        || output.contains("_NET_WM_STATE_MAXIMIZED_VERT")
+    {
+        return Some(WindowState::Maximized);
+    }
+
+    if output.contains("_NET_WM_STATE") {
+        return Some(WindowState::Normal);
+    }
+
+    None
+}
+
 fn should_ignore_xdotool_window(title: &str) -> bool {
     let normalized = title.trim().to_ascii_lowercase();
     normalized.is_empty() || normalized == "mutter guard window"
@@ -599,6 +1022,10 @@ fn variant_bool(properties: &PropMap, key: &str) -> Option<bool> {
     })
 }
 
+fn variant_bool_any(properties: &PropMap, keys: &[&str]) -> Option<bool> {
+    keys.iter().find_map(|key| variant_bool(properties, key))
+}
+
 fn variant_i32(properties: &PropMap, key: &str) -> Option<i32> {
     variant_i64(properties, key).and_then(|value| i32::try_from(value).ok())
 }
@@ -617,7 +1044,7 @@ fn variant_i64(properties: &PropMap, key: &str) -> Option<i64> {
 }
 
 fn parse_bool(value: &str) -> Option<bool> {
-    match value {
+    match value.to_ascii_lowercase().as_str() {
         "true" => Some(true),
         "false" => Some(false),
         _ => None,
@@ -689,11 +1116,12 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        WindowEnvironment, WindowTool, atspi_state_contains, candidate_backends,
-        parse_xdotool_geometry, should_ignore_xdotool_window,
+        WindowEnvironment, WindowQuery, WindowSort, WindowTool, apply_window_query,
+        atspi_state_contains, candidate_backends, parse_xdotool_geometry, parse_xprop_window_state,
+        parse_xprop_wm_class, should_ignore_xdotool_window,
     };
     use crate::SessionType;
-    use peekaboox_core::Rect;
+    use peekaboox_core::{Rect, WindowInfo, WindowState};
 
     #[test]
     fn selects_gnome_introspect_first_on_gnome_wayland() {
@@ -737,6 +1165,68 @@ mod tests {
         assert!(!atspi_state_contains(&[0b10], 12));
     }
 
+    #[test]
+    fn filters_sorts_and_limits_windows() {
+        let windows = vec![
+            window("2", "Terminal", Some("org.gnome.Terminal"), false, 100, 100),
+            window(
+                "1",
+                "Calculator",
+                Some("org.gnome.Calculator"),
+                true,
+                300,
+                200,
+            ),
+        ];
+        let query = WindowQuery {
+            app: Some("calculator".to_owned()),
+            focused_only: true,
+            limit: Some(1),
+            sort: WindowSort::Area,
+            ..WindowQuery::default()
+        };
+
+        let result = apply_window_query(windows, &query).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "1");
+    }
+
+    #[test]
+    fn filters_windows_by_case_insensitive_title_regex() {
+        let windows = vec![window("1", "GNOME Calculator", None, false, 300, 200)];
+        let query = WindowQuery {
+            title_regex: Some("gnome calc.*".to_owned()),
+            ..WindowQuery::default()
+        };
+
+        let result = apply_window_query(windows, &query).unwrap();
+
+        assert_eq!(result[0].title, "GNOME Calculator");
+    }
+
+    #[test]
+    fn parses_xprop_wm_class() {
+        assert_eq!(
+            parse_xprop_wm_class("WM_CLASS(STRING) = \"gnome-calculator\", \"Gnome-calculator\""),
+            Some("Gnome-calculator".to_owned())
+        );
+    }
+
+    #[test]
+    fn parses_xprop_window_state() {
+        assert_eq!(
+            parse_xprop_window_state("_NET_WM_STATE(ATOM) = _NET_WM_STATE_FULLSCREEN"),
+            Some(WindowState::Fullscreen)
+        );
+        assert_eq!(
+            parse_xprop_window_state(
+                "_NET_WM_STATE(ATOM) = _NET_WM_STATE_MAXIMIZED_VERT, _NET_WM_STATE_MAXIMIZED_HORZ"
+            ),
+            Some(WindowState::Maximized)
+        );
+    }
+
     fn environment<const N: usize>(
         session_type: SessionType,
         current_desktop: Option<&str>,
@@ -749,6 +1239,24 @@ mod tests {
                 .into_iter()
                 .map(str::to_owned)
                 .collect::<HashSet<_>>(),
+        }
+    }
+
+    fn window(
+        id: &str,
+        title: &str,
+        app_id: Option<&str>,
+        focused: bool,
+        width: u32,
+        height: u32,
+    ) -> WindowInfo {
+        WindowInfo {
+            id: id.to_owned(),
+            title: title.to_owned(),
+            app_id: app_id.map(str::to_owned),
+            bounds: Rect::new(0, 0, width, height),
+            focused,
+            state: WindowState::Normal,
         }
     }
 }

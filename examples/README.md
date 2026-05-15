@@ -30,6 +30,7 @@ accessibility, and input backends:
 
 ```bash
 bash examples/desktop/live_smoke.sh
+bash examples/desktop/windows_inventory.sh
 bash examples/desktop/elements_accessibility_probe.sh
 bash examples/desktop/elements_calculator.sh
 bash examples/desktop/ocr_visible_window.sh
@@ -49,6 +50,15 @@ draws with ratio-based `desktop drag` actions, saves with `hotkey ctrl+s`, falls
 back to the detected Save toolbar button when needed, and verifies that the
 output file changed. Override `PEEKABOOX_PAINT_APP` to force a specific paint
 application.
+
+`examples/desktop/windows_inventory.sh` runs the enhanced `peekaboox windows`
+command with backend diagnostics, focused-window filtering, Calculator
+app/title-regex matching, id lookup, and `--window-id` handoff into `capture`
+and `elements`. It writes JSON, the resolved window id, and an optional window
+capture under `target/examples/windows-inventory`. Override
+`PEEKABOOX_WINDOWS_BACKEND`, `PEEKABOOX_WINDOWS_APP_QUERY`,
+`PEEKABOOX_WINDOWS_TITLE_REGEX`, or `PEEKABOOX_WINDOWS_CALCULATOR_APP` for
+custom desktops.
 
 `examples/desktop/ocr_visible_window.sh` opens
 `examples/desktop/assets/ocr_desktop_sample.png` in the desktop's image viewer,

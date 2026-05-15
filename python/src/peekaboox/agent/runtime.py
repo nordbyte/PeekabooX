@@ -21,6 +21,7 @@ from peekaboox.client import (
     UiElement,
     UiStateResult,
     VisualDiffResult,
+    WindowListResult,
     WindowInfo,
 )
 from peekaboox.client import DEFAULT_GRPC_TARGET
@@ -753,9 +754,62 @@ class AgentRuntime:
         self._require_capability(Capability.OBSERVE, "probe_dmabuf", import_target=import_target)
         return self._require_client().probe_dmabuf(import_target)
 
-    def list_windows(self) -> tuple[WindowInfo, ...]:
+    def list_windows(
+        self,
+        *,
+        id: str | None = None,
+        app: str | None = None,
+        title: str | None = None,
+        title_regex: str | None = None,
+        focused: bool = False,
+        limit: int | None = None,
+        sort: str | None = None,
+        backend: str | None = None,
+        diagnose: bool = False,
+    ) -> tuple[WindowInfo, ...]:
         self._require_capability(Capability.OBSERVE, "list_windows")
-        return self._require_client().list_windows()
+        kwargs = _window_query_kwargs(
+            id=id,
+            app=app,
+            title=title,
+            title_regex=title_regex,
+            focused=focused,
+            limit=limit,
+            sort=sort,
+            backend=backend,
+            diagnose=diagnose,
+        )
+        client = self._require_client()
+        if kwargs:
+            return client.list_windows(**kwargs)
+        return client.list_windows()
+
+    def list_windows_result(
+        self,
+        *,
+        id: str | None = None,
+        app: str | None = None,
+        title: str | None = None,
+        title_regex: str | None = None,
+        focused: bool = False,
+        limit: int | None = None,
+        sort: str | None = None,
+        backend: str | None = None,
+        diagnose: bool = False,
+    ) -> WindowListResult:
+        self._require_capability(Capability.OBSERVE, "list_windows")
+        kwargs = _window_query_kwargs(
+            id=id,
+            app=app,
+            title=title,
+            title_regex=title_regex,
+            focused=focused,
+            limit=limit,
+            sort=sort,
+            backend=backend,
+            diagnose=diagnose,
+        )
+        return self._require_client().list_windows_result(**kwargs)
 
     def get_desktop_state(self) -> DesktopState:
         self._require_capability(Capability.OBSERVE, "get_desktop_state")
@@ -1715,6 +1769,38 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser.error(f"unknown command: {args.command}")
     return 2
+
+
+def _window_query_kwargs(
+    *,
+    id: str | None,
+    app: str | None,
+    title: str | None,
+    title_regex: str | None,
+    focused: bool,
+    limit: int | None,
+    sort: str | None,
+    backend: str | None,
+    diagnose: bool,
+) -> dict[str, object]:
+    kwargs: dict[str, object] = {}
+    for key, value in {
+        "id": id,
+        "app": app,
+        "title": title,
+        "title_regex": title_regex,
+        "sort": sort,
+        "backend": backend,
+    }.items():
+        if value is not None:
+            kwargs[key] = value
+    if focused:
+        kwargs["focused"] = focused
+    if limit is not None:
+        kwargs["limit"] = limit
+    if diagnose:
+        kwargs["diagnose"] = diagnose
+    return kwargs
 
 
 def _local_runtime(

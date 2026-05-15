@@ -139,7 +139,26 @@ pub enum ApiRequest {
         #[serde(default)]
         dry_run: bool,
     },
-    ListWindows,
+    ListWindows {
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        app: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        title_regex: Option<String>,
+        #[serde(default)]
+        focused: bool,
+        #[serde(default)]
+        limit: Option<usize>,
+        #[serde(default)]
+        sort: Option<String>,
+        #[serde(default)]
+        backend: Option<String>,
+        #[serde(default)]
+        diagnose: bool,
+    },
     FindElements {
         selector: String,
         #[serde(default)]
@@ -559,7 +578,19 @@ pub struct WindowListResultDto {
     pub backend_name: String,
     pub backend_kind: String,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub backend_reports: Vec<WindowBackendReportDto>,
     pub windows: Vec<WindowDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowBackendReportDto {
+    pub backend_name: String,
+    pub backend_kind: String,
+    pub raw_window_count: usize,
+    pub matched_window_count: usize,
+    pub selected: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1125,6 +1156,45 @@ mod tests {
     }
 
     #[test]
+    fn list_windows_request_defaults_to_unfiltered_query() {
+        let payload = r#"{"version":"peekaboox.v1","request":{"method":"list_windows"}}"#;
+        let request = decode_request(payload).unwrap();
+
+        assert_eq!(
+            request,
+            ApiRequestEnvelope::new(ApiRequest::ListWindows {
+                id: None,
+                app: None,
+                title: None,
+                title_regex: None,
+                focused: false,
+                limit: None,
+                sort: None,
+                backend: None,
+                diagnose: false,
+            })
+        );
+    }
+
+    #[test]
+    fn list_windows_request_round_trips_as_json() {
+        let request = ApiRequestEnvelope::new(ApiRequest::ListWindows {
+            id: Some("window-1".to_owned()),
+            app: Some("calculator".to_owned()),
+            title: None,
+            title_regex: Some("Calculator".to_owned()),
+            focused: true,
+            limit: Some(1),
+            sort: Some("focused".to_owned()),
+            backend: Some("xdotool".to_owned()),
+            diagnose: true,
+        });
+        let payload = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(decode_request(&payload).unwrap(), request);
+    }
+
+    #[test]
     fn ui_state_request_round_trips_as_json() {
         let request = ApiRequestEnvelope::new(ApiRequest::DetectUiState {
             image_paths: vec!["first.png".to_owned(), "second.png".to_owned()],
@@ -1270,8 +1340,8 @@ mod tests {
 
     #[test]
     fn protobuf_contract_is_generated() {
-        let request = super::proto::ListWindowsRequest {};
+        let request = super::proto::ListWindowsRequest::default();
 
-        assert_eq!(std::mem::size_of_val(&request), 0);
+        assert!(request.id.is_none());
     }
 }
