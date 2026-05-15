@@ -124,18 +124,13 @@ impl WindowTool {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum WindowBackendSelection {
+    #[default]
     Auto,
     GnomeShellIntrospect,
     AtSpi,
     Xdotool,
-}
-
-impl Default for WindowBackendSelection {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl WindowBackendSelection {
@@ -168,8 +163,9 @@ impl WindowBackendSelection {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum WindowSort {
+    #[default]
     Backend,
     Focused,
     Title,
@@ -177,12 +173,6 @@ pub enum WindowSort {
     Area,
     Id,
     State,
-}
-
-impl Default for WindowSort {
-    fn default() -> Self {
-        Self::Backend
-    }
 }
 
 impl WindowSort {

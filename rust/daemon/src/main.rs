@@ -1681,7 +1681,7 @@ fn dispatch_request(
             backend,
             diagnose,
         } => {
-            let query = window_query_from_fields(
+            let query = window_query_from_fields(WindowQueryFields {
                 id,
                 app,
                 title,
@@ -1691,7 +1691,7 @@ fn dispatch_request(
                 sort,
                 backend,
                 diagnose,
-            )?;
+            })?;
             let metadata = peekaboox_windows::list_windows_with_query(query)
                 .map_err(|error| error.to_string())?;
             Ok(ApiResult::ListWindows(window_list_result_dto(metadata)))
@@ -3166,21 +3166,21 @@ fn grpc_list_windows_audit_details(request: &proto::ListWindowsRequest) -> serde
 fn window_query_from_proto(
     request: proto::ListWindowsRequest,
 ) -> Result<peekaboox_windows::WindowQuery, Status> {
-    window_query_from_fields(
-        request.id,
-        request.app,
-        request.title,
-        request.title_regex,
-        request.focused,
-        request.limit.map(|value| value as usize),
-        request.sort,
-        request.backend,
-        request.diagnose,
-    )
+    window_query_from_fields(WindowQueryFields {
+        id: request.id,
+        app: request.app,
+        title: request.title,
+        title_regex: request.title_regex,
+        focused: request.focused,
+        limit: request.limit.map(|value| value as usize),
+        sort: request.sort,
+        backend: request.backend,
+        diagnose: request.diagnose,
+    })
     .map_err(Status::invalid_argument)
 }
 
-fn window_query_from_fields(
+struct WindowQueryFields {
     id: Option<String>,
     app: Option<String>,
     title: Option<String>,
@@ -3190,32 +3190,36 @@ fn window_query_from_fields(
     sort: Option<String>,
     backend: Option<String>,
     diagnose: bool,
+}
+
+fn window_query_from_fields(
+    fields: WindowQueryFields,
 ) -> Result<peekaboox_windows::WindowQuery, String> {
-    let sort = match clean_optional_string(sort) {
+    let sort = match clean_optional_string(fields.sort) {
         Some(value) => peekaboox_windows::WindowSort::from_name(&value)
             .ok_or_else(|| format!("invalid windows sort: {value}"))?,
         None => peekaboox_windows::WindowSort::Backend,
     };
-    let backend = match clean_optional_string(backend) {
+    let backend = match clean_optional_string(fields.backend) {
         Some(value) => peekaboox_windows::WindowBackendSelection::from_name(&value)
             .ok_or_else(|| format!("invalid windows backend: {value}"))?,
         None => peekaboox_windows::WindowBackendSelection::Auto,
     };
 
-    if limit == Some(0) {
+    if fields.limit == Some(0) {
         return Err("windows limit must be greater than zero".to_owned());
     }
 
     Ok(peekaboox_windows::WindowQuery {
-        id: clean_optional_string(id),
-        app: clean_optional_string(app),
-        title: clean_optional_string(title),
-        title_regex: clean_optional_string(title_regex),
-        focused_only: focused,
-        limit,
+        id: clean_optional_string(fields.id),
+        app: clean_optional_string(fields.app),
+        title: clean_optional_string(fields.title),
+        title_regex: clean_optional_string(fields.title_regex),
+        focused_only: fields.focused,
+        limit: fields.limit,
         sort,
         backend,
-        diagnose,
+        diagnose: fields.diagnose,
     })
 }
 
