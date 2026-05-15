@@ -113,7 +113,7 @@ Shell-native completion generation is not part of the current CLI surface.
 | --- | --- | --- |
 | [capture](docs/cli.md#capture) | `--output`, `--region`, `--window-id` | Save a screenshot from the active desktop session |
 | [capture-delta](docs/cli.md#capture-delta) | `--stream`, `--low-bandwidth`, `--reset` | Return full-frame or changed-rectangle capture deltas |
-| [capture-backends](docs/cli.md#capture-backends-and-dma-buf) | none | Inspect available screenshot and zero-copy backends |
+| [capture-backends](docs/cli.md#capture-backends-and-dma-buf) | `--json`, `--diagnose`, `--probe`, `--output`, `--format` | Inspect and probe screenshot and zero-copy backends |
 | [capture-dmabuf](docs/cli.md#capture-backends-and-dma-buf) | `--import egl`, `--import egl-texture` | Probe optional PipeWire DMA-BUF import paths |
 | [windows](docs/cli.md#windows-and-elements) | `--app`, `--title-regex`, `--focused`, `--limit`, `--diagnose`, `--json` | List, filter, and diagnose visible desktop windows |
 | [elements](docs/cli.md#windows-and-elements) | `--selector`, `--role`, `--state`, `--vision-fallback` | Query semantic UI elements |

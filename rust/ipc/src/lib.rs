@@ -78,6 +78,16 @@ pub enum ApiRequest {
         #[serde(default = "default_low_bandwidth")]
         low_bandwidth: bool,
     },
+    CaptureBackends {
+        #[serde(default = "default_capture_backends_output")]
+        output: String,
+        #[serde(default)]
+        region: Option<RectDto>,
+        #[serde(default)]
+        diagnose: bool,
+        #[serde(default)]
+        probe: CaptureBackendProbeDto,
+    },
     #[serde(rename = "probe_dmabuf")]
     ProbeDmaBuf {
         #[serde(default)]
@@ -417,6 +427,7 @@ pub enum ApiResult {
     Pong,
     Capture(CaptureResultDto),
     CaptureDelta(CaptureDeltaResultDto),
+    CaptureBackends(CaptureBackendsResultDto),
     #[serde(rename = "dmabuf_probe")]
     DmaBufProbe(DmaBufProbeResultDto),
     Plugins(PluginListResultDto),
@@ -463,6 +474,74 @@ pub struct CaptureDeltaResultDto {
     pub backend_name: String,
     pub backend_kind: String,
     pub captured_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureBackendProbeDto {
+    #[default]
+    None,
+    File,
+    Frame,
+    Region,
+    DmaBuf,
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CaptureBackendsResultDto {
+    pub session_type: String,
+    pub desktop: Option<String>,
+    pub pipewire_session_available: bool,
+    pub pipewire_backend_feature_enabled: bool,
+    pub egl_backend_feature_enabled: bool,
+    pub output_path: String,
+    pub region: Option<RectDto>,
+    pub image_backends: Vec<CaptureBackendDto>,
+    pub zero_copy_backends: Vec<ZeroCopyBackendDto>,
+    #[serde(default)]
+    pub probes: Vec<CaptureBackendProbeResultDto>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureBackendDto {
+    pub name: String,
+    pub backend_kind: String,
+    pub command: Option<String>,
+    pub available: bool,
+    pub supports_output: bool,
+    pub supports_file_capture: bool,
+    pub supports_stdout_capture: bool,
+    pub supports_stdout_region_capture: bool,
+    pub selected: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZeroCopyBackendDto {
+    pub name: String,
+    pub backend_kind: String,
+    pub transport: String,
+    pub availability: String,
+    pub selected: bool,
+    pub pipewire_backend_feature_enabled: bool,
+    pub egl_backend_feature_enabled: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CaptureBackendProbeResultDto {
+    pub probe: String,
+    pub ok: bool,
+    pub backend_name: Option<String>,
+    pub backend_kind: Option<String>,
+    pub detail: String,
+    pub output_path: Option<String>,
+    pub bytes_written: Option<u64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -789,6 +868,10 @@ fn default_low_bandwidth() -> bool {
     true
 }
 
+fn default_capture_backends_output() -> String {
+    "screenshot.png".to_owned()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -825,8 +908,8 @@ fn default_plugin_max_output_bytes() -> usize {
 mod tests {
     use super::{
         API_VERSION, ApiRequest, ApiRequestEnvelope, ApiResponse, ApiResponseEnvelope, ApiResult,
-        DesktopAssertionDto, DmaBufImportTargetDto, DmaBufProbeResultDto, MouseButtonDto,
-        PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
+        CaptureBackendProbeDto, DesktopAssertionDto, DmaBufImportTargetDto, DmaBufProbeResultDto,
+        MouseButtonDto, PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
         PluginToolExecutionResultDto, decode_request, default_socket_path, encode_response,
     };
 
@@ -970,6 +1053,42 @@ mod tests {
                 window_id: None,
                 per_channel_threshold: 0,
                 low_bandwidth: true,
+            })
+        );
+    }
+
+    #[test]
+    fn capture_backends_request_round_trips_as_json() {
+        let request = ApiRequestEnvelope::new(ApiRequest::CaptureBackends {
+            output: "target/backends/screen.xwd".to_owned(),
+            region: Some(super::RectDto {
+                x: 0,
+                y: 0,
+                width: 320,
+                height: 180,
+            }),
+            diagnose: true,
+            probe: CaptureBackendProbeDto::All,
+        });
+        let payload = serde_json::to_string(&request).unwrap();
+
+        assert!(payload.contains(r#""method":"capture_backends""#));
+        assert!(payload.contains(r#""probe":"all""#));
+        assert_eq!(decode_request(&payload).unwrap(), request);
+    }
+
+    #[test]
+    fn capture_backends_request_defaults_output_region_and_probe() {
+        let payload = r#"{"version":"peekaboox.v1","request":{"method":"capture_backends"}}"#;
+        let request = decode_request(payload).unwrap();
+
+        assert_eq!(
+            request,
+            ApiRequestEnvelope::new(ApiRequest::CaptureBackends {
+                output: "screenshot.png".to_owned(),
+                region: None,
+                diagnose: false,
+                probe: CaptureBackendProbeDto::None,
             })
         );
     }

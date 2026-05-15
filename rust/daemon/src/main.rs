@@ -27,13 +27,14 @@ use peekaboox_ipc::proto::{
     peekaboo_x_server::{PeekabooX, PeekabooXServer},
 };
 use peekaboox_ipc::{
-    API_VERSION, ActionResultDto, ApiRequest, ApiResponseEnvelope, ApiResult,
+    API_VERSION, ActionResultDto, ApiRequest, ApiResponseEnvelope, ApiResult, CaptureBackendDto,
+    CaptureBackendProbeDto, CaptureBackendProbeResultDto, CaptureBackendsResultDto,
     CaptureDeltaResultDto, CaptureResultDto, DesktopActionResultDto, DesktopAssertionDto,
     DesktopLocateResultDto, DmaBufImportTargetDto, DmaBufProbeResultDto, ElementDto,
     ElementListResultDto, MouseButtonDto, OcrBlockDto, OcrResultDto, PluginDiscoveryErrorDto,
-    PluginDto, PluginListResultDto, PluginToolDto, PluginToolExecutionResultDto, PointDto,
+    PluginDto, PluginListResultDto, PluginToolDto, PluginToolExecutionResultDto, PointDto, RectDto,
     UiStateDto, VisualDiffDto, WindowBackendReportDto, WindowDto, WindowListResultDto,
-    decode_request, default_socket_path, encode_response,
+    ZeroCopyBackendDto, decode_request, default_socket_path, encode_response,
 };
 use peekaboox_vision::{
     IncrementalCaptureDelta, IncrementalCaptureOptions, OcrConfig, OcrOptions,
@@ -1484,6 +1485,17 @@ fn dispatch_request(
             )?;
             Ok(ApiResult::CaptureDelta(capture_delta_dto(&data)))
         }
+        ApiRequest::CaptureBackends {
+            output,
+            region,
+            diagnose,
+            probe,
+        } => Ok(ApiResult::CaptureBackends(capture_backends_result(
+            &PathBuf::from(output),
+            region.map(Rect::from),
+            diagnose,
+            probe,
+        ))),
         ApiRequest::ProbeDmaBuf { import_target } => {
             Ok(ApiResult::DmaBufProbe(probe_dmabuf_import(import_target)?))
         }
@@ -2864,6 +2876,270 @@ fn capture_to_file(
         Some(region) => peekaboox_capture::capture_region_to_file(region, output),
         None => peekaboox_capture::capture_screen_to_file(output),
     }
+}
+
+fn capture_backends_result(
+    output: &Path,
+    region: Option<Rect>,
+    diagnose: bool,
+    probe: CaptureBackendProbeDto,
+) -> CaptureBackendsResultDto {
+    let environment = peekaboox_capture::CaptureEnvironment::detect();
+    let capabilities = peekaboox_capture::capture_backend_capabilities(&environment, output);
+    let image_backends = capabilities
+        .into_iter()
+        .filter(|capability| diagnose || capability.reason.is_none())
+        .map(capture_backend_dto)
+        .collect::<Vec<_>>();
+    let zero_copy_backends = peekaboox_capture::zero_copy_capture_capabilities(&environment)
+        .into_iter()
+        .map(zero_copy_backend_dto)
+        .collect::<Vec<_>>();
+    let mut warnings = capture_backend_warnings(&zero_copy_backends);
+    let probes = capture_backend_probe_steps(probe)
+        .into_iter()
+        .map(|probe| capture_backend_probe(probe, output, region))
+        .collect::<Vec<_>>();
+
+    if matches!(
+        probe,
+        CaptureBackendProbeDto::Region | CaptureBackendProbeDto::All
+    ) && region.is_none()
+    {
+        warnings.push("region probe used default region 0,0,320,180".to_owned());
+    }
+
+    CaptureBackendsResultDto {
+        session_type: environment.session_type.name().to_owned(),
+        desktop: environment.current_desktop,
+        pipewire_session_available: environment.pipewire_session_available,
+        pipewire_backend_feature_enabled: peekaboox_capture::pipewire_backend_feature_enabled(),
+        egl_backend_feature_enabled: peekaboox_capture::egl_backend_feature_enabled(),
+        output_path: output.display().to_string(),
+        region: region.map(RectDto::from),
+        image_backends,
+        zero_copy_backends,
+        probes,
+        warnings,
+    }
+}
+
+fn capture_backend_dto(
+    capability: peekaboox_capture::CaptureBackendCapability,
+) -> CaptureBackendDto {
+    CaptureBackendDto {
+        name: capability.name.to_owned(),
+        backend_kind: backend_kind_name(capability.backend_kind),
+        command: capability.command.map(str::to_owned),
+        available: capability.available,
+        supports_output: capability.supports_output,
+        supports_file_capture: capability.supports_file_capture,
+        supports_stdout_capture: capability.supports_stdout_capture,
+        supports_stdout_region_capture: capability.supports_stdout_region_capture,
+        selected: capability.selected,
+        reason: capability.reason,
+    }
+}
+
+fn zero_copy_backend_dto(
+    capability: peekaboox_capture::ZeroCopyCaptureCapability,
+) -> ZeroCopyBackendDto {
+    let pipewire_feature = peekaboox_capture::pipewire_backend_feature_enabled();
+    let selected = capability.availability.is_available() && pipewire_feature;
+    let reason = if !capability.availability.is_available() {
+        Some(capability.availability.name().to_owned())
+    } else if !pipewire_feature {
+        Some("compiled without pipewire-backend feature".to_owned())
+    } else {
+        None
+    };
+
+    ZeroCopyBackendDto {
+        name: capability.backend_name,
+        backend_kind: backend_kind_name(capability.backend_kind),
+        transport: capability.transport.name().to_owned(),
+        availability: capability.availability.name().to_owned(),
+        selected,
+        pipewire_backend_feature_enabled: pipewire_feature,
+        egl_backend_feature_enabled: peekaboox_capture::egl_backend_feature_enabled(),
+        reason,
+    }
+}
+
+fn capture_backend_warnings(backends: &[ZeroCopyBackendDto]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for backend in backends {
+        if backend.availability == "available" && !backend.pipewire_backend_feature_enabled {
+            warnings.push(format!(
+                "{} is available in the session, but this build was compiled without pipewire-backend",
+                backend.name
+            ));
+        }
+    }
+    warnings
+}
+
+fn capture_backend_probe_steps(probe: CaptureBackendProbeDto) -> Vec<CaptureBackendProbeDto> {
+    match probe {
+        CaptureBackendProbeDto::None => Vec::new(),
+        CaptureBackendProbeDto::All => vec![
+            CaptureBackendProbeDto::File,
+            CaptureBackendProbeDto::Frame,
+            CaptureBackendProbeDto::Region,
+            CaptureBackendProbeDto::DmaBuf,
+        ],
+        other => vec![other],
+    }
+}
+
+fn capture_backend_probe(
+    probe: CaptureBackendProbeDto,
+    output: &Path,
+    region: Option<Rect>,
+) -> CaptureBackendProbeResultDto {
+    match probe {
+        CaptureBackendProbeDto::File => capture_backend_probe_file(output),
+        CaptureBackendProbeDto::Frame => capture_backend_probe_frame(),
+        CaptureBackendProbeDto::Region => {
+            capture_backend_probe_region(region.unwrap_or(Rect::new(0, 0, 320, 180)))
+        }
+        CaptureBackendProbeDto::DmaBuf => capture_backend_probe_dmabuf(),
+        CaptureBackendProbeDto::None | CaptureBackendProbeDto::All => capture_backend_probe_error(
+            capture_backend_probe_name(probe),
+            "invalid internal probe step".to_owned(),
+        ),
+    }
+}
+
+fn capture_backend_probe_file(output: &Path) -> CaptureBackendProbeResultDto {
+    match peekaboox_capture::capture_screen_to_file(output) {
+        Ok(metadata) => CaptureBackendProbeResultDto {
+            probe: "file".to_owned(),
+            ok: true,
+            backend_name: Some(metadata.backend_name),
+            backend_kind: Some(backend_kind_name(metadata.backend_kind)),
+            detail: format!("wrote {} bytes", metadata.bytes_written),
+            output_path: Some(metadata.output_path.display().to_string()),
+            bytes_written: Some(metadata.bytes_written),
+            width: None,
+            height: None,
+        },
+        Err(error) => capture_backend_probe_error("file", error.to_string()),
+    }
+}
+
+fn capture_backend_probe_frame() -> CaptureBackendProbeResultDto {
+    match peekaboox_capture::capture_screen_frame() {
+        Ok(metadata) => CaptureBackendProbeResultDto {
+            probe: "frame".to_owned(),
+            ok: true,
+            backend_name: Some(metadata.backend_name),
+            backend_kind: Some(backend_kind_name(metadata.backend_kind)),
+            detail: format!(
+                "captured {}x{} via {}",
+                metadata.frame.width,
+                metadata.frame.height,
+                capture_frame_source_label(metadata.source)
+            ),
+            output_path: None,
+            bytes_written: None,
+            width: Some(metadata.frame.width),
+            height: Some(metadata.frame.height),
+        },
+        Err(error) => capture_backend_probe_error("frame", error.to_string()),
+    }
+}
+
+fn capture_backend_probe_region(region: Rect) -> CaptureBackendProbeResultDto {
+    match peekaboox_capture::capture_region_frame(region) {
+        Ok(metadata) => CaptureBackendProbeResultDto {
+            probe: "region".to_owned(),
+            ok: true,
+            backend_name: Some(metadata.backend_name),
+            backend_kind: Some(backend_kind_name(metadata.backend_kind)),
+            detail: format!(
+                "captured {}x{} region {} via {}",
+                metadata.frame.width,
+                metadata.frame.height,
+                format_rect(region),
+                capture_frame_source_label(metadata.source)
+            ),
+            output_path: None,
+            bytes_written: None,
+            width: Some(metadata.frame.width),
+            height: Some(metadata.frame.height),
+        },
+        Err(error) => capture_backend_probe_error("region", error.to_string()),
+    }
+}
+
+fn capture_backend_probe_dmabuf() -> CaptureBackendProbeResultDto {
+    match probe_dmabuf_import(DmaBufImportTargetDto::Compute) {
+        Ok(probe) => CaptureBackendProbeResultDto {
+            probe: "dmabuf".to_owned(),
+            ok: true,
+            backend_name: Some(probe.backend_name),
+            backend_kind: Some("compute".to_owned()),
+            detail: format!(
+                "stream node_id={} pipewire_serial={} frame={}x{} format={} planes={}",
+                probe.stream_node_id,
+                probe
+                    .pipewire_serial
+                    .map(|serial| serial.to_string())
+                    .unwrap_or_else(|| "-".to_owned()),
+                probe.width,
+                probe.height,
+                probe.pixel_format,
+                probe.planes
+            ),
+            output_path: None,
+            bytes_written: None,
+            width: Some(probe.width),
+            height: Some(probe.height),
+        },
+        Err(error) => capture_backend_probe_error("dmabuf", error),
+    }
+}
+
+fn capture_backend_probe_error(
+    probe: impl Into<String>,
+    detail: String,
+) -> CaptureBackendProbeResultDto {
+    CaptureBackendProbeResultDto {
+        probe: probe.into(),
+        ok: false,
+        backend_name: None,
+        backend_kind: None,
+        detail,
+        output_path: None,
+        bytes_written: None,
+        width: None,
+        height: None,
+    }
+}
+
+fn capture_backend_probe_name(probe: CaptureBackendProbeDto) -> &'static str {
+    match probe {
+        CaptureBackendProbeDto::None => "none",
+        CaptureBackendProbeDto::File => "file",
+        CaptureBackendProbeDto::Frame => "frame",
+        CaptureBackendProbeDto::Region => "region",
+        CaptureBackendProbeDto::DmaBuf => "dmabuf",
+        CaptureBackendProbeDto::All => "all",
+    }
+}
+
+fn capture_frame_source_label(source: peekaboox_capture::CaptureFrameSource) -> &'static str {
+    match source {
+        peekaboox_capture::CaptureFrameSource::DirectStdout => "direct-stdout",
+        peekaboox_capture::CaptureFrameSource::DmaBufZeroCopy => "dmabuf-zero-copy",
+        peekaboox_capture::CaptureFrameSource::FileFallback => "file-fallback",
+        peekaboox_capture::CaptureFrameSource::FullFrameCrop => "full-frame-crop",
+    }
+}
+
+fn format_rect(rect: Rect) -> String {
+    format!("{},{},{}x{}", rect.x, rect.y, rect.width, rect.height)
 }
 
 fn capture_region_from_request(
@@ -4856,6 +5132,7 @@ fn request_method(request: &ApiRequest) -> &'static str {
         ApiRequest::Ping => "ping",
         ApiRequest::Capture { .. } => "capture",
         ApiRequest::CaptureDelta { .. } => "capture_delta",
+        ApiRequest::CaptureBackends { .. } => "capture_backends",
         ApiRequest::ProbeDmaBuf { .. } => "probe_dmabuf",
         ApiRequest::ListPlugins { .. } => "list_plugins",
         ApiRequest::CallPluginTool { .. } => "call_plugin_tool",
@@ -4906,6 +5183,17 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "per_channel_threshold": per_channel_threshold,
             "low_bandwidth": low_bandwidth
+        }),
+        ApiRequest::CaptureBackends {
+            output,
+            region,
+            diagnose,
+            probe,
+        } => json!({
+            "output": output,
+            "has_region": region.is_some(),
+            "diagnose": diagnose,
+            "probe": format!("{probe:?}").to_ascii_lowercase()
         }),
         ApiRequest::ProbeDmaBuf { import_target } => json!({
             "import_target": format!("{import_target:?}").to_ascii_lowercase()

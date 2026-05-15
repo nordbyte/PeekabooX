@@ -45,12 +45,20 @@ daemon-managed screenshot file, then falls back to file-only capture backends.
 ## Capture Backends and DMA-BUF
 
 Use `capture-backends` to inspect image backends and whether the optional
-Portal/PipeWire DMA-BUF zero-copy path is available on the current session.
-Feature builds require native `libpipewire-0.3`, `libspa-0.2`, `libEGL`, and
-`libGLESv2` development packages.
+Portal/PipeWire DMA-BUF zero-copy path is available on the current session. Add
+`--diagnose` to include missing or skipped backends with reasons, `--json` for
+machine-readable output, `--output` or `--format png|xwd` to evaluate a specific
+file target, and `--probe file|frame|region|dmabuf|all` to run live backend
+checks. Probe failures are reported in the output and make the command exit
+non-zero. Feature builds require native `libpipewire-0.3`, `libspa-0.2`,
+`libEGL`, and `libGLESv2` development packages.
 
 ```bash
 cargo run -q -p peekaboox-cli -- capture-backends
+cargo run -q -p peekaboox-cli -- capture-backends --diagnose --json
+cargo run -q -p peekaboox-cli -- capture-backends --format xwd --diagnose
+cargo run -q -p peekaboox-cli -- capture-backends --probe frame --json
+cargo run -q -p peekaboox-cli -- --daemon capture-backends --diagnose --json
 cargo run -q -p peekaboox-cli --features pipewire-backend -- capture-dmabuf
 cargo run -q -p peekaboox-cli --features pipewire-backend,egl-backend -- capture-dmabuf --import egl
 cargo run -q -p peekaboox-cli --features pipewire-backend,egl-backend -- capture-dmabuf --import egl-texture

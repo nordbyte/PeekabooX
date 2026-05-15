@@ -30,6 +30,7 @@ accessibility, and input backends:
 
 ```bash
 bash examples/desktop/live_smoke.sh
+bash examples/desktop/capture_backends_diagnostics.sh
 bash examples/desktop/windows_inventory.sh
 bash examples/desktop/elements_accessibility_probe.sh
 bash examples/desktop/elements_calculator.sh
@@ -43,6 +44,13 @@ Set `PEEKABOOX_STRICT=1` when you want the live smoke script to fail on the
 first backend error. Without strict mode, unavailable desktop capabilities are
 reported as warnings so the script remains useful across Wayland, X11, and
 headless environments.
+
+`examples/desktop/capture_backends_diagnostics.sh` runs
+`peekaboox capture-backends --diagnose --json`, probes file, frame, region, and
+optional DMA-BUF capture paths, and checks the daemon-routed command surface
+through a temporary observe-only `peekabooxd` socket. It writes per-run JSON
+reports and probe output under `target/examples/capture-backends`. Override
+`PEEKABOOX_CAPTURE_BACKENDS_REGION` to change the region probe.
 
 `examples/desktop/paint_draw_and_save.sh` opens a blank PNG in `drawing`,
 `pinta`, or `kolourpaint`, locates the canvas through `peekaboox desktop`,

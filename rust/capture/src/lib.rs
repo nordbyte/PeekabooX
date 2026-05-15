@@ -51,6 +51,14 @@ impl SessionType {
             _ => Self::Unknown,
         }
     }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Wayland => "wayland",
+            Self::X11 => "x11",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +135,20 @@ pub enum CaptureTool {
 }
 
 impl CaptureTool {
+    pub fn all() -> &'static [Self] {
+        &[
+            Self::XdgDesktopPortal,
+            Self::GnomeShellScreenshot,
+            Self::Grim,
+            Self::GnomeScreenshot,
+            Self::Spectacle,
+            Self::Scrot,
+            Self::Maim,
+            Self::ImageMagickImport,
+            Self::Xwd,
+        ]
+    }
+
     pub fn backend_kind(self) -> BackendKind {
         match self {
             Self::XdgDesktopPortal => BackendKind::Portal,
@@ -166,6 +188,15 @@ impl CaptureTool {
         }
     }
 
+    pub fn command_name(self) -> Option<&'static str> {
+        let command = self.command();
+        if command.is_empty() {
+            None
+        } else {
+            Some(command)
+        }
+    }
+
     fn is_available(self, environment: &CaptureEnvironment) -> bool {
         self == Self::XdgDesktopPortal || environment.has_command(self.command())
     }
@@ -188,6 +219,20 @@ impl CaptureTool {
     fn supports_stdout_region_capture(self) -> bool {
         matches!(self, Self::Grim | Self::Maim | Self::ImageMagickImport)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureBackendCapability {
+    pub name: &'static str,
+    pub backend_kind: BackendKind,
+    pub command: Option<&'static str>,
+    pub available: bool,
+    pub supports_output: bool,
+    pub supports_file_capture: bool,
+    pub supports_stdout_capture: bool,
+    pub supports_stdout_region_capture: bool,
+    pub selected: bool,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,6 +300,14 @@ pub enum ZeroCopyAvailability {
 impl ZeroCopyAvailability {
     pub fn is_available(self) -> bool {
         self == Self::Available
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::MissingPipeWireSession => "missing_pipewire_session",
+            Self::UnsupportedSession => "unsupported_session",
+        }
     }
 }
 
@@ -2431,6 +2484,14 @@ pub fn zero_copy_capture_capabilities(
     }]
 }
 
+pub fn pipewire_backend_feature_enabled() -> bool {
+    cfg!(feature = "pipewire-backend")
+}
+
+pub fn egl_backend_feature_enabled() -> bool {
+    cfg!(feature = "egl-backend")
+}
+
 fn zero_copy_unavailable_message(environment: &CaptureEnvironment) -> String {
     let detail = zero_copy_capture_capabilities(environment)
         .into_iter()
@@ -2726,40 +2787,7 @@ pub fn candidate_backends(
     environment: &CaptureEnvironment,
     output: &Path,
 ) -> Vec<DetectedCaptureBackend> {
-    let mut candidates = Vec::new();
-
-    if environment.session_type == SessionType::Wayland {
-        candidates.push(CaptureTool::XdgDesktopPortal);
-        if environment.is_gnome() {
-            candidates.push(CaptureTool::GnomeShellScreenshot);
-        }
-        candidates.push(CaptureTool::Grim);
-        if environment.is_kde() {
-            candidates.push(CaptureTool::Spectacle);
-        }
-    }
-
-    if environment.session_type == SessionType::X11 {
-        candidates.extend([
-            CaptureTool::GnomeScreenshot,
-            CaptureTool::Spectacle,
-            CaptureTool::Scrot,
-            CaptureTool::Maim,
-            CaptureTool::ImageMagickImport,
-            CaptureTool::Xwd,
-        ]);
-    }
-
-    candidates.extend([
-        CaptureTool::GnomeScreenshot,
-        CaptureTool::Spectacle,
-        CaptureTool::Scrot,
-        CaptureTool::Maim,
-        CaptureTool::ImageMagickImport,
-        CaptureTool::Xwd,
-    ]);
-
-    candidates
+    candidate_capture_tools(environment)
         .into_iter()
         .filter_map(|tool| {
             if tool.is_available(environment) && tool.supports_output(output) {
@@ -2772,6 +2800,107 @@ pub fn candidate_backends(
             }
         })
         .collect()
+}
+
+pub fn capture_backend_capabilities(
+    environment: &CaptureEnvironment,
+    output: &Path,
+) -> Vec<CaptureBackendCapability> {
+    let mut selected_assigned = false;
+    let candidate_tools = candidate_capture_tools(environment);
+    diagnostic_capture_tools(environment)
+        .into_iter()
+        .map(|tool| {
+            let considered = candidate_tools.contains(&tool);
+            let available = tool.is_available(environment);
+            let supports_output = tool.supports_output(output);
+            let selected = considered && available && supports_output && !selected_assigned;
+            if selected {
+                selected_assigned = true;
+            }
+            let reason = if !considered {
+                Some("not considered for current session".to_owned())
+            } else if !available {
+                tool.command_name()
+                    .map(|command| format!("missing command `{command}`"))
+            } else if !supports_output {
+                Some(format!(
+                    "{} only supports .xwd output for file capture",
+                    tool.name()
+                ))
+            } else {
+                None
+            };
+
+            CaptureBackendCapability {
+                name: tool.name(),
+                backend_kind: tool.backend_kind(),
+                command: tool.command_name(),
+                available,
+                supports_output,
+                supports_file_capture: true,
+                supports_stdout_capture: tool.supports_stdout_capture(),
+                supports_stdout_region_capture: tool.supports_stdout_region_capture(),
+                selected,
+                reason,
+            }
+        })
+        .collect()
+}
+
+fn candidate_capture_tools(environment: &CaptureEnvironment) -> Vec<CaptureTool> {
+    let mut candidates = Vec::new();
+
+    if environment.session_type == SessionType::Wayland {
+        push_unique_capture_tool(&mut candidates, CaptureTool::XdgDesktopPortal);
+        if environment.is_gnome() {
+            push_unique_capture_tool(&mut candidates, CaptureTool::GnomeShellScreenshot);
+        }
+        push_unique_capture_tool(&mut candidates, CaptureTool::Grim);
+        if environment.is_kde() {
+            push_unique_capture_tool(&mut candidates, CaptureTool::Spectacle);
+        }
+    }
+
+    if environment.session_type == SessionType::X11 {
+        for tool in [
+            CaptureTool::GnomeScreenshot,
+            CaptureTool::Spectacle,
+            CaptureTool::Scrot,
+            CaptureTool::Maim,
+            CaptureTool::ImageMagickImport,
+            CaptureTool::Xwd,
+        ] {
+            push_unique_capture_tool(&mut candidates, tool);
+        }
+    }
+
+    for tool in [
+        CaptureTool::GnomeScreenshot,
+        CaptureTool::Spectacle,
+        CaptureTool::Scrot,
+        CaptureTool::Maim,
+        CaptureTool::ImageMagickImport,
+        CaptureTool::Xwd,
+    ] {
+        push_unique_capture_tool(&mut candidates, tool);
+    }
+
+    candidates
+}
+
+fn diagnostic_capture_tools(environment: &CaptureEnvironment) -> Vec<CaptureTool> {
+    let mut candidates = candidate_capture_tools(environment);
+    for tool in CaptureTool::all() {
+        push_unique_capture_tool(&mut candidates, *tool);
+    }
+    candidates
+}
+
+fn push_unique_capture_tool(candidates: &mut Vec<CaptureTool>, tool: CaptureTool) {
+    if !candidates.contains(&tool) {
+        candidates.push(tool);
+    }
 }
 
 fn candidate_frame_backends(environment: &CaptureEnvironment) -> Vec<DetectedCaptureBackend> {
@@ -3384,12 +3513,13 @@ mod tests {
         CaptureBackend, CaptureEnvironment, CaptureTool, DRM_FORMAT_MOD_INVALID,
         DmaBufFrameCandidate, DmaBufFrameDescriptor, DmaBufImportTarget, DmaBufMemoryLayout,
         DmaBufPlaneCandidate, DmaBufPlaneDescriptor, DmaBufSynchronization, SessionType,
-        UnimplementedCaptureBackend, ZeroCopyAvailability, crop_frame, decode_image_bytes,
-        dmabuf_descriptor_from_candidate, file_uri_to_path, fourcc_code, grim_region_geometry,
-        import_dmabuf_frame, portal_first_stream, portal_first_stream_node_id,
-        portal_result_object_path, prepare_dmabuf_import_descriptor, select_backend,
-        select_frame_backend, select_region_frame_backend, select_zero_copy_backend,
-        validate_region_capture_frame, x11_region_geometry, zero_copy_capture_capabilities,
+        UnimplementedCaptureBackend, ZeroCopyAvailability, capture_backend_capabilities,
+        crop_frame, decode_image_bytes, dmabuf_descriptor_from_candidate, file_uri_to_path,
+        fourcc_code, grim_region_geometry, import_dmabuf_frame, portal_first_stream,
+        portal_first_stream_node_id, portal_result_object_path, prepare_dmabuf_import_descriptor,
+        select_backend, select_frame_backend, select_region_frame_backend,
+        select_zero_copy_backend, validate_region_capture_frame, x11_region_geometry,
+        zero_copy_capture_capabilities,
     };
     use peekaboox_core::{CaptureFrame, PixelFormat, Rect};
 
@@ -3435,6 +3565,45 @@ mod tests {
         let backend = select_backend(&environment, Path::new("screenshot.xwd")).unwrap();
 
         assert_eq!(backend.tool, CaptureTool::Xwd);
+    }
+
+    #[test]
+    fn x11_candidates_are_not_duplicated() {
+        let environment = environment(SessionType::X11, None, ["scrot", "maim"]);
+
+        let backends = super::candidate_backends(&environment, Path::new("screenshot.png"));
+        let names = backends
+            .iter()
+            .map(|backend| backend.name())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["scrot", "maim"]);
+    }
+
+    #[test]
+    fn diagnostics_include_missing_and_unsupported_backends() {
+        let environment = environment(SessionType::X11, None, ["xwd"]);
+
+        let capabilities = capture_backend_capabilities(&environment, Path::new("screenshot.png"));
+        let xwd = capabilities
+            .iter()
+            .find(|capability| capability.name == "xwd")
+            .unwrap();
+        let grim = capabilities
+            .iter()
+            .find(|capability| capability.name == "grim")
+            .unwrap();
+
+        assert!(xwd.available);
+        assert!(!xwd.supports_output);
+        assert_eq!(
+            xwd.reason.as_deref(),
+            Some("xwd only supports .xwd output for file capture")
+        );
+        assert_eq!(
+            grim.reason.as_deref(),
+            Some("not considered for current session")
+        );
     }
 
     #[test]

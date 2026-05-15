@@ -43,8 +43,10 @@ handoff contract for EGL, Vulkan, or compute importers. With the optional
 `egl-backend` feature, `EglDmaBufImporter` imports the checked descriptor into a
 native `EGLImage`, and `EglTextureDmaBufImporter` binds that image as a GLES
 `GL_TEXTURE_2D`. The CLI command `peekaboox capture-backends` prints the same
-diagnostics so target systems can be checked before enabling the importer, and
-`peekaboox capture-dmabuf --import egl-texture` runs a live
+diagnostics as text or JSON, can include missing backend reasons with
+`--diagnose`, and can run file, frame, region, or DMA-BUF probes with `--probe`
+so target systems can be checked before enabling the importer. `peekaboox
+capture-dmabuf --import egl-texture` runs a live
 descriptor/import/texture probe when the CLI is built with
 `--features pipewire-backend,egl-backend`.
 
@@ -564,6 +566,9 @@ optional `region` or `window_id`, `per_channel_threshold`, and `low_bandwidth`.
 `low_bandwidth=true` is the default and returns changed-rectangle patches after
 the first frame; `low_bandwidth=false` forces a full-frame patch for that
 request. Responses carry patch bytes as `patch_base64` and echo `low_bandwidth`.
+Daemon-routed `capture_backends` requests accept `output`, optional `region`,
+`diagnose`, and `probe` values `none`, `file`, `frame`, `region`, `dmabuf`, or
+`all`, returning the same backend diagnostics and probe results as the CLI.
 Daemon-routed desktop helper requests accept the same `window_id`,
 `window_title`, and `verify` fields as the gRPC/Python/MCP surfaces.
 Daemon-routed `probe_dmabuf` requests accept `import_target` values `compute`,

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod doctor;
 
@@ -10,12 +10,13 @@ use peekaboox_desktop::{
 };
 use peekaboox_input::MouseButton;
 use peekaboox_ipc::{
-    ActionResultDto, ApiRequest, ApiResponse, ApiResult, CaptureDeltaResultDto,
+    ActionResultDto, ApiRequest, ApiResponse, ApiResult, CaptureBackendDto, CaptureBackendProbeDto,
+    CaptureBackendProbeResultDto, CaptureBackendsResultDto, CaptureDeltaResultDto,
     DesktopActionResultDto, DesktopAssertionDto, DesktopLocateResultDto, DmaBufImportTargetDto,
     DmaBufProbeResultDto, ElementDto, ElementListResultDto, MouseButtonDto, OcrBlockDto,
     OcrResultDto, PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
     PluginToolExecutionResultDto, RectDto, UiStateDto, VisualDiffDto, WindowBackendReportDto,
-    WindowDto, WindowListResultDto, default_socket_path, send_request,
+    WindowDto, WindowListResultDto, ZeroCopyBackendDto, default_socket_path, send_request,
 };
 use peekaboox_vision::{
     OcrConfig, OcrOptions, OcrPreprocessingOptions, OcrResult, TesseractOcrBackend,
@@ -55,14 +56,16 @@ fn main() {
                 }
             }
         }
-        Some("capture-backends") | Some("backends") => match capture_backends(args.collect()) {
-            Ok(()) => {}
-            Err(CliError::HelpRequested) => {}
-            Err(CliError::Failure(error)) => {
-                eprintln!("capture-backends failed: {error}");
-                std::process::exit(1);
+        Some("capture-backends") | Some("backends") => {
+            match capture_backends(args.collect(), &global.context) {
+                Ok(()) => {}
+                Err(CliError::HelpRequested) => {}
+                Err(CliError::Failure(error)) => {
+                    eprintln!("capture-backends failed: {error}");
+                    std::process::exit(1);
+                }
             }
-        },
+        }
         Some("capture-dmabuf") | Some("dmabuf") => {
             match capture_dmabuf(args.collect(), &global.context) {
                 Ok(()) => {}
@@ -288,8 +291,17 @@ enum CaptureDeltaCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct CaptureBackendsArgs {
+    output: PathBuf,
+    region: Option<Rect>,
+    diagnose: bool,
+    json: bool,
+    probe: CaptureBackendProbeDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum CaptureBackendsCommand {
-    Run,
+    Run(CaptureBackendsArgs),
     Help,
 }
 
@@ -768,59 +780,530 @@ fn parse_capture_delta_args(args: Vec<String>) -> Result<CaptureDeltaCommand, Cl
     }))
 }
 
-fn capture_backends(args: Vec<String>) -> Result<(), CliError> {
-    let CaptureBackendsCommand::Run = parse_capture_backends_args(args)? else {
+fn capture_backends(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
+    let CaptureBackendsCommand::Run(args) = parse_capture_backends_args(args)? else {
         print_capture_backends_usage();
         return Err(CliError::HelpRequested);
     };
 
-    let environment = peekaboox_capture::CaptureEnvironment::detect();
-    println!(
-        "session={:?} desktop={} pipewire_session={}",
-        environment.session_type,
-        environment.current_desktop.as_deref().unwrap_or("-"),
-        environment.pipewire_session_available
-    );
-
-    let image_backends =
-        peekaboox_capture::candidate_backends(&environment, std::path::Path::new("screenshot.png"));
-    if image_backends.is_empty() {
-        println!("image_backend none");
+    let result = if context.use_daemon {
+        let result = daemon_request(
+            context,
+            ApiRequest::CaptureBackends {
+                output: args.output.display().to_string(),
+                region: args.region.map(RectDto::from),
+                diagnose: args.diagnose,
+                probe: args.probe,
+            },
+        )?;
+        let ApiResult::CaptureBackends(result) = result else {
+            return Err(CliError::Failure(
+                "daemon returned unexpected capture backend response".to_owned(),
+            ));
+        };
+        result
     } else {
-        for backend in image_backends {
-            println!(
-                "image_backend name={} kind={}",
-                backend.name(),
-                backend_kind_label(backend.backend_kind())
-            );
-        }
+        capture_backends_result(&args)
+    };
+
+    if args.json {
+        print_json_pretty(&result)?;
+    } else {
+        print_capture_backends_result(&result, args.diagnose);
     }
 
-    for capability in peekaboox_capture::zero_copy_capture_capabilities(&environment) {
-        println!(
-            "zero_copy_backend name={} kind={} transport={} availability={:?}",
-            capability.backend_name,
-            backend_kind_label(capability.backend_kind),
-            capability.transport.name(),
-            capability.availability
-        );
+    if args.probe != CaptureBackendProbeDto::None && result.probes.iter().any(|probe| !probe.ok) {
+        return Err(CliError::Failure(
+            "one or more capture backend probes failed".to_owned(),
+        ));
     }
 
     Ok(())
 }
 
 fn parse_capture_backends_args(args: Vec<String>) -> Result<CaptureBackendsCommand, CliError> {
-    match args.as_slice() {
-        [] => Ok(CaptureBackendsCommand::Run),
-        [arg] => match arg.as_str() {
-            "--help" | "-h" => Ok(CaptureBackendsCommand::Help),
-            unknown => Err(CliError::Failure(format!(
-                "unknown capture-backends argument: {unknown}"
-            ))),
+    let mut output = PathBuf::from("screenshot.png");
+    let mut output_explicit = false;
+    let mut format_explicit = false;
+    let mut region = None;
+    let mut diagnose = false;
+    let mut json = false;
+    let mut probe = CaptureBackendProbeDto::None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--output" | "-o" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --output".to_owned()));
+                };
+                if format_explicit {
+                    return Err(CliError::Failure(
+                        "provide either --output or --format, not both".to_owned(),
+                    ));
+                }
+                output = PathBuf::from(value);
+                output_explicit = true;
+            }
+            "--format" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --format".to_owned()));
+                };
+                if output_explicit {
+                    return Err(CliError::Failure(
+                        "provide either --output or --format, not both".to_owned(),
+                    ));
+                }
+                output = default_capture_backends_output_for_format(value)?;
+                format_explicit = true;
+            }
+            "--region" | "-r" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --region".to_owned()));
+                };
+                region = Some(parse_rect("--region", value)?);
+            }
+            "--probe" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --probe".to_owned()));
+                };
+                probe = parse_capture_backend_probe(value)?;
+            }
+            "--diagnose" | "--all" => diagnose = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Ok(CaptureBackendsCommand::Help),
+            unknown => {
+                return Err(CliError::Failure(format!(
+                    "unknown capture-backends argument: {unknown}"
+                )));
+            }
+        }
+
+        index += 1;
+    }
+
+    Ok(CaptureBackendsCommand::Run(CaptureBackendsArgs {
+        output,
+        region,
+        diagnose,
+        json,
+        probe,
+    }))
+}
+
+fn default_capture_backends_output_for_format(value: &str) -> Result<PathBuf, CliError> {
+    match value {
+        "png" => Ok(PathBuf::from("screenshot.png")),
+        "xwd" => Ok(PathBuf::from("screenshot.xwd")),
+        _ => Err(CliError::Failure(format!(
+            "--format must be png or xwd, got {value:?}"
+        ))),
+    }
+}
+
+fn parse_capture_backend_probe(value: &str) -> Result<CaptureBackendProbeDto, CliError> {
+    match value {
+        "none" => Ok(CaptureBackendProbeDto::None),
+        "file" => Ok(CaptureBackendProbeDto::File),
+        "frame" => Ok(CaptureBackendProbeDto::Frame),
+        "region" => Ok(CaptureBackendProbeDto::Region),
+        "dmabuf" | "dma-buf" | "zero-copy" | "zero_copy" => Ok(CaptureBackendProbeDto::DmaBuf),
+        "all" => Ok(CaptureBackendProbeDto::All),
+        _ => Err(CliError::Failure(format!(
+            "--probe must be none, file, frame, region, dmabuf, or all, got {value:?}"
+        ))),
+    }
+}
+
+fn capture_backends_result(args: &CaptureBackendsArgs) -> CaptureBackendsResultDto {
+    let environment = peekaboox_capture::CaptureEnvironment::detect();
+    let capabilities = peekaboox_capture::capture_backend_capabilities(&environment, &args.output);
+    let image_backends = capabilities
+        .into_iter()
+        .filter(|capability| args.diagnose || capability.reason.is_none())
+        .map(capture_backend_dto)
+        .collect::<Vec<_>>();
+    let zero_copy_backends = peekaboox_capture::zero_copy_capture_capabilities(&environment)
+        .into_iter()
+        .map(zero_copy_backend_dto)
+        .collect::<Vec<_>>();
+    let mut warnings = capture_backend_warnings(&zero_copy_backends);
+    let probes = capture_backend_probe_steps(args.probe)
+        .into_iter()
+        .map(|probe| capture_backend_probe(probe, args))
+        .collect::<Vec<_>>();
+
+    if matches!(
+        args.probe,
+        CaptureBackendProbeDto::Region | CaptureBackendProbeDto::All
+    ) && args.region.is_none()
+    {
+        warnings.push("region probe used default region 0,0,320,180".to_owned());
+    }
+
+    CaptureBackendsResultDto {
+        session_type: environment.session_type.name().to_owned(),
+        desktop: environment.current_desktop,
+        pipewire_session_available: environment.pipewire_session_available,
+        pipewire_backend_feature_enabled: peekaboox_capture::pipewire_backend_feature_enabled(),
+        egl_backend_feature_enabled: peekaboox_capture::egl_backend_feature_enabled(),
+        output_path: args.output.display().to_string(),
+        region: args.region.map(RectDto::from),
+        image_backends,
+        zero_copy_backends,
+        probes,
+        warnings,
+    }
+}
+
+fn capture_backend_dto(
+    capability: peekaboox_capture::CaptureBackendCapability,
+) -> CaptureBackendDto {
+    CaptureBackendDto {
+        name: capability.name.to_owned(),
+        backend_kind: backend_kind_label(capability.backend_kind),
+        command: capability.command.map(str::to_owned),
+        available: capability.available,
+        supports_output: capability.supports_output,
+        supports_file_capture: capability.supports_file_capture,
+        supports_stdout_capture: capability.supports_stdout_capture,
+        supports_stdout_region_capture: capability.supports_stdout_region_capture,
+        selected: capability.selected,
+        reason: capability.reason,
+    }
+}
+
+fn zero_copy_backend_dto(
+    capability: peekaboox_capture::ZeroCopyCaptureCapability,
+) -> ZeroCopyBackendDto {
+    let pipewire_feature = peekaboox_capture::pipewire_backend_feature_enabled();
+    let selected = capability.availability.is_available() && pipewire_feature;
+    let reason = if !capability.availability.is_available() {
+        Some(capability.availability.name().to_owned())
+    } else if !pipewire_feature {
+        Some("compiled without pipewire-backend feature".to_owned())
+    } else {
+        None
+    };
+
+    ZeroCopyBackendDto {
+        name: capability.backend_name,
+        backend_kind: backend_kind_label(capability.backend_kind),
+        transport: capability.transport.name().to_owned(),
+        availability: capability.availability.name().to_owned(),
+        selected,
+        pipewire_backend_feature_enabled: pipewire_feature,
+        egl_backend_feature_enabled: peekaboox_capture::egl_backend_feature_enabled(),
+        reason,
+    }
+}
+
+fn capture_backend_warnings(backends: &[ZeroCopyBackendDto]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for backend in backends {
+        if backend.availability == "available" && !backend.pipewire_backend_feature_enabled {
+            warnings.push(format!(
+                "{} is available in the session, but this build was compiled without pipewire-backend",
+                backend.name
+            ));
+        }
+    }
+    warnings
+}
+
+fn capture_backend_probe_steps(probe: CaptureBackendProbeDto) -> Vec<CaptureBackendProbeDto> {
+    match probe {
+        CaptureBackendProbeDto::None => Vec::new(),
+        CaptureBackendProbeDto::All => vec![
+            CaptureBackendProbeDto::File,
+            CaptureBackendProbeDto::Frame,
+            CaptureBackendProbeDto::Region,
+            CaptureBackendProbeDto::DmaBuf,
+        ],
+        other => vec![other],
+    }
+}
+
+fn capture_backend_probe(
+    probe: CaptureBackendProbeDto,
+    args: &CaptureBackendsArgs,
+) -> CaptureBackendProbeResultDto {
+    match probe {
+        CaptureBackendProbeDto::File => capture_backend_probe_file(&args.output),
+        CaptureBackendProbeDto::Frame => capture_backend_probe_frame(),
+        CaptureBackendProbeDto::Region => {
+            capture_backend_probe_region(args.region.unwrap_or(Rect::new(0, 0, 320, 180)))
+        }
+        CaptureBackendProbeDto::DmaBuf => capture_backend_probe_dmabuf(),
+        CaptureBackendProbeDto::None | CaptureBackendProbeDto::All => capture_backend_probe_error(
+            capture_backend_probe_name(probe),
+            "invalid internal probe step".to_owned(),
+        ),
+    }
+}
+
+fn capture_backend_probe_file(output: &Path) -> CaptureBackendProbeResultDto {
+    match peekaboox_capture::capture_screen_to_file(output) {
+        Ok(metadata) => CaptureBackendProbeResultDto {
+            probe: "file".to_owned(),
+            ok: true,
+            backend_name: Some(metadata.backend_name),
+            backend_kind: Some(backend_kind_label(metadata.backend_kind)),
+            detail: format!("wrote {} bytes", metadata.bytes_written),
+            output_path: Some(metadata.output_path.display().to_string()),
+            bytes_written: Some(metadata.bytes_written),
+            width: None,
+            height: None,
         },
-        _ => Err(CliError::Failure(
-            "capture-backends does not accept positional arguments".to_owned(),
-        )),
+        Err(error) => capture_backend_probe_error("file", error.to_string()),
+    }
+}
+
+fn capture_backend_probe_frame() -> CaptureBackendProbeResultDto {
+    match peekaboox_capture::capture_screen_frame() {
+        Ok(metadata) => CaptureBackendProbeResultDto {
+            probe: "frame".to_owned(),
+            ok: true,
+            backend_name: Some(metadata.backend_name),
+            backend_kind: Some(backend_kind_label(metadata.backend_kind)),
+            detail: format!(
+                "captured {}x{} via {}",
+                metadata.frame.width,
+                metadata.frame.height,
+                capture_frame_source_label(metadata.source)
+            ),
+            output_path: None,
+            bytes_written: None,
+            width: Some(metadata.frame.width),
+            height: Some(metadata.frame.height),
+        },
+        Err(error) => capture_backend_probe_error("frame", error.to_string()),
+    }
+}
+
+fn capture_backend_probe_region(region: Rect) -> CaptureBackendProbeResultDto {
+    match peekaboox_capture::capture_region_frame(region) {
+        Ok(metadata) => CaptureBackendProbeResultDto {
+            probe: "region".to_owned(),
+            ok: true,
+            backend_name: Some(metadata.backend_name),
+            backend_kind: Some(backend_kind_label(metadata.backend_kind)),
+            detail: format!(
+                "captured {}x{} region {} via {}",
+                metadata.frame.width,
+                metadata.frame.height,
+                format_rect(region),
+                capture_frame_source_label(metadata.source)
+            ),
+            output_path: None,
+            bytes_written: None,
+            width: Some(metadata.frame.width),
+            height: Some(metadata.frame.height),
+        },
+        Err(error) => capture_backend_probe_error("region", error.to_string()),
+    }
+}
+
+fn capture_backend_probe_dmabuf() -> CaptureBackendProbeResultDto {
+    if !peekaboox_capture::pipewire_backend_feature_enabled() {
+        return capture_backend_probe_error(
+            "dmabuf",
+            "compiled without pipewire-backend feature".to_owned(),
+        );
+    }
+
+    let stream = match peekaboox_capture::open_pipewire_screencast() {
+        Ok(stream) => stream,
+        Err(error) => return capture_backend_probe_error("dmabuf", error.to_string()),
+    };
+    let stream_node_id = stream.stream_node_id;
+    let pipewire_serial = stream.pipewire_serial;
+    let descriptor = match peekaboox_capture::capture_pipewire_dmabuf_frame(stream) {
+        Ok(descriptor) => descriptor,
+        Err(error) => return capture_backend_probe_error("dmabuf", error.to_string()),
+    };
+    let imported = match peekaboox_capture::import_dmabuf_frame(
+        &descriptor,
+        peekaboox_capture::DmaBufImportTarget::Compute,
+    ) {
+        Ok(imported) => imported,
+        Err(error) => return capture_backend_probe_error("dmabuf", error.to_string()),
+    };
+
+    CaptureBackendProbeResultDto {
+        probe: "dmabuf".to_owned(),
+        ok: true,
+        backend_name: Some(imported.backend_name),
+        backend_kind: Some(imported.backend_kind.name().to_owned()),
+        detail: format!(
+            "stream node_id={} pipewire_serial={} frame={}x{} format={:?} planes={}",
+            stream_node_id,
+            pipewire_serial
+                .map(|serial| serial.to_string())
+                .unwrap_or_else(|| "-".to_owned()),
+            descriptor.width,
+            descriptor.height,
+            descriptor.format,
+            descriptor.planes.len()
+        ),
+        output_path: None,
+        bytes_written: None,
+        width: Some(descriptor.width),
+        height: Some(descriptor.height),
+    }
+}
+
+fn capture_backend_probe_error(
+    probe: impl Into<String>,
+    detail: String,
+) -> CaptureBackendProbeResultDto {
+    CaptureBackendProbeResultDto {
+        probe: probe.into(),
+        ok: false,
+        backend_name: None,
+        backend_kind: None,
+        detail,
+        output_path: None,
+        bytes_written: None,
+        width: None,
+        height: None,
+    }
+}
+
+fn capture_backend_probe_name(probe: CaptureBackendProbeDto) -> &'static str {
+    match probe {
+        CaptureBackendProbeDto::None => "none",
+        CaptureBackendProbeDto::File => "file",
+        CaptureBackendProbeDto::Frame => "frame",
+        CaptureBackendProbeDto::Region => "region",
+        CaptureBackendProbeDto::DmaBuf => "dmabuf",
+        CaptureBackendProbeDto::All => "all",
+    }
+}
+
+fn capture_frame_source_label(source: peekaboox_capture::CaptureFrameSource) -> &'static str {
+    match source {
+        peekaboox_capture::CaptureFrameSource::DirectStdout => "direct-stdout",
+        peekaboox_capture::CaptureFrameSource::DmaBufZeroCopy => "dmabuf-zero-copy",
+        peekaboox_capture::CaptureFrameSource::FileFallback => "file-fallback",
+        peekaboox_capture::CaptureFrameSource::FullFrameCrop => "full-frame-crop",
+    }
+}
+
+fn print_capture_backends_result(result: &CaptureBackendsResultDto, diagnose: bool) {
+    if diagnose {
+        println!(
+            "session={} desktop={} pipewire_session={} output={}",
+            result.session_type,
+            result.desktop.as_deref().unwrap_or("-"),
+            result.pipewire_session_available,
+            result.output_path
+        );
+        println!(
+            "build pipewire_backend={} egl_backend={}",
+            result.pipewire_backend_feature_enabled, result.egl_backend_feature_enabled
+        );
+    } else {
+        println!(
+            "session={} desktop={} pipewire_session={}",
+            capture_session_display(&result.session_type),
+            result.desktop.as_deref().unwrap_or("-"),
+            result.pipewire_session_available
+        );
+    }
+
+    if result.image_backends.is_empty() {
+        println!("image_backend none");
+    } else {
+        for backend in &result.image_backends {
+            if diagnose {
+                println!(
+                    "image_backend name={} kind={} command={} available={} output={} stdout_frame={} stdout_region={} selected={} reason={}",
+                    backend.name,
+                    backend.backend_kind,
+                    backend.command.as_deref().unwrap_or("-"),
+                    backend.available,
+                    backend.supports_output,
+                    backend.supports_stdout_capture,
+                    backend.supports_stdout_region_capture,
+                    backend.selected,
+                    backend.reason.as_deref().unwrap_or("-")
+                );
+            } else {
+                println!(
+                    "image_backend name={} kind={}",
+                    backend.name, backend.backend_kind
+                );
+            }
+        }
+    }
+
+    for backend in &result.zero_copy_backends {
+        if diagnose {
+            println!(
+                "zero_copy_backend name={} kind={} transport={} availability={} selected={} reason={}",
+                backend.name,
+                backend.backend_kind,
+                backend.transport,
+                backend.availability,
+                backend.selected,
+                backend.reason.as_deref().unwrap_or("-")
+            );
+        } else {
+            println!(
+                "zero_copy_backend name={} kind={} transport={} availability={}",
+                backend.name,
+                backend.backend_kind,
+                backend.transport,
+                capture_availability_display(&backend.availability)
+            );
+        }
+    }
+
+    for warning in &result.warnings {
+        println!("warning {warning}");
+    }
+
+    for probe in &result.probes {
+        println!(
+            "probe name={} ok={} backend={} kind={} output={} bytes={} size={} detail={}",
+            probe.probe,
+            probe.ok,
+            probe.backend_name.as_deref().unwrap_or("-"),
+            probe.backend_kind.as_deref().unwrap_or("-"),
+            probe.output_path.as_deref().unwrap_or("-"),
+            probe
+                .bytes_written
+                .map(|bytes| bytes.to_string())
+                .unwrap_or_else(|| "-".to_owned()),
+            match (probe.width, probe.height) {
+                (Some(width), Some(height)) => format!("{width}x{height}"),
+                _ => "-".to_owned(),
+            },
+            probe.detail
+        );
+    }
+}
+
+fn capture_session_display(value: &str) -> String {
+    match value {
+        "wayland" => "Wayland".to_owned(),
+        "x11" => "X11".to_owned(),
+        "unknown" => "Unknown".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+fn capture_availability_display(value: &str) -> String {
+    match value {
+        "available" => "Available".to_owned(),
+        "missing_pipewire_session" => "MissingPipeWireSession".to_owned(),
+        "unsupported_session" => "UnsupportedSession".to_owned(),
+        other => other.to_owned(),
     }
 }
 
@@ -5505,7 +5988,9 @@ fn print_capture_delta_usage() {
 }
 
 fn print_capture_backends_usage() {
-    println!("Usage: peekaboox capture-backends");
+    println!(
+        "Usage: peekaboox [--daemon] capture-backends [--output <path>|--format png|xwd] [--region x,y,width,height] [--diagnose|--all] [--probe none|file|frame|region|dmabuf|all] [--json]"
+    );
 }
 
 fn print_capture_dmabuf_usage() {
@@ -5619,17 +6104,18 @@ mod tests {
     use std::path::PathBuf;
 
     use peekaboox_input::MouseButton;
+    use peekaboox_ipc::CaptureBackendProbeDto;
 
     use super::{
-        CaptureArgs, CaptureBackendsCommand, CaptureCommand, CaptureDeltaArgs, CaptureDeltaCommand,
-        CaptureDmaBufArgs, CaptureDmaBufCommand, CaptureDmaBufImportTarget, CliContext, CliError,
-        ClickArgs, ClickCommand, ClickTarget, CompareArgs, CompareCommand, DesktopAssertArgs,
-        DesktopClickArgs, DesktopCommand, DesktopDragArgs, DesktopFocusArgs, DesktopLocateArgs,
-        DesktopProfilesArgs, DesktopTypeIntoArgs, DragArgs, DragCommand, ElementsArgs,
-        ElementsCommand, GlobalArgs, HotkeyArgs, HotkeyCommand, MoveArgs, MoveCommand, OcrArgs,
-        OcrCommand, PluginsArgs, PluginsCommand, TypeArgs, TypeCommand, UiStateArgs,
-        UiStateCommand, VisionElementsArgs, VisionElementsCommand, WindowsArgs, WindowsCommand,
-        parse_capture_args, parse_capture_backends_args, parse_capture_delta_args,
+        CaptureArgs, CaptureBackendsArgs, CaptureBackendsCommand, CaptureCommand, CaptureDeltaArgs,
+        CaptureDeltaCommand, CaptureDmaBufArgs, CaptureDmaBufCommand, CaptureDmaBufImportTarget,
+        CliContext, CliError, ClickArgs, ClickCommand, ClickTarget, CompareArgs, CompareCommand,
+        DesktopAssertArgs, DesktopClickArgs, DesktopCommand, DesktopDragArgs, DesktopFocusArgs,
+        DesktopLocateArgs, DesktopProfilesArgs, DesktopTypeIntoArgs, DragArgs, DragCommand,
+        ElementsArgs, ElementsCommand, GlobalArgs, HotkeyArgs, HotkeyCommand, MoveArgs,
+        MoveCommand, OcrArgs, OcrCommand, PluginsArgs, PluginsCommand, TypeArgs, TypeCommand,
+        UiStateArgs, UiStateCommand, VisionElementsArgs, VisionElementsCommand, WindowsArgs,
+        WindowsCommand, parse_capture_args, parse_capture_backends_args, parse_capture_delta_args,
         parse_capture_dmabuf_args, parse_click_args, parse_compare_args, parse_desktop_args,
         parse_drag_args, parse_elements_args, parse_global_args, parse_hotkey_args,
         parse_move_args, parse_ocr_args, parse_plugins_args, parse_type_args, parse_ui_state_args,
@@ -5814,7 +6300,42 @@ mod tests {
     fn capture_backends_accepts_no_arguments() {
         let command = parse_capture_backends_args(vec![]).unwrap();
 
-        assert_eq!(command, CaptureBackendsCommand::Run);
+        assert_eq!(
+            command,
+            CaptureBackendsCommand::Run(CaptureBackendsArgs {
+                output: PathBuf::from("screenshot.png"),
+                region: None,
+                diagnose: false,
+                json: false,
+                probe: CaptureBackendProbeDto::None,
+            })
+        );
+    }
+
+    #[test]
+    fn capture_backends_accepts_diagnostics_json_output_format_region_and_probe() {
+        let command = parse_capture_backends_args(vec![
+            "--format".to_owned(),
+            "xwd".to_owned(),
+            "--region".to_owned(),
+            "0,0,320,180".to_owned(),
+            "--probe".to_owned(),
+            "all".to_owned(),
+            "--diagnose".to_owned(),
+            "--json".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            CaptureBackendsCommand::Run(CaptureBackendsArgs {
+                output: PathBuf::from("screenshot.xwd"),
+                region: Some(Rect::new(0, 0, 320, 180)),
+                diagnose: true,
+                json: true,
+                probe: CaptureBackendProbeDto::All,
+            })
+        );
     }
 
     #[test]
