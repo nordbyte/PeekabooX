@@ -144,6 +144,26 @@ pub enum ApiRequest {
         selector: String,
         #[serde(default)]
         vision_fallback: bool,
+        #[serde(default)]
+        app: Option<String>,
+        #[serde(default)]
+        window_title: Option<String>,
+        #[serde(default)]
+        window_id: Option<String>,
+        #[serde(default)]
+        vision_region: Option<RectDto>,
+        #[serde(default)]
+        vision_edge_threshold: Option<u8>,
+        #[serde(default)]
+        vision_min_width: Option<u32>,
+        #[serde(default)]
+        vision_min_height: Option<u32>,
+        #[serde(default)]
+        vision_min_component_pixels: Option<u32>,
+        #[serde(default)]
+        vision_max_elements: Option<u32>,
+        #[serde(default)]
+        vision_merge_distance: Option<u32>,
     },
     Ocr {
         #[serde(default)]
@@ -557,6 +577,12 @@ pub struct ElementListResultDto {
     pub backend_name: String,
     pub backend_kind: String,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub cache_hit: bool,
+    #[serde(default)]
+    pub cache_age_ms: u128,
+    #[serde(default)]
+    pub vision_fallback_used: bool,
     pub elements: Vec<ElementDto>,
 }
 
@@ -566,8 +592,14 @@ pub struct ElementDto {
     pub role: String,
     pub label: Option<String>,
     pub bounds: RectDto,
+    pub center: Option<PointDto>,
     pub confidence: f32,
     pub states: Vec<String>,
+    pub window_id: Option<String>,
+    pub window_title: Option<String>,
+    pub app_id: Option<String>,
+    pub parent_id: Option<String>,
+    pub child_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -635,6 +667,21 @@ impl From<RectDto> for Rect {
     }
 }
 
+impl From<Point> for PointDto {
+    fn from(point: Point) -> Self {
+        Self {
+            x: point.x,
+            y: point.y,
+        }
+    }
+}
+
+impl From<PointDto> for Point {
+    fn from(point: PointDto) -> Self {
+        Self::new(point.x, point.y)
+    }
+}
+
 impl From<&UiElement> for ElementDto {
     fn from(element: &UiElement) -> Self {
         Self {
@@ -642,8 +689,17 @@ impl From<&UiElement> for ElementDto {
             role: element.role.clone(),
             label: element.label.clone(),
             bounds: RectDto::from(element.bounds),
+            center: element
+                .center
+                .or_else(|| element.bounds.center())
+                .map(PointDto::from),
             confidence: element.confidence,
             states: element.states.clone(),
+            window_id: element.window_id.clone(),
+            window_title: element.window_title.clone(),
+            app_id: element.app_id.clone(),
+            parent_id: element.parent_id.clone(),
+            child_ids: element.child_ids.clone(),
         }
     }
 }
@@ -1054,6 +1110,16 @@ mod tests {
             ApiRequestEnvelope::new(ApiRequest::FindElements {
                 selector: "role=button".to_owned(),
                 vision_fallback: false,
+                app: None,
+                window_title: None,
+                window_id: None,
+                vision_region: None,
+                vision_edge_threshold: None,
+                vision_min_width: None,
+                vision_min_height: None,
+                vision_min_component_pixels: None,
+                vision_max_elements: None,
+                vision_merge_distance: None,
             })
         );
     }

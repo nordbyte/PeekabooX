@@ -166,9 +166,24 @@ List semantic elements from the CLI:
 peekaboox elements --role "push button" --state enabled --contains 100,200
 peekaboox elements --selector "role=push button" --vision-fallback
 peekaboox --daemon find --selector "role=push button,label=Submit,confidence>=0.9"
+peekaboox elements --window-title "Draft" --role-exact "push button" --text-regex "^Save"
+peekaboox elements --app text-editor --selector "not-state=disabled,min-width=40" --json
 ```
 
-Supported selectors are documented in [docs/api.md](api.md).
+`elements` accepts `--app`, `--window-title`, and `--window-id` to scope
+semantic AT-SPI matches and screenshot fallback to the intended window. Selector
+parsing is strict: malformed rectangles, points, numbers, regexes, or unknown
+keys return an error instead of broadening the match. Supported selector keys
+include `id`, `role`, `label`/`text`, `state`, `not-state`, exact and regex
+variants such as `role-exact` and `label-regex`, `bounds`, `contains`,
+`within`, `intersects`, `min-width`, `min-height`, and `confidence>=`.
+
+When `--vision-fallback` is enabled, the detector can be tuned with
+`--vision-region`, `--vision-threshold`, `--vision-min-width`,
+`--vision-min-height`, `--vision-min-component-pixels`,
+`--vision-max-elements`, and `--vision-merge-distance`. JSON output includes
+each element's `center`, window/app hierarchy metadata when available, and
+daemon lookup metadata such as cache and fallback status.
 
 ## Vision Tools
 

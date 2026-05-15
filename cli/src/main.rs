@@ -362,6 +362,16 @@ struct ElementsArgs {
     selector: String,
     limit: usize,
     vision_fallback: bool,
+    app: Option<String>,
+    window_title: Option<String>,
+    window_id: Option<String>,
+    vision_region: Option<Rect>,
+    vision_edge_threshold: Option<u8>,
+    vision_min_width: Option<u32>,
+    vision_min_height: Option<u32>,
+    vision_min_component_pixels: Option<u32>,
+    vision_max_elements: Option<u32>,
+    vision_merge_distance: Option<u32>,
     json: bool,
 }
 
@@ -1516,6 +1526,16 @@ fn elements(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
             ApiRequest::FindElements {
                 selector: args.selector.clone(),
                 vision_fallback: args.vision_fallback,
+                app: args.app.clone(),
+                window_title: args.window_title.clone(),
+                window_id: args.window_id.clone(),
+                vision_region: args.vision_region.map(RectDto::from),
+                vision_edge_threshold: args.vision_edge_threshold,
+                vision_min_width: args.vision_min_width,
+                vision_min_height: args.vision_min_height,
+                vision_min_component_pixels: args.vision_min_component_pixels,
+                vision_max_elements: args.vision_max_elements,
+                vision_merge_distance: args.vision_merge_distance,
             },
         )?;
         let ApiResult::FindElements(metadata) = result else {
@@ -1531,7 +1551,7 @@ fn elements(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         return Ok(());
     }
 
-    let metadata = find_elements_metadata(&args.selector, args.vision_fallback)?;
+    let metadata = find_elements_metadata(&args)?;
     if args.json {
         print_json_pretty(&limited_element_list_dto(
             element_list_dto(metadata),
@@ -1544,26 +1564,26 @@ fn elements(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
     Ok(())
 }
 
-fn find_elements_metadata(
-    selector: &str,
-    vision_fallback: bool,
-) -> Result<AccessibilityTreeMetadata, CliError> {
-    let query = ElementQuery::from_selector(selector);
+fn find_elements_metadata(args: &ElementsArgs) -> Result<AccessibilityTreeMetadata, CliError> {
+    let query = ElementQuery::parse(&args.selector)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
     match peekaboox_accessibility::semantic_tree() {
         Ok(mut metadata) => {
-            metadata.elements.retain(|element| query.matches(element));
-            if !metadata.elements.is_empty() || !vision_fallback {
+            metadata.elements.retain(|element| {
+                query.matches(element) && element_matches_cli_scope(element, args)
+            });
+            if !metadata.elements.is_empty() || !args.vision_fallback {
                 return Ok(metadata);
             }
 
-            let mut fallback = vision_fallback_metadata(&query)?;
+            let mut fallback = vision_fallback_metadata(&query, args)?;
             fallback
                 .warnings
                 .push("no accessibility elements matched; used vision fallback".to_owned());
             Ok(fallback)
         }
-        Err(error) if vision_fallback => {
-            let mut fallback = vision_fallback_metadata(&query)?;
+        Err(error) if args.vision_fallback => {
+            let mut fallback = vision_fallback_metadata(&query, args)?;
             fallback.warnings.push(format!(
                 "accessibility lookup failed: {error}; used vision fallback"
             ));
@@ -1573,18 +1593,21 @@ fn find_elements_metadata(
     }
 }
 
-fn vision_fallback_metadata(query: &ElementQuery) -> Result<AccessibilityTreeMetadata, CliError> {
+fn vision_fallback_metadata(
+    query: &ElementQuery,
+    args: &ElementsArgs,
+) -> Result<AccessibilityTreeMetadata, CliError> {
     let screenshot = vision_fallback_temp_path();
-    peekaboox_capture::capture_screen_to_file(&screenshot)
+    let capture_region = vision_capture_region_from_elements_args(args)?;
+    capture_cli_to_file(&screenshot, capture_region)
         .map_err(|error| CliError::Failure(error.to_string()))?;
-    let result = peekaboox_vision::detect_ui_elements_from_image_file(
-        &screenshot,
-        &UiElementDetectionOptions::default(),
-    )
-    .map_err(|error| CliError::Failure(error.to_string()));
+    let options = element_vision_options_from_elements_args(args)?;
+    let result = peekaboox_vision::detect_ui_elements_from_image_file(&screenshot, &options)
+        .map_err(|error| CliError::Failure(error.to_string()));
     remove_temp_file(&screenshot, "vision fallback screenshot");
 
     let mut elements = result?;
+    apply_elements_scope_metadata(&mut elements, args, capture_region);
     elements.retain(|element| query.matches(element));
     Ok(AccessibilityTreeMetadata {
         backend_name: "heuristic_vision".to_owned(),
@@ -1592,6 +1615,82 @@ fn vision_fallback_metadata(query: &ElementQuery) -> Result<AccessibilityTreeMet
         warnings: Vec::new(),
         elements,
     })
+}
+
+fn element_matches_cli_scope(element: &UiElement, args: &ElementsArgs) -> bool {
+    args.window_id
+        .as_deref()
+        .is_none_or(|window_id| element.window_id.as_deref() == Some(window_id))
+        && args.window_title.as_deref().is_none_or(|window_title| {
+            element
+                .window_title
+                .as_deref()
+                .is_some_and(|value| contains_case_insensitive(value, window_title))
+        })
+        && args.app.as_deref().is_none_or(|app| {
+            element
+                .app_id
+                .as_deref()
+                .is_some_and(|value| contains_case_insensitive(value, app))
+        })
+}
+
+fn vision_capture_region_from_elements_args(args: &ElementsArgs) -> Result<Option<Rect>, CliError> {
+    if args.vision_region.is_some() {
+        return Ok(args.vision_region);
+    }
+    if args.window_id.is_none() && args.window_title.is_none() && args.app.is_none() {
+        return Ok(None);
+    }
+    let window = resolve_window_for_ocr(
+        args.window_id.as_deref(),
+        args.window_title.as_deref(),
+        args.app.as_deref(),
+    )?;
+    Ok(Some(window.bounds))
+}
+
+fn element_vision_options_from_elements_args(
+    args: &ElementsArgs,
+) -> Result<UiElementDetectionOptions, CliError> {
+    let defaults = UiElementDetectionOptions::default();
+    Ok(UiElementDetectionOptions {
+        region: None,
+        edge_threshold: args
+            .vision_edge_threshold
+            .unwrap_or(defaults.edge_threshold),
+        min_width: args.vision_min_width.unwrap_or(defaults.min_width),
+        min_height: args.vision_min_height.unwrap_or(defaults.min_height),
+        min_component_pixels: args
+            .vision_min_component_pixels
+            .unwrap_or(defaults.min_component_pixels),
+        max_elements: args
+            .vision_max_elements
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| CliError::Failure("--vision-max-elements is too large".to_owned()))?
+            .unwrap_or(defaults.max_elements),
+        merge_distance: args
+            .vision_merge_distance
+            .unwrap_or(defaults.merge_distance),
+    })
+}
+
+fn apply_elements_scope_metadata(
+    elements: &mut [UiElement],
+    args: &ElementsArgs,
+    capture_region: Option<Rect>,
+) {
+    for element in elements {
+        if let Some(region) = capture_region {
+            element.bounds.x += region.x;
+            element.bounds.y += region.y;
+            element.center = element.bounds.center();
+        }
+        element.window_id.clone_from(&args.window_id);
+        element.window_title.clone_from(&args.window_title);
+        element.app_id.clone_from(&args.app);
+    }
 }
 
 fn vision_fallback_temp_path() -> PathBuf {
@@ -1703,6 +1802,9 @@ fn element_list_dto(metadata: AccessibilityTreeMetadata) -> ElementListResultDto
         backend_name: metadata.backend_name,
         backend_kind: backend_kind_label(metadata.backend_kind),
         warnings: metadata.warnings,
+        cache_hit: false,
+        cache_age_ms: 0,
+        vision_fallback_used: metadata.backend_kind == BackendKind::Vision,
         elements: metadata.elements.into_iter().map(element_dto).collect(),
     }
 }
@@ -1723,8 +1825,17 @@ fn element_dto(element: UiElement) -> ElementDto {
         role: element.role,
         label: element.label,
         bounds: element.bounds.into(),
+        center: element
+            .center
+            .or_else(|| element.bounds.center())
+            .map(Into::into),
         confidence: element.confidence,
         states: element.states,
+        window_id: element.window_id,
+        window_title: element.window_title,
+        app_id: element.app_id,
+        parent_id: element.parent_id,
+        child_ids: element.child_ids,
     }
 }
 
@@ -1741,6 +1852,16 @@ fn parse_elements_args(args: Vec<String>) -> Result<ElementsCommand, CliError> {
     let mut selector_parts = Vec::new();
     let mut limit = 50;
     let mut vision_fallback = false;
+    let mut app = None;
+    let mut window_title = None;
+    let mut window_id = None;
+    let mut vision_region = None;
+    let mut vision_edge_threshold = None;
+    let mut vision_min_width = None;
+    let mut vision_min_height = None;
+    let mut vision_min_component_pixels = None;
+    let mut vision_max_elements = None;
+    let mut vision_merge_distance = None;
     let mut json = false;
     let mut index = 0;
 
@@ -1753,12 +1874,37 @@ fn parse_elements_args(args: Vec<String>) -> Result<ElementsCommand, CliError> {
                 };
                 selector = Some(value.to_owned());
             }
+            "--id" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --id".to_owned()));
+                };
+                selector_parts.push(format!("id={value}"));
+            }
             "--role" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
                     return Err(CliError::Failure("missing value for --role".to_owned()));
                 };
                 selector_parts.push(format!("role={value}"));
+            }
+            "--role-exact" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --role-exact".to_owned(),
+                    ));
+                };
+                selector_parts.push(format!("role-exact={value}"));
+            }
+            "--role-regex" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --role-regex".to_owned(),
+                    ));
+                };
+                selector_parts.push(format!("role-regex={value}"));
             }
             "--label" | "--text" => {
                 index += 1;
@@ -1770,12 +1916,41 @@ fn parse_elements_args(args: Vec<String>) -> Result<ElementsCommand, CliError> {
                 };
                 selector_parts.push(format!("label={value}"));
             }
+            "--label-exact" | "--text-exact" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(format!(
+                        "missing value for {}",
+                        args[index - 1]
+                    )));
+                };
+                selector_parts.push(format!("label-exact={value}"));
+            }
+            "--label-regex" | "--text-regex" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(format!(
+                        "missing value for {}",
+                        args[index - 1]
+                    )));
+                };
+                selector_parts.push(format!("label-regex={value}"));
+            }
             "--state" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
                     return Err(CliError::Failure("missing value for --state".to_owned()));
                 };
                 selector_parts.push(format!("state={value}"));
+            }
+            "--not-state" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --not-state".to_owned(),
+                    ));
+                };
+                selector_parts.push(format!("not-state={value}"));
             }
             "--bounds" => {
                 index += 1;
@@ -1790,6 +1965,42 @@ fn parse_elements_args(args: Vec<String>) -> Result<ElementsCommand, CliError> {
                     return Err(CliError::Failure("missing value for --contains".to_owned()));
                 };
                 selector_parts.push(format!("contains={value}"));
+            }
+            "--within" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --within".to_owned()));
+                };
+                selector_parts.push(format!("within={value}"));
+            }
+            "--intersects" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --intersects".to_owned(),
+                    ));
+                };
+                selector_parts.push(format!("intersects={value}"));
+            }
+            "--min-width" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --min-width".to_owned(),
+                    ));
+                };
+                parse_positive_u32("--min-width", value)?;
+                selector_parts.push(format!("min-width={value}"));
+            }
+            "--min-height" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --min-height".to_owned(),
+                    ));
+                };
+                parse_positive_u32("--min-height", value)?;
+                selector_parts.push(format!("min-height={value}"));
             }
             "--min-confidence" => {
                 index += 1;
@@ -1811,6 +2022,105 @@ fn parse_elements_args(args: Vec<String>) -> Result<ElementsCommand, CliError> {
                 limit = parse_usize("--limit", value)?;
             }
             "--vision-fallback" => vision_fallback = true,
+            "--app" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --app".to_owned()));
+                };
+                app = non_empty_cli_string(value);
+            }
+            "--window-title" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --window-title".to_owned(),
+                    ));
+                };
+                window_title = non_empty_cli_string(value);
+            }
+            "--window-id" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --window-id".to_owned(),
+                    ));
+                };
+                window_id = non_empty_cli_string(value);
+            }
+            "--vision-region" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --vision-region".to_owned(),
+                    ));
+                };
+                vision_region = Some(parse_rect("--vision-region", value)?);
+            }
+            "--vision-threshold" | "--vision-edge-threshold" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --vision-threshold".to_owned(),
+                    ));
+                };
+                let threshold = parse_u8("--vision-threshold", value)?;
+                if threshold == 0 {
+                    return Err(CliError::Failure(
+                        "--vision-threshold must be greater than zero".to_owned(),
+                    ));
+                }
+                vision_edge_threshold = Some(threshold);
+            }
+            "--vision-min-width" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --vision-min-width".to_owned(),
+                    ));
+                };
+                vision_min_width = Some(parse_positive_u32("--vision-min-width", value)?);
+            }
+            "--vision-min-height" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --vision-min-height".to_owned(),
+                    ));
+                };
+                vision_min_height = Some(parse_positive_u32("--vision-min-height", value)?);
+            }
+            "--vision-min-component-pixels" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --vision-min-component-pixels".to_owned(),
+                    ));
+                };
+                vision_min_component_pixels =
+                    Some(parse_positive_u32("--vision-min-component-pixels", value)?);
+            }
+            "--vision-max-elements" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --vision-max-elements".to_owned(),
+                    ));
+                };
+                vision_max_elements = Some(parse_positive_u32("--vision-max-elements", value)?);
+            }
+            "--vision-merge-distance" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --vision-merge-distance".to_owned(),
+                    ));
+                };
+                vision_merge_distance = Some(value.parse::<u32>().map_err(|_| {
+                    CliError::Failure(format!(
+                        "--vision-merge-distance must be an integer, got {value:?}"
+                    ))
+                })?);
+            }
             "--json" => json = true,
             "--help" | "-h" => return Ok(ElementsCommand::Help),
             value if value.starts_with('-') => {
@@ -1839,11 +2149,22 @@ fn parse_elements_args(args: Vec<String>) -> Result<ElementsCommand, CliError> {
         }
         None => selector_parts.join(","),
     };
+    ElementQuery::parse(&selector).map_err(|error| CliError::Failure(error.to_string()))?;
 
     Ok(ElementsCommand::Run(ElementsArgs {
         selector,
         limit,
         vision_fallback,
+        app,
+        window_title,
+        window_id,
+        vision_region,
+        vision_edge_threshold,
+        vision_min_width,
+        vision_min_height,
+        vision_min_component_pixels,
+        vision_max_elements,
+        vision_merge_distance,
         json,
     }))
 }
@@ -3874,6 +4195,12 @@ fn format_rect(rect: Rect) -> String {
     format!("{},{},{}x{}", rect.x, rect.y, rect.width, rect.height)
 }
 
+fn contains_case_insensitive(value: &str, needle: &str) -> bool {
+    value
+        .to_ascii_lowercase()
+        .contains(&needle.to_ascii_lowercase())
+}
+
 fn backend_kind_label(kind: BackendKind) -> String {
     format!("{kind:?}").to_ascii_lowercase()
 }
@@ -3988,8 +4315,10 @@ fn resolve_semantic_click_target(
     match peekaboox_accessibility::resolve_click_target(selector) {
         Ok(target) => Ok(target),
         Err(error) if vision_fallback => {
-            let query = ElementQuery::from_selector(selector);
-            let elements = vision_fallback_metadata(&query)?.elements;
+            let query = ElementQuery::parse(selector)
+                .map_err(|error| CliError::Failure(error.to_string()))?;
+            let args = default_elements_args_for_selector(selector);
+            let elements = vision_fallback_metadata(&query, &args)?.elements;
             peekaboox_accessibility::resolve_click_target_from_tree(selector, &elements).map_err(
                 |fallback_error| {
                     CliError::Failure(format!(
@@ -4000,6 +4329,25 @@ fn resolve_semantic_click_target(
             )
         }
         Err(error) => Err(CliError::Failure(error.to_string())),
+    }
+}
+
+fn default_elements_args_for_selector(selector: &str) -> ElementsArgs {
+    ElementsArgs {
+        selector: selector.to_owned(),
+        limit: 50,
+        vision_fallback: true,
+        app: None,
+        window_title: None,
+        window_id: None,
+        vision_region: None,
+        vision_edge_threshold: None,
+        vision_min_width: None,
+        vision_min_height: None,
+        vision_min_component_pixels: None,
+        vision_max_elements: None,
+        vision_merge_distance: None,
+        json: false,
     }
 }
 
@@ -5023,7 +5371,7 @@ fn print_windows_usage() {
 
 fn print_elements_usage() {
     println!(
-        "Usage: peekaboox elements [<selector>|--selector <query>] [--role <role>] [--text <label>] [--state <state>] [--bounds x,y,w,h] [--contains x,y] [--min-confidence <float>] [--limit <n>] [--vision-fallback] [--json]"
+        "Usage: peekaboox elements [<selector>|--selector <query>] [--id <id>] [--role <role>] [--role-exact <role>] [--role-regex <regex>] [--text <label>] [--text-exact <label>] [--text-regex <regex>] [--state <state>] [--not-state <state>] [--bounds x,y,w,h] [--contains x,y] [--within x,y,w,h] [--intersects x,y,w,h] [--min-width <px>] [--min-height <px>] [--min-confidence <float>] [--app <app>] [--window-title <text>] [--window-id <id>] [--limit <n>] [--vision-fallback] [--vision-region x,y,w,h] [--vision-threshold <1-255>] [--vision-min-width <px>] [--vision-min-height <px>] [--vision-min-component-pixels <px>] [--vision-max-elements <n>] [--vision-merge-distance <px>] [--json]"
     );
 }
 
@@ -5470,6 +5818,16 @@ mod tests {
                 selector: String::new(),
                 limit: 50,
                 vision_fallback: false,
+                app: None,
+                window_title: None,
+                window_id: None,
+                vision_region: None,
+                vision_edge_threshold: None,
+                vision_min_width: None,
+                vision_min_height: None,
+                vision_min_component_pixels: None,
+                vision_max_elements: None,
+                vision_merge_distance: None,
                 json: false
             })
         );
@@ -5501,6 +5859,16 @@ mod tests {
                         .to_owned(),
                 limit: 5,
                 vision_fallback: false,
+                app: None,
+                window_title: None,
+                window_id: None,
+                vision_region: None,
+                vision_edge_threshold: None,
+                vision_min_width: None,
+                vision_min_height: None,
+                vision_min_component_pixels: None,
+                vision_max_elements: None,
+                vision_merge_distance: None,
                 json: false
             })
         );
@@ -5521,9 +5889,69 @@ mod tests {
                 selector: "role=visual-region".to_owned(),
                 limit: 50,
                 vision_fallback: true,
+                app: None,
+                window_title: None,
+                window_id: None,
+                vision_region: None,
+                vision_edge_threshold: None,
+                vision_min_width: None,
+                vision_min_height: None,
+                vision_min_component_pixels: None,
+                vision_max_elements: None,
+                vision_merge_distance: None,
                 json: false
             })
         );
+    }
+
+    #[test]
+    fn elements_accepts_scope_and_vision_options() {
+        let command = parse_elements_args(vec![
+            "--selector".to_owned(),
+            "label-regex=^Save,not-state=disabled,min-width=40".to_owned(),
+            "--app".to_owned(),
+            "text-editor".to_owned(),
+            "--window-title".to_owned(),
+            "Draft".to_owned(),
+            "--window-id".to_owned(),
+            "window-1".to_owned(),
+            "--vision-region".to_owned(),
+            "10,20,300,200".to_owned(),
+            "--vision-threshold".to_owned(),
+            "24".to_owned(),
+            "--vision-min-width".to_owned(),
+            "8".to_owned(),
+            "--vision-max-elements".to_owned(),
+            "25".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            ElementsCommand::Run(ElementsArgs {
+                selector: "label-regex=^Save,not-state=disabled,min-width=40".to_owned(),
+                limit: 50,
+                vision_fallback: false,
+                app: Some("text-editor".to_owned()),
+                window_title: Some("Draft".to_owned()),
+                window_id: Some("window-1".to_owned()),
+                vision_region: Some(Rect::new(10, 20, 300, 200)),
+                vision_edge_threshold: Some(24),
+                vision_min_width: Some(8),
+                vision_min_height: None,
+                vision_min_component_pixels: None,
+                vision_max_elements: Some(25),
+                vision_merge_distance: None,
+                json: false
+            })
+        );
+    }
+
+    #[test]
+    fn elements_rejects_invalid_selector_values() {
+        let error = parse_elements_args(vec!["--bounds".to_owned(), "bad".to_owned()]).unwrap_err();
+
+        assert!(matches!(error, CliError::Failure(message) if message.contains("bounds")));
     }
 
     #[test]

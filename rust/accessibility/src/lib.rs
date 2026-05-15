@@ -5,27 +5,89 @@ use dbus::Path;
 use dbus::arg::{RefArg, Variant};
 use dbus::blocking::Connection;
 use peekaboox_core::{BackendKind, PeekabooXError, Point, Rect, Result, UiElement};
+use regex::Regex;
 
 const ATSPI_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_TREE_DEPTH: usize = 12;
 const MAX_TREE_NODES: usize = 5_000;
 const MAX_TREE_ELEMENTS: usize = 2_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextMatchMode {
+    Contains,
+    Exact,
+    Regex,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextMatcher {
+    pub value: String,
+    pub mode: TextMatchMode,
+}
+
+impl TextMatcher {
+    fn contains(value: &str) -> Option<Self> {
+        non_empty_string(value).map(|value| Self {
+            value,
+            mode: TextMatchMode::Contains,
+        })
+    }
+
+    fn exact(value: &str) -> Option<Self> {
+        non_empty_string(value).map(|value| Self {
+            value,
+            mode: TextMatchMode::Exact,
+        })
+    }
+
+    fn regex(value: &str) -> Result<Option<Self>> {
+        let Some(value) = non_empty_string(value) else {
+            return Ok(None);
+        };
+        Regex::new(&value).map_err(|error| {
+            PeekabooXError::new(format!("invalid selector regex {value:?}: {error}"))
+        })?;
+        Ok(Some(Self {
+            value,
+            mode: TextMatchMode::Regex,
+        }))
+    }
+
+    fn matches(&self, value: &str) -> bool {
+        match self.mode {
+            TextMatchMode::Contains => contains_case_insensitive(value, &self.value),
+            TextMatchMode::Exact => value.eq_ignore_ascii_case(&self.value),
+            TextMatchMode::Regex => Regex::new(&self.value)
+                .map(|regex| regex.is_match(value))
+                .unwrap_or(false),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ElementQuery {
-    pub role: Option<String>,
-    pub label: Option<String>,
+    pub id: Option<TextMatcher>,
+    pub role: Option<TextMatcher>,
+    pub label: Option<TextMatcher>,
     pub bounds: Option<Rect>,
     pub contains_point: Option<Point>,
-    pub state: Option<String>,
+    pub state: Option<TextMatcher>,
+    pub not_state: Option<TextMatcher>,
     pub min_confidence: Option<f32>,
+    pub within: Option<Rect>,
+    pub intersects: Option<Rect>,
+    pub min_width: Option<u32>,
+    pub min_height: Option<u32>,
+    pub window_id: Option<TextMatcher>,
+    pub window_title: Option<TextMatcher>,
+    pub app: Option<TextMatcher>,
 }
 
 impl ElementQuery {
-    pub fn from_selector(selector: &str) -> Self {
+    pub fn parse(selector: &str) -> Result<Self> {
         let selector = selector.trim();
         if selector.is_empty() {
-            return Self::default();
+            return Ok(Self::default());
         }
 
         let mut query = Self::default();
@@ -33,59 +95,173 @@ impl ElementQuery {
             if let Some((key, value)) = selector_key_value(&part) {
                 let value = value.trim();
                 match key.trim().to_ascii_lowercase().as_str() {
-                    "role" => query.role = non_empty_string(value),
-                    "label" | "name" | "text" => query.label = non_empty_string(value),
-                    "bounds" | "rect" => query.bounds = parse_rect(value),
-                    "contains" | "point" | "at" => query.contains_point = parse_point(value),
-                    "state" | "states" => query.state = non_empty_string(value),
+                    "id" | "element-id" => query.id = TextMatcher::contains(value),
+                    "id-exact" | "element-id-exact" => query.id = TextMatcher::exact(value),
+                    "id-regex" | "element-id-regex" => query.id = TextMatcher::regex(value)?,
+                    "id-contains" | "element-id-contains" => {
+                        query.id = TextMatcher::contains(value)
+                    }
+                    "role" | "role-contains" => query.role = TextMatcher::contains(value),
+                    "role-exact" => query.role = TextMatcher::exact(value),
+                    "role-regex" => query.role = TextMatcher::regex(value)?,
+                    "label" | "name" | "text" | "label-contains" | "name-contains"
+                    | "text-contains" => query.label = TextMatcher::contains(value),
+                    "label-exact" | "name-exact" | "text-exact" => {
+                        query.label = TextMatcher::exact(value)
+                    }
+                    "label-regex" | "name-regex" | "text-regex" => {
+                        query.label = TextMatcher::regex(value)?
+                    }
+                    "bounds" | "rect" => query.bounds = Some(parse_rect_strict(value, key)?),
+                    "contains" | "point" | "at" => {
+                        query.contains_point = Some(parse_point_strict(value, key)?)
+                    }
+                    "state" | "states" | "state-contains" => {
+                        query.state = TextMatcher::contains(value)
+                    }
+                    "state-exact" => query.state = TextMatcher::exact(value),
+                    "state-regex" => query.state = TextMatcher::regex(value)?,
+                    "not-state" | "not-states" => query.not_state = TextMatcher::contains(value),
+                    "not-state-exact" => query.not_state = TextMatcher::exact(value),
+                    "not-state-regex" => query.not_state = TextMatcher::regex(value)?,
                     "confidence" | "confidence>" | "min_confidence" | "min-confidence" => {
-                        query.min_confidence = value.parse::<f32>().ok()
+                        query.min_confidence = Some(parse_f32(value, key)?)
+                    }
+                    "within" => query.within = Some(parse_rect_strict(value, key)?),
+                    "intersects" | "overlaps" => {
+                        query.intersects = Some(parse_rect_strict(value, key)?)
+                    }
+                    "min-width" | "min_width" => query.min_width = Some(parse_u32(value, key)?),
+                    "min-height" | "min_height" => query.min_height = Some(parse_u32(value, key)?),
+                    "window-id" | "window_id" => query.window_id = TextMatcher::contains(value),
+                    "window-id-exact" | "window_id_exact" => {
+                        query.window_id = TextMatcher::exact(value)
+                    }
+                    "window-id-regex" | "window_id_regex" => {
+                        query.window_id = TextMatcher::regex(value)?
+                    }
+                    "window-title" | "window_title" => {
+                        query.window_title = TextMatcher::contains(value)
+                    }
+                    "window-title-exact" | "window_title_exact" => {
+                        query.window_title = TextMatcher::exact(value)
+                    }
+                    "window-title-regex" | "window_title_regex" => {
+                        query.window_title = TextMatcher::regex(value)?
+                    }
+                    "app" | "app-id" | "app_id" => query.app = TextMatcher::contains(value),
+                    "app-exact" | "app-id-exact" | "app_id_exact" => {
+                        query.app = TextMatcher::exact(value)
+                    }
+                    "app-regex" | "app-id-regex" | "app_id_regex" => {
+                        query.app = TextMatcher::regex(value)?
                     }
                     _ => {
-                        if query.label.is_none() {
-                            query.label = non_empty_string(&part);
-                        }
+                        return Err(PeekabooXError::new(format!(
+                            "unknown element selector key {key:?}"
+                        )));
                     }
                 }
             } else if query.label.is_none() {
-                query.label = non_empty_string(&part);
+                query.label = TextMatcher::contains(&part);
+            } else {
+                return Err(PeekabooXError::new(format!(
+                    "unexpected unqualified selector part {part:?}"
+                )));
             }
         }
 
-        query
+        Ok(query)
+    }
+
+    pub fn from_selector(selector: &str) -> Self {
+        Self::parse(selector).unwrap_or_default()
     }
 
     pub fn matches(&self, element: &UiElement) -> bool {
+        let id_matches = self
+            .id
+            .as_ref()
+            .is_none_or(|matcher| matcher.matches(&element.id));
         let role_matches = self
             .role
-            .as_deref()
-            .is_none_or(|role| contains_case_insensitive(&element.role, role));
-        let label_matches = self.label.as_deref().is_none_or(|label| {
+            .as_ref()
+            .is_none_or(|matcher| matcher.matches(&element.role));
+        let label_matches = self.label.as_ref().is_none_or(|matcher| {
             element
                 .label
                 .as_deref()
-                .is_some_and(|element_label| contains_case_insensitive(element_label, label))
+                .is_some_and(|element_label| matcher.matches(element_label))
         });
         let bounds_match = self.bounds.is_none_or(|bounds| element.bounds == bounds);
         let contains_point_match = self
             .contains_point
             .is_none_or(|point| rect_contains_point(element.bounds, point));
-        let state_matches = self.state.as_deref().is_none_or(|state| {
+        let state_matches = self.state.as_ref().is_none_or(|matcher| {
             element
                 .states
                 .iter()
-                .any(|element_state| contains_case_insensitive(element_state, state))
+                .any(|element_state| matcher.matches(element_state))
+        });
+        let not_state_matches = self.not_state.as_ref().is_none_or(|matcher| {
+            element
+                .states
+                .iter()
+                .all(|element_state| !matcher.matches(element_state))
         });
         let confidence_matches = self
             .min_confidence
             .is_none_or(|min_confidence| element.confidence >= min_confidence);
+        let within_matches = self
+            .within
+            .is_none_or(|bounds| rect_contains_rect(bounds, element.bounds));
+        let intersects_matches = self
+            .intersects
+            .is_none_or(|bounds| rects_intersect(bounds, element.bounds));
+        let min_width_matches = self
+            .min_width
+            .is_none_or(|min_width| element.bounds.width >= min_width);
+        let min_height_matches = self
+            .min_height
+            .is_none_or(|min_height| element.bounds.height >= min_height);
+        let window_id_matches = self.window_id.as_ref().is_none_or(|matcher| {
+            element
+                .window_id
+                .as_deref()
+                .is_some_and(|window_id| matcher.matches(window_id))
+        });
+        let window_title_matches = self.window_title.as_ref().is_none_or(|matcher| {
+            element
+                .window_title
+                .as_deref()
+                .is_some_and(|window_title| matcher.matches(window_title))
+        });
+        let app_matches = self.app.as_ref().is_none_or(|matcher| {
+            element
+                .app_id
+                .as_deref()
+                .is_some_and(|app_id| matcher.matches(app_id))
+                || element
+                    .window_title
+                    .as_deref()
+                    .is_some_and(|window_title| matcher.matches(window_title))
+        });
 
-        role_matches
+        id_matches
+            && role_matches
             && label_matches
             && bounds_match
             && contains_point_match
             && state_matches
+            && not_state_matches
             && confidence_matches
+            && within_matches
+            && intersects_matches
+            && min_width_matches
+            && min_height_matches
+            && window_id_matches
+            && window_title_matches
+            && app_matches
     }
 }
 
@@ -137,10 +313,21 @@ impl AtSpiAccessibilityBackend {
         let mut visited = HashSet::new();
 
         for application in applications {
+            let application_id = atspi_object_id(&application);
+            let application_name = atspi_accessible_name(&connection, &application)
+                .ok()
+                .map(|label| label.trim().to_owned())
+                .filter(|label| !label.is_empty());
             collect_atspi_elements(
                 &connection,
                 &application,
                 0,
+                AtSpiElementContext {
+                    app_id: Some(application_name.unwrap_or(application_id)),
+                    window_id: None,
+                    window_title: None,
+                    parent_id: None,
+                },
                 &mut elements,
                 &mut visited,
                 &mut warnings,
@@ -202,7 +389,7 @@ pub fn find_elements(query: &ElementQuery) -> Result<AccessibilityTreeMetadata> 
 }
 
 pub fn find_elements_by_selector(selector: &str) -> Result<AccessibilityTreeMetadata> {
-    find_elements(&ElementQuery::from_selector(selector))
+    find_elements(&ElementQuery::parse(selector)?)
 }
 
 pub fn resolve_click_target(selector: &str) -> Result<ResolvedClickTarget> {
@@ -218,6 +405,14 @@ pub fn resolve_click_target_from_tree(
 }
 
 type AtSpiRef = (String, Path<'static>);
+
+#[derive(Debug, Clone, Default)]
+struct AtSpiElementContext {
+    app_id: Option<String>,
+    window_id: Option<String>,
+    window_title: Option<String>,
+    parent_id: Option<String>,
+}
 
 fn atspi_connection() -> Result<Connection> {
     let address = atspi_bus_address()?;
@@ -255,6 +450,7 @@ fn collect_atspi_elements(
     connection: &Connection,
     object_ref: &AtSpiRef,
     depth: usize,
+    context: AtSpiElementContext,
     elements: &mut Vec<UiElement>,
     visited: &mut HashSet<String>,
     warnings: &mut Vec<String>,
@@ -266,15 +462,9 @@ fn collect_atspi_elements(
         return;
     }
 
-    let object_id = format!("{}{}", object_ref.0, object_ref.1);
-    if !visited.insert(object_id) {
+    let object_id = atspi_object_id(object_ref);
+    if !visited.insert(object_id.clone()) {
         return;
-    }
-
-    match atspi_ui_element(connection, object_ref) {
-        Ok(Some(element)) => elements.push(element),
-        Ok(None) => {}
-        Err(error) => warnings.push(format!("{}{}: {}", object_ref.0, object_ref.1, error)),
     }
 
     let children = match atspi_children(connection, object_ref) {
@@ -284,19 +474,48 @@ fn collect_atspi_elements(
                 "{}{} children: {}",
                 object_ref.0, object_ref.1, error
             ));
-            return;
+            Vec::new()
+        }
+    };
+    let child_ids = children.iter().map(atspi_object_id).collect::<Vec<_>>();
+    let next_context = match atspi_ui_element(connection, object_ref, &context, child_ids) {
+        Ok(Some(element)) => {
+            let next_context = context_for_children(&context, &element);
+            elements.push(element);
+            next_context
+        }
+        Ok(None) => context.clone(),
+        Err(error) => {
+            warnings.push(format!("{}{}: {}", object_ref.0, object_ref.1, error));
+            context.clone()
         }
     };
 
     for child in children {
-        collect_atspi_elements(connection, &child, depth + 1, elements, visited, warnings);
+        collect_atspi_elements(
+            connection,
+            &child,
+            depth + 1,
+            AtSpiElementContext {
+                parent_id: Some(object_id.clone()),
+                ..next_context.clone()
+            },
+            elements,
+            visited,
+            warnings,
+        );
         if elements.len() >= MAX_TREE_ELEMENTS || visited.len() >= MAX_TREE_NODES {
             return;
         }
     }
 }
 
-fn atspi_ui_element(connection: &Connection, object_ref: &AtSpiRef) -> Result<Option<UiElement>> {
+fn atspi_ui_element(
+    connection: &Connection,
+    object_ref: &AtSpiRef,
+    context: &AtSpiElementContext,
+    child_ids: Vec<String>,
+) -> Result<Option<UiElement>> {
     let role = atspi_role_name(connection, object_ref)?.trim().to_owned();
     if role.is_empty() {
         return Ok(None);
@@ -319,17 +538,40 @@ fn atspi_ui_element(connection: &Connection, object_ref: &AtSpiRef) -> Result<Op
     }
 
     Ok(Some(UiElement {
-        id: format!("{}{}", object_ref.0, object_ref.1),
+        id: atspi_object_id(object_ref),
         role,
         label,
         bounds,
+        center: bounds.center(),
         confidence: if bounds.width > 0 && bounds.height > 0 {
             1.0
         } else {
             0.7
         },
         states,
+        window_id: context.window_id.clone(),
+        window_title: context.window_title.clone(),
+        app_id: context.app_id.clone(),
+        parent_id: context.parent_id.clone(),
+        child_ids,
     }))
+}
+
+fn atspi_object_id(object_ref: &AtSpiRef) -> String {
+    format!("{}{}", object_ref.0, object_ref.1)
+}
+
+fn context_for_children(
+    parent_context: &AtSpiElementContext,
+    element: &UiElement,
+) -> AtSpiElementContext {
+    let mut context = parent_context.clone();
+    if is_window_role(&element.role) {
+        context.window_id = Some(element.id.clone());
+        context.window_title = element.label.clone();
+    }
+    context.parent_id = Some(element.id.clone());
+    context
 }
 
 fn atspi_children(connection: &Connection, object_ref: &AtSpiRef) -> Result<Vec<AtSpiRef>> {
@@ -455,7 +697,7 @@ fn resolve_click_target_from_elements(
         return Err(PeekabooXError::new("click selector must not be empty"));
     }
 
-    let query = ElementQuery::from_selector(selector);
+    let query = ElementQuery::parse(selector)?;
     let mut matches = elements
         .into_iter()
         .filter(|element| query.matches(element))
@@ -480,20 +722,20 @@ fn resolve_click_target_from_elements(
 fn click_target_score(query: &ElementQuery, element: &UiElement) -> i32 {
     let mut score = 0;
 
-    if let Some(query_label) = query.label.as_deref()
+    if let Some(query_label) = query.label.as_ref()
         && let Some(label) = element.label.as_deref()
     {
-        if label.eq_ignore_ascii_case(query_label) {
+        if label.eq_ignore_ascii_case(&query_label.value) {
             score += 1_000;
-        } else if contains_case_insensitive(label, query_label) {
+        } else if query_label.matches(label) {
             score += 500;
         }
     }
 
-    if let Some(query_role) = query.role.as_deref() {
-        if element.role.eq_ignore_ascii_case(query_role) {
+    if let Some(query_role) = query.role.as_ref() {
+        if element.role.eq_ignore_ascii_case(&query_role.value) {
             score += 200;
-        } else if contains_case_insensitive(&element.role, query_role) {
+        } else if query_role.matches(&element.role) {
             score += 100;
         }
     }
@@ -506,14 +748,7 @@ fn click_target_score(query: &ElementQuery, element: &UiElement) -> i32 {
 }
 
 fn element_center(element: &UiElement) -> Option<Point> {
-    if element.bounds.width == 0 || element.bounds.height == 0 {
-        return None;
-    }
-
-    let x = i64::from(element.bounds.x) + i64::from(element.bounds.width / 2);
-    let y = i64::from(element.bounds.y) + i64::from(element.bounds.height / 2);
-
-    Some(Point::new(i32::try_from(x).ok()?, i32::try_from(y).ok()?))
+    element.center.or_else(|| element.bounds.center())
 }
 
 fn rect_from_extents((x, y, width, height): (i32, i32, i32, i32)) -> Option<Rect> {
@@ -544,12 +779,47 @@ fn parse_point(value: &str) -> Option<Point> {
     Some(Point::new(numbers[0], numbers[1]))
 }
 
+fn parse_rect_strict(value: &str, key: &str) -> Result<Rect> {
+    parse_rect(value).ok_or_else(|| {
+        PeekabooXError::new(format!(
+            "selector {key} must be x,y,width,height with non-negative size, got {value:?}"
+        ))
+    })
+}
+
+fn parse_point_strict(value: &str, key: &str) -> Result<Point> {
+    parse_point(value)
+        .ok_or_else(|| PeekabooXError::new(format!("selector {key} must be x,y, got {value:?}")))
+}
+
+fn parse_f32(value: &str, key: &str) -> Result<f32> {
+    value.parse::<f32>().map_err(|error| {
+        PeekabooXError::new(format!(
+            "selector {key} must be a float, got {value:?}: {error}"
+        ))
+    })
+}
+
+fn parse_u32(value: &str, key: &str) -> Result<u32> {
+    value.parse::<u32>().map_err(|error| {
+        PeekabooXError::new(format!(
+            "selector {key} must be an unsigned integer, got {value:?}: {error}"
+        ))
+    })
+}
+
 fn parse_i32_list(value: &str, expected_len: usize) -> Option<Vec<i32>> {
     let numbers = numeric_parts(value)
         .into_iter()
         .map(str::parse::<i32>)
         .collect::<std::result::Result<Vec<_>, _>>()
         .ok()?;
+    if expected_len == 4 && numbers.get(2).is_some_and(|value| *value < 0) {
+        return None;
+    }
+    if expected_len == 4 && numbers.get(3).is_some_and(|value| *value < 0) {
+        return None;
+    }
     (numbers.len() == expected_len).then_some(numbers)
 }
 
@@ -582,10 +852,55 @@ fn rect_contains_point(rect: Rect, point: Point) -> bool {
     x >= left && x < right && y >= top && y < bottom
 }
 
+fn rect_contains_rect(container: Rect, rect: Rect) -> bool {
+    if container.width == 0 || container.height == 0 || rect.width == 0 || rect.height == 0 {
+        return false;
+    }
+
+    let container_left = i64::from(container.x);
+    let container_top = i64::from(container.y);
+    let container_right = container_left + i64::from(container.width);
+    let container_bottom = container_top + i64::from(container.height);
+    let rect_left = i64::from(rect.x);
+    let rect_top = i64::from(rect.y);
+    let rect_right = rect_left + i64::from(rect.width);
+    let rect_bottom = rect_top + i64::from(rect.height);
+
+    rect_left >= container_left
+        && rect_top >= container_top
+        && rect_right <= container_right
+        && rect_bottom <= container_bottom
+}
+
+fn rects_intersect(left: Rect, right: Rect) -> bool {
+    if left.width == 0 || left.height == 0 || right.width == 0 || right.height == 0 {
+        return false;
+    }
+
+    let left_x1 = i64::from(left.x);
+    let left_y1 = i64::from(left.y);
+    let left_x2 = left_x1 + i64::from(left.width);
+    let left_y2 = left_y1 + i64::from(left.height);
+    let right_x1 = i64::from(right.x);
+    let right_y1 = i64::from(right.y);
+    let right_x2 = right_x1 + i64::from(right.width);
+    let right_y2 = right_y1 + i64::from(right.height);
+
+    left_x1 < right_x2 && left_x2 > right_x1 && left_y1 < right_y2 && left_y2 > right_y1
+}
+
 fn is_structural_role(role: &str) -> bool {
     matches!(
         role,
         "application" | "panel" | "filler" | "root pane" | "layered pane" | "unknown"
+    )
+}
+
+fn is_window_role(role: &str) -> bool {
+    let role = role.to_ascii_lowercase();
+    matches!(
+        role.as_str(),
+        "frame" | "window" | "dialog" | "alert" | "file chooser" | "page tab list"
     )
 }
 
@@ -643,7 +958,7 @@ fn selector_key_value(part: &str) -> Option<(&str, &str)> {
 
 fn numeric_selector_len(key: &str) -> Option<usize> {
     match key.trim().to_ascii_lowercase().as_str() {
-        "bounds" | "rect" => Some(4),
+        "bounds" | "rect" | "within" | "intersects" | "overlaps" => Some(4),
         "contains" | "point" | "at" => Some(2),
         _ => None,
     }
@@ -663,49 +978,74 @@ mod tests {
     };
     use peekaboox_core::{Point, Rect, UiElement};
 
+    fn test_element(id: &str, role: &str, label: Option<&str>, bounds: Rect) -> UiElement {
+        UiElement {
+            id: id.to_owned(),
+            role: role.to_owned(),
+            label: label.map(str::to_owned),
+            bounds,
+            center: bounds.center(),
+            confidence: 1.0,
+            states: Vec::new(),
+            window_id: None,
+            window_title: None,
+            app_id: None,
+            parent_id: None,
+            child_ids: Vec::new(),
+        }
+    }
+
     #[test]
     fn selector_defaults_to_label_query() {
-        let query = ElementQuery::from_selector("Submit");
+        let query = ElementQuery::parse("Submit").unwrap();
 
         assert_eq!(query.role, None);
-        assert_eq!(query.label.as_deref(), Some("Submit"));
+        assert_eq!(
+            query.label.as_ref().map(|matcher| matcher.value.as_str()),
+            Some("Submit")
+        );
     }
 
     #[test]
     fn selector_accepts_role_and_label_parts() {
-        let query = ElementQuery::from_selector("role=push button,label=Save");
+        let query = ElementQuery::parse("role=push button,label=Save").unwrap();
 
-        assert_eq!(query.role.as_deref(), Some("push button"));
-        assert_eq!(query.label.as_deref(), Some("Save"));
+        assert_eq!(
+            query.role.as_ref().map(|matcher| matcher.value.as_str()),
+            Some("push button")
+        );
+        assert_eq!(
+            query.label.as_ref().map(|matcher| matcher.value.as_str()),
+            Some("Save")
+        );
     }
 
     #[test]
     fn query_matches_case_insensitive_role_and_label() {
-        let query = ElementQuery::from_selector("role:button,text:submit");
-        let element = UiElement {
-            id: "element-1".to_owned(),
-            role: "Push Button".to_owned(),
-            label: Some("Submit order".to_owned()),
-            bounds: Rect::new(0, 0, 100, 40),
-            confidence: 1.0,
-            states: vec!["enabled".to_owned()],
-        };
+        let query = ElementQuery::parse("role:button,text:submit").unwrap();
+        let mut element = test_element(
+            "element-1",
+            "Push Button",
+            Some("Submit order"),
+            Rect::new(0, 0, 100, 40),
+        );
+        element.states = vec!["enabled".to_owned()];
 
         assert!(query.matches(&element));
     }
 
     #[test]
     fn selector_accepts_bounds_state_and_confidence_parts() {
-        let query =
-            ElementQuery::from_selector("role=button,state=enabled,contains=25,30,confidence>=0.9");
-        let element = UiElement {
-            id: "element-1".to_owned(),
-            role: "push button".to_owned(),
-            label: Some("Submit order".to_owned()),
-            bounds: Rect::new(10, 20, 100, 40),
-            confidence: 0.95,
-            states: vec!["enabled".to_owned(), "visible".to_owned()],
-        };
+        let query = ElementQuery::parse("role=button,state=enabled,contains=25,30,confidence>=0.9")
+            .unwrap();
+        let mut element = test_element(
+            "element-1",
+            "push button",
+            Some("Submit order"),
+            Rect::new(10, 20, 100, 40),
+        );
+        element.confidence = 0.95;
+        element.states = vec!["enabled".to_owned(), "visible".to_owned()];
 
         assert_eq!(query.contains_point, Some(Point::new(25, 30)));
         assert_eq!(query.min_confidence, Some(0.9));
@@ -714,18 +1054,42 @@ mod tests {
 
     #[test]
     fn selector_accepts_exact_bounds() {
-        let query = ElementQuery::from_selector("bounds=10,20,90,30");
-        let element = UiElement {
-            id: "element-1".to_owned(),
-            role: "push button".to_owned(),
-            label: Some("Submit".to_owned()),
-            bounds: Rect::new(10, 20, 90, 30),
-            confidence: 1.0,
-            states: Vec::new(),
-        };
+        let query = ElementQuery::parse("bounds=10,20,90,30").unwrap();
+        let element = test_element(
+            "element-1",
+            "push button",
+            Some("Submit"),
+            Rect::new(10, 20, 90, 30),
+        );
 
         assert_eq!(query.bounds, Some(Rect::new(10, 20, 90, 30)));
         assert!(query.matches(&element));
+    }
+
+    #[test]
+    fn selector_supports_exact_regex_geometry_and_metadata() {
+        let query = ElementQuery::parse(
+            "id-exact=button-1,role-exact=push button,label-regex=^Sub.*,not-state=disabled,within=0,0,200,120,intersects=40,40,40,40,min-width=80,min-height=20,window-title=Demo,app=org.demo",
+        )
+        .unwrap();
+        let mut element = test_element(
+            "button-1",
+            "push button",
+            Some("Submit"),
+            Rect::new(10, 20, 90, 30),
+        );
+        element.states = vec!["enabled".to_owned(), "visible".to_owned()];
+        element.window_title = Some("Demo Window".to_owned());
+        element.app_id = Some("org.demo.App".to_owned());
+
+        assert!(query.matches(&element));
+    }
+
+    #[test]
+    fn selector_rejects_invalid_numeric_and_unknown_keys() {
+        assert!(ElementQuery::parse("bounds=not-a-rect").is_err());
+        assert!(ElementQuery::parse("contains=10").is_err());
+        assert!(ElementQuery::parse("unknown=value").is_err());
     }
 
     #[test]
@@ -744,14 +1108,12 @@ mod tests {
 
     #[test]
     fn element_center_uses_bounds_midpoint() {
-        let element = UiElement {
-            id: "button-1".to_owned(),
-            role: "push button".to_owned(),
-            label: Some("Submit".to_owned()),
-            bounds: Rect::new(10, 20, 90, 30),
-            confidence: 1.0,
-            states: Vec::new(),
-        };
+        let element = test_element(
+            "button-1",
+            "push button",
+            Some("Submit"),
+            Rect::new(10, 20, 90, 30),
+        );
 
         assert_eq!(
             element_center(&element),
@@ -761,22 +1123,18 @@ mod tests {
 
     #[test]
     fn resolves_click_target_by_best_label_match() {
-        let weak_match = UiElement {
-            id: "button-2".to_owned(),
-            role: "push button".to_owned(),
-            label: Some("Submit later".to_owned()),
-            bounds: Rect::new(0, 0, 80, 20),
-            confidence: 1.0,
-            states: Vec::new(),
-        };
-        let exact_match = UiElement {
-            id: "button-1".to_owned(),
-            role: "push button".to_owned(),
-            label: Some("Submit".to_owned()),
-            bounds: Rect::new(10, 20, 90, 30),
-            confidence: 1.0,
-            states: Vec::new(),
-        };
+        let weak_match = test_element(
+            "button-2",
+            "push button",
+            Some("Submit later"),
+            Rect::new(0, 0, 80, 20),
+        );
+        let exact_match = test_element(
+            "button-1",
+            "push button",
+            Some("Submit"),
+            Rect::new(10, 20, 90, 30),
+        );
 
         let target =
             resolve_click_target_from_elements("Submit", vec![weak_match, exact_match]).unwrap();

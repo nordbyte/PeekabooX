@@ -129,15 +129,35 @@ Supported `FindElement` selector forms:
 
 - `Submit` matches element labels containing `Submit`
 - `label=Submit`
+- `label-exact=Submit`
+- `label-regex=^Sub.*`
 - `text=Submit`
 - `role=push button,label=Submit`
+- `role-exact=push button`
+- `id=button-1`
 - `state=enabled`
+- `not-state=disabled`
 - `bounds=10,20,90,30`
 - `contains=55,35`
+- `within=0,0,400,300`
+- `intersects=40,40,80,30`
+- `min-width=40`
+- `min-height=20`
 - `confidence>=0.9`
 
+Selector parsing is strict for daemon, CLI, and Rust accessibility lookups:
+unknown keys, malformed geometry, invalid numbers, and invalid regexes are
+reported as errors. `FindElementRequest` also accepts `app`, `window_title`,
+and `window_id` scope fields plus optional vision fallback tuning fields:
+`vision_region`, `vision_edge_threshold`, `vision_min_width`,
+`vision_min_height`, `vision_min_component_pixels`, `vision_max_elements`, and
+`vision_merge_distance`.
+
 `UiElement` responses include `id`, `role`, optional `label`, `bounds`,
-`confidence`, and AT-SPI `states`.
+optional `center`, `confidence`, AT-SPI `states`, and hierarchy metadata when
+available: `window_id`, `window_title`, `app_id`, `parent_id`, and `child_ids`.
+`FindElementResponse` additionally reports backend name/kind, warnings, cache
+hit status, cache age, and whether vision fallback was used.
 
 When `FindElementRequest.vision_fallback` or `ClickRequest.vision_fallback` is
 true, the daemon tries the AT-SPI path first and only captures the current screen
@@ -190,6 +210,10 @@ runtime.move_mouse(100, 200)
 runtime.drag(100, 200, 360, 260, button="left", duration_ms=350)
 runtime.hotkey(["ctrl", "s"])
 ```
+
+Use `client.find_elements(...)` when callers need backend, warning, cache, and
+vision fallback metadata; `client.find_element(...)` remains the backward
+compatible tuple-of-elements helper.
 
 `AgentRuntime` accepts either a custom `CapabilityPolicy` or a
 `capability_profile` for granular in-process permission checks. The profile
@@ -541,7 +565,10 @@ Daemon-routed `call_plugin_tool` requests accept `plugin_id`, `tool`, optional
 JSON `arguments`, optional plugin `paths`, `timeout_ms`, and
 `max_output_bytes`. Arguments are validated against the tool `input_schema`, the
 process runs with a restricted environment, and stdout/stderr are capped.
-Daemon-routed `find_elements` requests accept `vision_fallback: true`.
+Daemon-routed `find_elements` requests accept `vision_fallback: true`,
+`app`, `window_title`, `window_id`, `vision_region`, `vision_edge_threshold`,
+`vision_min_width`, `vision_min_height`, `vision_min_component_pixels`,
+`vision_max_elements`, and `vision_merge_distance`.
 Daemon-routed `click`, `type_text`, `paste_text`, pointer movement, drags, and
 hotkeys require `dry_run: true` where supported unless the daemon was started
 with `--profile operator`, `--allow-input`, or `PEEKABOOX_ALLOW_INPUT=1`.

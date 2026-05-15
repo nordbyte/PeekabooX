@@ -369,6 +369,16 @@ class McpServer:
                     {
                         "selector": {"type": "string"},
                         "vision_fallback": {"type": "boolean", "default": False},
+                        "app": {"type": "string"},
+                        "window_title": {"type": "string"},
+                        "window_id": {"type": "string"},
+                        "vision_region": RECT_SCHEMA,
+                        "vision_edge_threshold": {"type": "integer", "minimum": 1, "maximum": 255},
+                        "vision_min_width": {"type": "integer", "minimum": 1},
+                        "vision_min_height": {"type": "integer", "minimum": 1},
+                        "vision_min_component_pixels": {"type": "integer", "minimum": 1},
+                        "vision_max_elements": {"type": "integer", "minimum": 1},
+                        "vision_merge_distance": {"type": "integer", "minimum": 0},
                     },
                     required=["selector"],
                 ),
@@ -996,6 +1006,18 @@ class McpServer:
             self._require_runtime().find_element(
                 _required_str(arguments, "selector"),
                 vision_fallback=bool(arguments.get("vision_fallback", False)),
+                app=_optional_string(arguments, "app"),
+                window_title=_optional_string(arguments, "window_title"),
+                window_id=_optional_string(arguments, "window_id"),
+                vision_region=_optional_rect(arguments, "vision_region"),
+                vision_edge_threshold=_optional_int(arguments, "vision_edge_threshold"),
+                vision_min_width=_optional_int(arguments, "vision_min_width"),
+                vision_min_height=_optional_int(arguments, "vision_min_height"),
+                vision_min_component_pixels=_optional_int(
+                    arguments, "vision_min_component_pixels"
+                ),
+                vision_max_elements=_optional_int(arguments, "vision_max_elements"),
+                vision_merge_distance=_optional_int(arguments, "vision_merge_distance"),
             )
         )
 

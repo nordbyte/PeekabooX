@@ -30,6 +30,7 @@ accessibility, and input backends:
 
 ```bash
 bash examples/desktop/live_smoke.sh
+bash examples/desktop/elements_accessibility_probe.sh
 bash examples/desktop/ocr_visible_window.sh
 bash examples/desktop/paint_draw_and_save.sh
 bash examples/desktop/text_editor_save_dialog.sh
@@ -56,6 +57,14 @@ writes text and JSON OCR outputs under `target/examples/desktop-ocr`. Override
 `PEEKABOOX_DESKTOP_OCR_VIEWER` to force a specific viewer, or set
 `PEEKABOOX_DESKTOP_OCR_WINDOW_TITLE`, `PEEKABOOX_DESKTOP_OCR_WINDOW_ID`, or
 `PEEKABOOX_DESKTOP_OCR_APP` to scope OCR to a matching window.
+
+`examples/desktop/elements_accessibility_probe.sh` opens a small GTK probe
+window with a label, entry, checkbox, and button, then verifies `peekaboox
+elements` against that live accessibility tree. It covers `--window-title`
+scoping, exact and regex selectors, negative state filters, returned center
+points through `--contains`, and configurable `--vision-fallback` detector
+options. It writes JSON outputs under `target/examples/elements-probe` and
+skips cleanly when Python GTK bindings are unavailable.
 
 `examples/desktop/text_editor_save_dialog.sh` launches GNOME Text Editor on a
 unique draft file, locates the document target while passing

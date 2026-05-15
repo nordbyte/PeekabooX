@@ -122,6 +122,11 @@ runtime.type_text("Hello")
 runtime.save_recording("recordings/manual-submit.yaml")
 ```
 
+`find_element` also accepts daemon-scoped element lookup fields such as
+`app`, `window_title`, `window_id`, and the `vision_*` fallback detector tuning
+arguments. Scoped or vision-tuned lookups bypass stale graph cache hits and go
+to the daemon so the requested window and detector options are honored.
+
 When recording coordinate clicks, the runtime samples semantic desktop state if
 needed and stores a stable selector such as `role=push button,label=Submit`
 when the clicked point resolves to a unique element. Replay can then use the

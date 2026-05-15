@@ -99,8 +99,16 @@ class SemanticDesktopGraph:
         for element in state.elements:
             element_id = _element_node_id(element)
             edges.append(GraphEdge(source=snapshot_id, target=element_id, kind="has_element"))
+            if element.parent_id:
+                edges.append(
+                    GraphEdge(
+                        source=_normalize_element_node_id(element.parent_id),
+                        target=element_id,
+                        kind="parent_of",
+                    )
+                )
             for window in windows:
-                if _rect_contains(window.bounds, element.bounds):
+                if element.window_id == window.id or _rect_contains(window.bounds, element.bounds):
                     edges.append(
                         GraphEdge(
                             source=_window_node_id(window),
@@ -251,6 +259,16 @@ def _element_node(element: UiElement) -> GraphNode:
             "element_id": element.id,
             "confidence": element.confidence,
             "states": list(element.states),
+            "center": (
+                {"x": element.center.x, "y": element.center.y}
+                if element.center is not None
+                else None
+            ),
+            "window_id": element.window_id,
+            "window_title": element.window_title,
+            "app_id": element.app_id,
+            "parent_id": element.parent_id,
+            "child_ids": list(element.child_ids),
         },
     )
 
@@ -309,6 +327,10 @@ def _snapshot_contains_node(
 
 def _normalize_window_node_id(window_id: str) -> str:
     return window_id if window_id.startswith("window:") else f"window:{window_id}"
+
+
+def _normalize_element_node_id(element_id: str) -> str:
+    return element_id if element_id.startswith("element:") else f"element:{element_id}"
 
 
 def _window_node_id(window: WindowInfo) -> str:

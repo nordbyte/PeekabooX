@@ -28,6 +28,12 @@ class Rect:
 
 
 @dataclass(frozen=True, slots=True)
+class Point:
+    x: int
+    y: int
+
+
+@dataclass(frozen=True, slots=True)
 class WindowInfo:
     id: str
     title: str
@@ -44,7 +50,13 @@ class UiElement:
     label: str | None
     bounds: Rect
     confidence: float
+    center: Point | None = None
     states: tuple[str, ...] = ()
+    window_id: str | None = None
+    window_title: str | None = None
+    app_id: str | None = None
+    parent_id: str | None = None
+    child_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +139,17 @@ class DetectUiElementsResult:
     backend_kind: str
     warnings: tuple[str, ...]
     elements: tuple[UiElement, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FindElementResult:
+    backend_name: str
+    backend_kind: str
+    warnings: tuple[str, ...]
+    elements: tuple[UiElement, ...]
+    cache_hit: bool = False
+    cache_age_ms: int = 0
+    vision_fallback_used: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -593,15 +616,88 @@ class PeekabooXClient:
         request = self.messages.HotkeyRequest(keys=[str(key) for key in key_values])
         return _action_result_from_proto(self._call("Hotkey", request))
 
-    def find_element(self, selector: str, vision_fallback: bool = False) -> tuple[UiElement, ...]:
+    def find_elements(
+        self,
+        selector: str,
+        vision_fallback: bool = False,
+        app: str | None = None,
+        window_title: str | None = None,
+        window_id: str | None = None,
+        vision_region: Rect | None = None,
+        vision_edge_threshold: int | None = None,
+        vision_min_width: int | None = None,
+        vision_min_height: int | None = None,
+        vision_min_component_pixels: int | None = None,
+        vision_max_elements: int | None = None,
+        vision_merge_distance: int | None = None,
+    ) -> FindElementResult:
+        request_kwargs: dict[str, Any] = {
+            "selector": selector,
+            "vision_fallback": vision_fallback,
+        }
+        if app is not None:
+            request_kwargs["app"] = app
+        if window_title is not None:
+            request_kwargs["window_title"] = window_title
+        if window_id is not None:
+            request_kwargs["window_id"] = window_id
+        if vision_region is not None:
+            request_kwargs["vision_region"] = _rect_to_proto(self.messages, vision_region)
+        if vision_edge_threshold is not None:
+            request_kwargs["vision_edge_threshold"] = vision_edge_threshold
+        if vision_min_width is not None:
+            request_kwargs["vision_min_width"] = vision_min_width
+        if vision_min_height is not None:
+            request_kwargs["vision_min_height"] = vision_min_height
+        if vision_min_component_pixels is not None:
+            request_kwargs["vision_min_component_pixels"] = vision_min_component_pixels
+        if vision_max_elements is not None:
+            request_kwargs["vision_max_elements"] = vision_max_elements
+        if vision_merge_distance is not None:
+            request_kwargs["vision_merge_distance"] = vision_merge_distance
         response = self._call(
             "FindElement",
-            self.messages.FindElementRequest(
-                selector=selector,
-                vision_fallback=vision_fallback,
-            ),
+            self.messages.FindElementRequest(**request_kwargs),
         )
-        return tuple(_ui_element_from_proto(element) for element in response.elements)
+        return FindElementResult(
+            backend_name=getattr(response, "backend_name", ""),
+            backend_kind=getattr(response, "backend_kind", ""),
+            warnings=tuple(getattr(response, "warnings", ())),
+            elements=tuple(_ui_element_from_proto(element) for element in response.elements),
+            cache_hit=bool(getattr(response, "cache_hit", False)),
+            cache_age_ms=int(getattr(response, "cache_age_ms", 0)),
+            vision_fallback_used=bool(getattr(response, "vision_fallback_used", False)),
+        )
+
+    def find_element(
+        self,
+        selector: str,
+        vision_fallback: bool = False,
+        app: str | None = None,
+        window_title: str | None = None,
+        window_id: str | None = None,
+        vision_region: Rect | None = None,
+        vision_edge_threshold: int | None = None,
+        vision_min_width: int | None = None,
+        vision_min_height: int | None = None,
+        vision_min_component_pixels: int | None = None,
+        vision_max_elements: int | None = None,
+        vision_merge_distance: int | None = None,
+    ) -> tuple[UiElement, ...]:
+        return self.find_elements(
+            selector,
+            vision_fallback=vision_fallback,
+            app=app,
+            window_title=window_title,
+            window_id=window_id,
+            vision_region=vision_region,
+            vision_edge_threshold=vision_edge_threshold,
+            vision_min_width=vision_min_width,
+            vision_min_height=vision_min_height,
+            vision_min_component_pixels=vision_min_component_pixels,
+            vision_max_elements=vision_max_elements,
+            vision_merge_distance=vision_merge_distance,
+        ).elements
 
     def list_windows(self) -> tuple[WindowInfo, ...]:
         response = self._call("ListWindows", self.messages.ListWindowsRequest())
@@ -898,13 +994,20 @@ def _window_from_proto(window: Any) -> WindowInfo:
 
 def _ui_element_from_proto(element: Any) -> UiElement:
     bounds = _message_field(element, "bounds")
+    center = _message_field(element, "center")
     return UiElement(
         id=element.id,
         role=element.role,
         label=_optional_scalar(element, "label"),
         bounds=_rect_from_proto(bounds),
         confidence=element.confidence,
+        center=_point_from_proto(center),
         states=tuple(element.states),
+        window_id=_optional_scalar(element, "window_id"),
+        window_title=_optional_scalar(element, "window_title"),
+        app_id=_optional_scalar(element, "app_id"),
+        parent_id=_optional_scalar(element, "parent_id"),
+        child_ids=tuple(getattr(element, "child_ids", ())),
     )
 
 
@@ -1116,6 +1219,12 @@ def _rect_from_proto(rect: Any | None) -> Rect:
     if rect is None:
         return Rect(x=0, y=0, width=0, height=0)
     return Rect(x=rect.x, y=rect.y, width=rect.width, height=rect.height)
+
+
+def _point_from_proto(point: Any | None) -> Point | None:
+    if point is None:
+        return None
+    return Point(x=point.x, y=point.y)
 
 
 def _rect_to_proto(messages: Any, rect: Rect) -> Any:

@@ -90,8 +90,9 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server
 ```
 
 Live desktop examples are in [examples/desktop](examples/desktop). They cover
-desktop smoke checks, visible-window OCR, paint drawing and saving, Text Editor
-save dialogs, and Telegram Saved Messages automation.
+desktop smoke checks, scoped accessibility element inspection, visible-window
+OCR, paint drawing and saving, Text Editor save dialogs, and Telegram Saved
+Messages automation.
 
 ## Shell completions
 

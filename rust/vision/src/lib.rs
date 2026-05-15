@@ -908,8 +908,14 @@ fn ocr_text_from_word(word: &TesseractWord) -> OcrText {
             role: "word".to_owned(),
             label: Some(word.text.clone()),
             bounds: word.bounds,
+            center: word.bounds.center(),
             confidence: word.confidence,
             states: Vec::new(),
+            window_id: None,
+            window_title: None,
+            app_id: None,
+            parent_id: None,
+            child_ids: Vec::new(),
         },
     }
 }
@@ -949,8 +955,14 @@ fn line_from_words(words: Vec<TesseractWord>) -> Option<OcrText> {
             role: "text".to_owned(),
             label: Some(text),
             bounds,
+            center: bounds.center(),
             confidence,
             states: Vec::new(),
+            window_id: None,
+            window_title: None,
+            app_id: None,
+            parent_id: None,
+            child_ids: Vec::new(),
         },
     })
 }
@@ -1693,8 +1705,14 @@ fn ui_element_from_component(index: usize, component: &VisualComponent) -> UiEle
         role: "visual-region".to_owned(),
         label: None,
         bounds: component.bounds,
+        center: component.bounds.center(),
         confidence,
         states: vec!["visible".to_owned()],
+        window_id: None,
+        window_title: None,
+        app_id: None,
+        parent_id: None,
+        child_ids: Vec::new(),
     }
 }
 

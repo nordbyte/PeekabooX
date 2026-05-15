@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from peekaboox.client import Rect, UiElement
+from peekaboox.client import Point, Rect, UiElement
 from peekaboox.memory.graph import GraphNode
 
 
@@ -111,14 +111,40 @@ def _element_from_node(node: GraphNode) -> UiElement | None:
     states = node.attributes.get("states", ())
     if not isinstance(states, list | tuple):
         states = ()
+    child_ids = node.attributes.get("child_ids", ())
+    if not isinstance(child_ids, list | tuple):
+        child_ids = ()
     return UiElement(
         id=str(element_id) if element_id is not None else _strip_prefix(node.id, "element:"),
         role=node.role or "",
         label=node.label,
         bounds=node.bounds,
         confidence=float(confidence),
+        center=_optional_point_attribute(node, "center"),
         states=tuple(str(state) for state in states),
+        window_id=_optional_str_attribute(node, "window_id"),
+        window_title=_optional_str_attribute(node, "window_title"),
+        app_id=_optional_str_attribute(node, "app_id"),
+        parent_id=_optional_str_attribute(node, "parent_id"),
+        child_ids=tuple(str(child_id) for child_id in child_ids),
     )
+
+
+def _optional_str_attribute(node: GraphNode, key: str) -> str | None:
+    value = node.attributes.get(key)
+    return str(value) if value is not None else None
+
+
+def _optional_point_attribute(node: GraphNode, key: str) -> Point | None:
+    value = node.attributes.get(key)
+    if isinstance(value, Point):
+        return value
+    if isinstance(value, dict):
+        try:
+            return Point(x=int(value["x"]), y=int(value["y"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
 
 
 def _split_selector_parts(selector: str) -> list[str]:

@@ -628,6 +628,25 @@ struct ElementLookupResult {
     vision_fallback_used: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ElementLookupScope {
+    app: Option<String>,
+    window_title: Option<String>,
+    window_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ElementVisionFallbackConfig {
+    region: Option<Rect>,
+    options: UiElementDetectionOptions,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ElementLookupOptions {
+    scope: ElementLookupScope,
+    vision: ElementVisionFallbackConfig,
+}
+
 impl AccessibilityCache {
     fn new(ttl: Duration) -> Self {
         Self {
@@ -690,11 +709,13 @@ fn cached_accessibility_tree(
 fn find_elements_with_optional_vision_fallback(
     selector: &str,
     use_vision_fallback: bool,
+    options: &ElementLookupOptions,
     accessibility_cache: &SharedAccessibilityCache,
 ) -> Result<ElementLookupResult, String> {
     element_lookup_with_optional_vision_fallback(
         selector,
         use_vision_fallback,
+        options,
         cached_accessibility_tree(accessibility_cache),
         vision_fallback_elements,
     )
@@ -703,14 +724,20 @@ fn find_elements_with_optional_vision_fallback(
 fn element_lookup_with_optional_vision_fallback(
     selector: &str,
     use_vision_fallback: bool,
+    options: &ElementLookupOptions,
     accessibility_result: Result<CachedAccessibilityTree, String>,
-    fallback_elements: impl FnOnce(&ElementQuery) -> Result<ElementLookupResult, String>,
+    fallback_elements: impl FnOnce(
+        &ElementQuery,
+        &ElementLookupOptions,
+    ) -> Result<ElementLookupResult, String>,
 ) -> Result<ElementLookupResult, String> {
-    let query = ElementQuery::from_selector(selector);
+    let query = ElementQuery::parse(selector).map_err(|error| error.to_string())?;
     match accessibility_result {
         Ok(tree) => {
             let mut metadata = tree.metadata;
-            metadata.elements.retain(|element| query.matches(element));
+            metadata.elements.retain(|element| {
+                query.matches(element) && element_matches_scope(element, &options.scope)
+            });
             if !metadata.elements.is_empty() || !use_vision_fallback {
                 return Ok(ElementLookupResult {
                     backend_name: metadata.backend_name,
@@ -723,14 +750,14 @@ fn element_lookup_with_optional_vision_fallback(
                 });
             }
 
-            let mut fallback = fallback_elements(&query)?;
+            let mut fallback = fallback_elements(&query, options)?;
             fallback
                 .warnings
                 .push("no accessibility elements matched; used vision fallback".to_owned());
             Ok(fallback)
         }
         Err(error) if use_vision_fallback => {
-            let mut fallback = fallback_elements(&query)?;
+            let mut fallback = fallback_elements(&query, options)?;
             fallback.warnings.push(format!(
                 "accessibility lookup failed: {error}; used vision fallback"
             ));
@@ -740,17 +767,20 @@ fn element_lookup_with_optional_vision_fallback(
     }
 }
 
-fn vision_fallback_elements(query: &ElementQuery) -> Result<ElementLookupResult, String> {
+fn vision_fallback_elements(
+    query: &ElementQuery,
+    options: &ElementLookupOptions,
+) -> Result<ElementLookupResult, String> {
     let screenshot = vision_fallback_temp_path();
-    peekaboox_capture::capture_screen_to_file(&screenshot).map_err(|error| error.to_string())?;
-    let result = peekaboox_vision::detect_ui_elements_from_image_file(
-        &screenshot,
-        &UiElementDetectionOptions::default(),
-    )
-    .map_err(|error| error.to_string());
+    let capture_region = element_vision_capture_region(options)?;
+    capture_to_file(&screenshot, capture_region).map_err(|error| error.to_string())?;
+    let result =
+        peekaboox_vision::detect_ui_elements_from_image_file(&screenshot, &options.vision.options)
+            .map_err(|error| error.to_string());
     remove_best_effort(&screenshot, "vision fallback screenshot");
 
     let mut elements = result?;
+    apply_element_scope_metadata(&mut elements, &options.scope, capture_region);
     elements.retain(|element| query.matches(element));
     Ok(ElementLookupResult {
         backend_name: VISION_UI_BACKEND_NAME.to_owned(),
@@ -761,6 +791,68 @@ fn vision_fallback_elements(query: &ElementQuery) -> Result<ElementLookupResult,
         cache_age_ms: 0,
         vision_fallback_used: true,
     })
+}
+
+fn element_matches_scope(element: &UiElement, scope: &ElementLookupScope) -> bool {
+    scope
+        .window_id
+        .as_deref()
+        .is_none_or(|window_id| element.window_id.as_deref() == Some(window_id))
+        && scope.window_title.as_deref().is_none_or(|window_title| {
+            element
+                .window_title
+                .as_deref()
+                .is_some_and(|value| contains_case_insensitive(value, window_title))
+        })
+        && scope.app.as_deref().is_none_or(|app| {
+            element
+                .app_id
+                .as_deref()
+                .is_some_and(|value| contains_case_insensitive(value, app))
+        })
+}
+
+fn element_vision_capture_region(options: &ElementLookupOptions) -> Result<Option<Rect>, String> {
+    if options.vision.region.is_some() {
+        return Ok(options.vision.region);
+    }
+    if options.scope.window_id.is_none()
+        && options.scope.window_title.is_none()
+        && options.scope.app.is_none()
+    {
+        return Ok(None);
+    }
+    resolve_ocr_window_region(
+        None,
+        options.scope.window_id.as_deref(),
+        options.scope.window_title.as_deref(),
+        options.scope.app.as_deref(),
+    )
+    .map(Some)
+    .map_err(|error| error.to_string())
+}
+
+fn apply_element_scope_metadata(
+    elements: &mut [UiElement],
+    scope: &ElementLookupScope,
+    capture_region: Option<Rect>,
+) {
+    for element in elements {
+        if let Some(region) = capture_region {
+            element.bounds.x += region.x;
+            element.bounds.y += region.y;
+            element.center = element.bounds.center();
+        }
+        element.window_id.clone_from(&scope.window_id);
+        element.window_title.clone_from(&scope.window_title);
+        element.app_id.clone_from(&scope.app);
+    }
+}
+
+fn contains_case_insensitive(value: &str, needle: &str) -> bool {
+    value
+        .to_ascii_lowercase()
+        .contains(&needle.to_ascii_lowercase())
 }
 
 fn vision_fallback_temp_path() -> PathBuf {
@@ -1588,10 +1680,34 @@ fn dispatch_request(
         ApiRequest::FindElements {
             selector,
             vision_fallback,
+            app,
+            window_title,
+            window_id,
+            vision_region,
+            vision_edge_threshold,
+            vision_min_width,
+            vision_min_height,
+            vision_min_component_pixels,
+            vision_max_elements,
+            vision_merge_distance,
         } => {
+            let options = element_lookup_options_from_request(
+                app,
+                window_title,
+                window_id,
+                vision_region.map(Rect::from),
+                vision_edge_threshold.map(u32::from),
+                vision_min_width,
+                vision_min_height,
+                vision_min_component_pixels,
+                vision_max_elements,
+                vision_merge_distance,
+            )
+            .map_err(|error| error.to_string())?;
             let result = find_elements_with_optional_vision_fallback(
                 &selector,
                 vision_fallback || config.vision_fallback,
+                &options,
                 accessibility_cache,
             )?;
             Ok(ApiResult::FindElements(element_lookup_dto(&result)))
@@ -2084,9 +2200,36 @@ impl PeekabooX for GrpcPeekabooXService {
 
         let selector_length = request.selector.chars().count();
         let vision_fallback = request.vision_fallback || self.config.vision_fallback;
+        let options = match element_lookup_options_from_request(
+            request.app.clone(),
+            request.window_title.clone(),
+            request.window_id.clone(),
+            request.vision_region.map(rect_from_proto),
+            request.vision_edge_threshold,
+            request.vision_min_width,
+            request.vision_min_height,
+            request.vision_min_component_pixels,
+            request.vision_max_elements,
+            request.vision_merge_distance,
+        ) {
+            Ok(options) => options,
+            Err(error) => {
+                let status = Status::invalid_argument(error);
+                audit_write(
+                    &self.audit,
+                    "grpc.find_element",
+                    Some(API_VERSION),
+                    "error",
+                    Some(status.message()),
+                    json!({ "selector_length": selector_length, "vision_fallback": vision_fallback }),
+                );
+                return Err(status);
+            }
+        };
         let result = grpc_find_element(
             &request.selector,
             vision_fallback,
+            &options,
             &self.accessibility_cache,
         );
         match &result {
@@ -2102,7 +2245,10 @@ impl PeekabooX for GrpcPeekabooXService {
                     "accessibility_cache_hit": result.cache_hit,
                     "accessibility_cache_age_ms": result.cache_age_ms,
                     "vision_fallback": vision_fallback,
-                    "vision_fallback_used": result.vision_fallback_used
+                    "vision_fallback_used": result.vision_fallback_used,
+                    "has_app": request.app.as_deref().is_some_and(|value| !value.trim().is_empty()),
+                    "has_window_title": request.window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+                    "has_window_id": request.window_id.as_deref().is_some_and(|value| !value.trim().is_empty())
                 }),
             ),
             Err(status) => audit_write(
@@ -2910,8 +3056,9 @@ fn resolve_click_target_with_optional_vision_fallback(
 fn resolve_vision_click_target(
     selector: &str,
 ) -> std::result::Result<peekaboox_accessibility::ResolvedClickTarget, String> {
-    let query = ElementQuery::from_selector(selector);
-    let elements = vision_fallback_elements(&query)?.elements;
+    let query = ElementQuery::parse(selector).map_err(|error| error.to_string())?;
+    let options = ElementLookupOptions::default();
+    let elements = vision_fallback_elements(&query, &options)?.elements;
     peekaboox_accessibility::resolve_click_target_from_tree(selector, &elements)
         .map_err(|error| error.to_string())
 }
@@ -3000,18 +3147,28 @@ struct GrpcFindElementResult {
 fn grpc_find_element(
     selector: &str,
     use_vision_fallback: bool,
+    options: &ElementLookupOptions,
     accessibility_cache: &SharedAccessibilityCache,
 ) -> Result<GrpcFindElementResult, Status> {
     let result = find_elements_with_optional_vision_fallback(
         selector,
         use_vision_fallback,
+        options,
         accessibility_cache,
     )
     .map_err(|error| Status::internal(error.to_string()))?;
     let elements = result.elements.iter().map(proto_ui_element).collect();
 
     Ok(GrpcFindElementResult {
-        response: proto::FindElementResponse { elements },
+        response: proto::FindElementResponse {
+            elements,
+            backend_name: result.backend_name,
+            backend_kind: result.backend_kind,
+            warnings: result.warnings,
+            cache_hit: result.cache_hit,
+            cache_age_ms: u64::try_from(result.cache_age_ms).unwrap_or(u64::MAX),
+            vision_fallback_used: result.vision_fallback_used,
+        },
         cache_hit: result.cache_hit,
         cache_age_ms: result.cache_age_ms,
         vision_fallback_used: result.vision_fallback_used,
@@ -3465,6 +3622,60 @@ fn ui_element_detection_options(
     Ok(options)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn element_lookup_options_from_request(
+    app: Option<String>,
+    window_title: Option<String>,
+    window_id: Option<String>,
+    vision_region: Option<Rect>,
+    vision_edge_threshold: Option<u32>,
+    vision_min_width: Option<u32>,
+    vision_min_height: Option<u32>,
+    vision_min_component_pixels: Option<u32>,
+    vision_max_elements: Option<u32>,
+    vision_merge_distance: Option<u32>,
+) -> Result<ElementLookupOptions, String> {
+    let mut vision_options = UiElementDetectionOptions::default();
+    if let Some(edge_threshold) = vision_edge_threshold {
+        vision_options.edge_threshold = u8::try_from(edge_threshold)
+            .map_err(|_| "vision_edge_threshold must be between 0 and 255".to_owned())?;
+    }
+    if let Some(min_width) = vision_min_width {
+        vision_options.min_width = min_width;
+    }
+    if let Some(min_height) = vision_min_height {
+        vision_options.min_height = min_height;
+    }
+    if let Some(min_component_pixels) = vision_min_component_pixels {
+        vision_options.min_component_pixels = min_component_pixels;
+    }
+    if let Some(max_elements) = vision_max_elements {
+        vision_options.max_elements = usize::try_from(max_elements)
+            .map_err(|_| "vision_max_elements is too large".to_owned())?;
+    }
+    if let Some(merge_distance) = vision_merge_distance {
+        vision_options.merge_distance = merge_distance;
+    }
+
+    Ok(ElementLookupOptions {
+        scope: ElementLookupScope {
+            app: normalize_optional_string(app),
+            window_title: normalize_optional_string(window_title),
+            window_id: normalize_optional_string(window_id),
+        },
+        vision: ElementVisionFallbackConfig {
+            region: vision_region,
+            options: vision_options,
+        },
+    })
+}
+
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct OcrRunRequest {
     image_path: Option<String>,
@@ -3707,6 +3918,15 @@ fn proto_ui_element(element: &UiElement) -> proto::UiElement {
         bounds: Some(proto_rect(element.bounds)),
         confidence: element.confidence,
         states: element.states.clone(),
+        center: element
+            .center
+            .or_else(|| element.bounds.center())
+            .map(proto_point),
+        window_id: element.window_id.clone(),
+        window_title: element.window_title.clone(),
+        app_id: element.app_id.clone(),
+        parent_id: element.parent_id.clone(),
+        child_ids: element.child_ids.clone(),
     }
 }
 
@@ -3724,6 +3944,9 @@ fn ui_element_list_dto(elements: &[UiElement]) -> ElementListResultDto {
         backend_name: VISION_UI_BACKEND_NAME.to_owned(),
         backend_kind: VISION_UI_BACKEND_KIND.to_owned(),
         warnings: Vec::new(),
+        cache_hit: false,
+        cache_age_ms: 0,
+        vision_fallback_used: false,
         elements: elements.iter().map(ElementDto::from).collect(),
     }
 }
@@ -3733,6 +3956,9 @@ fn element_lookup_dto(result: &ElementLookupResult) -> ElementListResultDto {
         backend_name: result.backend_name.clone(),
         backend_kind: result.backend_kind.clone(),
         warnings: result.warnings.clone(),
+        cache_hit: result.cache_hit,
+        cache_age_ms: result.cache_age_ms,
+        vision_fallback_used: result.vision_fallback_used,
         elements: result.elements.iter().map(ElementDto::from).collect(),
     }
 }
@@ -4137,6 +4363,13 @@ fn proto_rect(rect: Rect) -> proto::Rect {
         y: rect.y,
         width: rect.width,
         height: rect.height,
+    }
+}
+
+fn proto_point(point: Point) -> proto::Point {
+    proto::Point {
+        x: point.x,
+        y: point.y,
     }
 }
 
@@ -4603,10 +4836,30 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
         ApiRequest::FindElements {
             selector,
             vision_fallback,
+            app,
+            window_title,
+            window_id,
+            vision_region,
+            vision_edge_threshold,
+            vision_min_width,
+            vision_min_height,
+            vision_min_component_pixels,
+            vision_max_elements,
+            vision_merge_distance,
         } => {
             json!({
                 "selector_length": selector.chars().count(),
-                "vision_fallback": vision_fallback
+                "vision_fallback": vision_fallback,
+                "has_app": app.as_deref().is_some_and(|value| !value.trim().is_empty()),
+                "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+                "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty()),
+                "has_vision_region": vision_region.is_some(),
+                "has_vision_edge_threshold": vision_edge_threshold.is_some(),
+                "has_vision_min_width": vision_min_width.is_some(),
+                "has_vision_min_height": vision_min_height.is_some(),
+                "has_vision_min_component_pixels": vision_min_component_pixels.is_some(),
+                "has_vision_max_elements": vision_max_elements.is_some(),
+                "has_vision_merge_distance": vision_merge_distance.is_some()
             })
         }
         ApiRequest::Ocr {
@@ -4831,11 +5084,11 @@ mod tests {
 
     use super::{
         AccessibilityCache, AccessibilityCacheSnapshot, CachedAccessibilityTree, CaptureDeltaData,
-        DaemonCommand, DaemonPolicyProfile, ElementLookupResult, GrpcPeekabooXService,
-        IncrementalCaptureState, SandboxProfile, ServerConfig, VISION_UI_BACKEND_KIND,
-        VISION_UI_BACKEND_NAME, audit_details, capture_delta_dto, default_accessibility_cache_ttl,
-        default_audit_log_path, default_grpc_addr, dispatch_request,
-        element_lookup_with_optional_vision_fallback, emergency_hotkey_details,
+        DaemonCommand, DaemonPolicyProfile, ElementLookupOptions, ElementLookupResult,
+        GrpcPeekabooXService, IncrementalCaptureState, SandboxProfile, ServerConfig,
+        VISION_UI_BACKEND_KIND, VISION_UI_BACKEND_NAME, audit_details, capture_delta_dto,
+        default_accessibility_cache_ttl, default_audit_log_path, default_grpc_addr,
+        dispatch_request, element_lookup_with_optional_vision_fallback, emergency_hotkey_details,
         emergency_hotkey_enabled_from_env, ensure_input_allowed, input_allowed_from_env,
         linux_input_event_size, ocr_result_dto, parse_args, parse_linux_input_event,
         proto_capture_delta_response, proto_detect_ui_elements_response, proto_ocr_response,
@@ -5096,8 +5349,14 @@ mod tests {
             role: "visual-region".to_owned(),
             label: None,
             bounds: Rect::new(10, 20, 100, 40),
+            center: Rect::new(10, 20, 100, 40).center(),
             confidence: 0.86,
             states: vec!["visible".to_owned()],
+            window_id: None,
+            window_title: None,
+            app_id: None,
+            parent_id: None,
+            child_ids: Vec::new(),
         }];
 
         let proto = proto_detect_ui_elements_response(&elements);
@@ -5243,6 +5502,16 @@ mod tests {
             ApiRequest::FindElements {
                 selector: "state=enabled,contains=20,30,confidence>=0.9".to_owned(),
                 vision_fallback: false,
+                app: None,
+                window_title: None,
+                window_id: None,
+                vision_region: None,
+                vision_edge_threshold: None,
+                vision_min_width: None,
+                vision_min_height: None,
+                vision_min_component_pixels: None,
+                vision_max_elements: None,
+                vision_merge_distance: None,
             },
             &config,
             &cache,
@@ -5317,12 +5586,13 @@ mod tests {
         let result = element_lookup_with_optional_vision_fallback(
             "role=visual-region",
             false,
+            &ElementLookupOptions::default(),
             Ok(CachedAccessibilityTree {
                 metadata: sample_accessibility_metadata("Submit"),
                 cache_hit: true,
                 age_ms: 12,
             }),
-            |_| {
+            |_, _| {
                 fallback_called = true;
                 Err("fallback should not be called".to_owned())
             },
@@ -5342,6 +5612,7 @@ mod tests {
         let result = element_lookup_with_optional_vision_fallback(
             "role=visual-region,contains=24,7",
             true,
+            &ElementLookupOptions::default(),
             Ok(CachedAccessibilityTree {
                 metadata: sample_accessibility_metadata("Submit"),
                 cache_hit: true,
@@ -5553,14 +5824,21 @@ mod tests {
                 role: "push button".to_owned(),
                 label: Some(label.to_owned()),
                 bounds: Rect::new(10, 20, 100, 40),
+                center: Rect::new(10, 20, 100, 40).center(),
                 confidence: 1.0,
                 states: vec!["enabled".to_owned()],
+                window_id: Some("window-1".to_owned()),
+                window_title: Some("PeekabooX Test".to_owned()),
+                app_id: Some("peekaboox-test".to_owned()),
+                parent_id: None,
+                child_ids: Vec::new(),
             }],
         }
     }
 
     fn fixture_vision_fallback(
         query: &peekaboox_accessibility::ElementQuery,
+        _options: &ElementLookupOptions,
     ) -> Result<ElementLookupResult, String> {
         let mut elements = peekaboox_vision::detect_ui_elements_from_image_file(
             vision_fixture_path("ui_controls.pbm"),
@@ -5597,8 +5875,14 @@ mod tests {
                     role: "text".to_owned(),
                     label: Some("Submit".to_owned()),
                     bounds: Rect::new(10, 20, 100, 40),
+                    center: Rect::new(10, 20, 100, 40).center(),
                     confidence: 0.95,
                     states: Vec::new(),
+                    window_id: None,
+                    window_title: None,
+                    app_id: None,
+                    parent_id: None,
+                    child_ids: Vec::new(),
                 },
             }],
             words: vec![peekaboox_vision::OcrText {
@@ -5608,8 +5892,14 @@ mod tests {
                     role: "word".to_owned(),
                     label: Some("Submit".to_owned()),
                     bounds: Rect::new(10, 20, 100, 40),
+                    center: Rect::new(10, 20, 100, 40).center(),
                     confidence: 0.95,
                     states: Vec::new(),
+                    window_id: None,
+                    window_title: None,
+                    app_id: None,
+                    parent_id: None,
+                    child_ids: Vec::new(),
                 },
             }],
             warnings: Vec::new(),

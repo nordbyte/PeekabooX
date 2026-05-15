@@ -131,10 +131,26 @@ enum MouseButton {
 message FindElementRequest {
   string selector = 1;
   bool vision_fallback = 2;
+  optional string app = 3;
+  optional string window_title = 4;
+  optional string window_id = 5;
+  optional Rect vision_region = 6;
+  optional uint32 vision_edge_threshold = 7;
+  optional uint32 vision_min_width = 8;
+  optional uint32 vision_min_height = 9;
+  optional uint32 vision_min_component_pixels = 10;
+  optional uint32 vision_max_elements = 11;
+  optional uint32 vision_merge_distance = 12;
 }
 
 message FindElementResponse {
   repeated UiElement elements = 1;
+  string backend_name = 2;
+  string backend_kind = 3;
+  repeated string warnings = 4;
+  bool cache_hit = 5;
+  uint64 cache_age_ms = 6;
+  bool vision_fallback_used = 7;
 }
 
 message ListWindowsRequest {}
@@ -457,6 +473,12 @@ message UiElement {
   Rect bounds = 4;
   float confidence = 5;
   repeated string states = 6;
+  optional Point center = 7;
+  optional string window_id = 8;
+  optional string window_title = 9;
+  optional string app_id = 10;
+  optional string parent_id = 11;
+  repeated string child_ids = 12;
 }
 
 message Rect {

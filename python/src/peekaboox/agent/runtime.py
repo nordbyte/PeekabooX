@@ -1253,7 +1253,21 @@ class AgentRuntime:
         self._record_step(WorkflowStep(action="hotkey", value="+".join(key_values)))
         return result
 
-    def find_element(self, selector: str, vision_fallback: bool = False) -> tuple[UiElement, ...]:
+    def find_element(
+        self,
+        selector: str,
+        vision_fallback: bool = False,
+        app: str | None = None,
+        window_title: str | None = None,
+        window_id: str | None = None,
+        vision_region: Rect | None = None,
+        vision_edge_threshold: int | None = None,
+        vision_min_width: int | None = None,
+        vision_min_height: int | None = None,
+        vision_min_component_pixels: int | None = None,
+        vision_max_elements: int | None = None,
+        vision_merge_distance: int | None = None,
+    ) -> tuple[UiElement, ...]:
         self._require_capability(
             Capability.OBSERVE,
             "find_element",
@@ -1261,9 +1275,39 @@ class AgentRuntime:
         )
         if vision_fallback:
             self._require_capability(Capability.VISION, "find_element.vision_fallback")
-        cached = self.memory.find_cached_elements(selector)
+        has_scope_or_vision_options = any(
+            value is not None
+            for value in (
+                app,
+                window_title,
+                window_id,
+                vision_region,
+                vision_edge_threshold,
+                vision_min_width,
+                vision_min_height,
+                vision_min_component_pixels,
+                vision_max_elements,
+                vision_merge_distance,
+            )
+        )
+        cached = () if has_scope_or_vision_options else self.memory.find_cached_elements(selector)
         if cached:
             result = cached
+        elif has_scope_or_vision_options:
+            result = self._require_client().find_element(
+                selector,
+                vision_fallback=vision_fallback,
+                app=app,
+                window_title=window_title,
+                window_id=window_id,
+                vision_region=vision_region,
+                vision_edge_threshold=vision_edge_threshold,
+                vision_min_width=vision_min_width,
+                vision_min_height=vision_min_height,
+                vision_min_component_pixels=vision_min_component_pixels,
+                vision_max_elements=vision_max_elements,
+                vision_merge_distance=vision_merge_distance,
+            )
         else:
             result = self._require_client().find_element(
                 selector,

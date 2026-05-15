@@ -71,6 +71,17 @@ impl Rect {
             height,
         }
     }
+
+    pub fn center(self) -> Option<Point> {
+        if self.width == 0 || self.height == 0 {
+            return None;
+        }
+
+        let x = i64::from(self.x) + i64::from(self.width / 2);
+        let y = i64::from(self.y) + i64::from(self.height / 2);
+
+        Some(Point::new(i32::try_from(x).ok()?, i32::try_from(y).ok()?))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,8 +125,14 @@ pub struct UiElement {
     pub role: String,
     pub label: Option<String>,
     pub bounds: Rect,
+    pub center: Option<Point>,
     pub confidence: f32,
     pub states: Vec<String>,
+    pub window_id: Option<String>,
+    pub window_title: Option<String>,
+    pub app_id: Option<String>,
+    pub parent_id: Option<String>,
+    pub child_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
