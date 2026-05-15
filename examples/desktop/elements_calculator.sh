@@ -146,7 +146,7 @@ PY
 }
 
 require_dry_run_click_output() {
-  if ! grep -Eq "would click .*button.*7.*via dry-run" "$1"; then
+  if ! grep -Eq '^would click selector .*label-exact=7.* at -?[0-9]+,-?[0-9]+ \(7\) via .+$' "$1"; then
     echo "dry-run output did not describe the expected semantic click" >&2
     return 1
   fi
