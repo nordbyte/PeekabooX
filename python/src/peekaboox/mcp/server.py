@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from peekaboox.agent import AgentRuntime
+from peekaboox.agent.runtime import WINDOW_BACKEND_CHOICES, WINDOW_SORT_CHOICES
 from peekaboox.client import Rect
 from peekaboox.security import (
     KNOWN_CAPABILITY_PROFILES,
@@ -386,8 +387,20 @@ class McpServer:
             ),
             self._tool(
                 "list_windows",
-                "List visible desktop windows.",
-                _schema({}),
+                "List, filter, and optionally diagnose visible desktop windows.",
+                _schema(
+                    {
+                        "id": {"type": "string"},
+                        "app": {"type": "string"},
+                        "title": {"type": "string"},
+                        "title_regex": {"type": "string"},
+                        "focused": {"type": "boolean", "default": False},
+                        "limit": {"type": "integer", "minimum": 1},
+                        "sort": {"type": "string", "enum": list(WINDOW_SORT_CHOICES)},
+                        "backend": {"type": "string", "enum": list(WINDOW_BACKEND_CHOICES)},
+                        "diagnose": {"type": "boolean", "default": False},
+                    }
+                ),
                 self._list_windows,
             ),
             self._tool(
@@ -1021,8 +1034,12 @@ class McpServer:
             )
         )
 
-    def _list_windows(self, _arguments: dict[str, Any]) -> list[dict[str, Any]]:
-        return _to_mcp_value(self._require_runtime().list_windows())
+    def _list_windows(self, arguments: dict[str, Any]) -> list[dict[str, Any]] | dict[str, Any]:
+        query = _window_query_kwargs_from_arguments(arguments)
+        runtime = self._require_runtime()
+        if query["diagnose"]:
+            return _to_mcp_value(runtime.list_windows_result(**query))
+        return _to_mcp_value(runtime.list_windows(**query))
 
     def _desktop_focus(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return _to_mcp_value(
@@ -1416,6 +1433,41 @@ def _optional_bool(arguments: dict[str, Any], name: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{name} must be a boolean")
     return value
+
+
+def _optional_positive_int(arguments: dict[str, Any], name: str) -> int | None:
+    value = _optional_int(arguments, name)
+    if value is not None and value <= 0:
+        raise ValueError(f"{name} must be greater than zero")
+    return value
+
+
+def _optional_choice(
+    arguments: dict[str, Any],
+    name: str,
+    choices: tuple[str, ...],
+) -> str | None:
+    value = _optional_string(arguments, name)
+    if value is None:
+        return None
+    if value not in choices:
+        expected = ", ".join(choices)
+        raise ValueError(f"{name} must be one of: {expected}")
+    return value
+
+
+def _window_query_kwargs_from_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": _optional_string(arguments, "id"),
+        "app": _optional_string(arguments, "app"),
+        "title": _optional_string(arguments, "title"),
+        "title_regex": _optional_string(arguments, "title_regex"),
+        "focused": _optional_bool(arguments, "focused"),
+        "limit": _optional_positive_int(arguments, "limit"),
+        "sort": _optional_choice(arguments, "sort", WINDOW_SORT_CHOICES),
+        "backend": _optional_choice(arguments, "backend", WINDOW_BACKEND_CHOICES),
+        "diagnose": _optional_bool(arguments, "diagnose"),
+    }
 
 
 def _optional_ratio_pair(arguments: dict[str, Any], name: str) -> tuple[float, float] | None:

@@ -430,6 +430,9 @@ The current tool surface includes:
 - `save_recorded_workflow`
 
 `click` accepts either `x`/`y` coordinates or `selector`/`semantic_selector`.
+`list_windows` supports `id`, `app`, `title`, `title_regex`, `focused`,
+`limit`, `sort`, `backend`, and `diagnose` arguments through MCP, matching the
+daemon CLI and Python runtime client.
 `capture_screen` accepts optional `region` or `window_id`; `capture_delta`
 accepts `stream_id`, `reset`, optional `region` or `window_id`,
 `per_channel_threshold`, and `low_bandwidth` for persistent low-bandwidth
@@ -523,6 +526,8 @@ Inspect the installed Python runtime without starting an MCP client:
 peekaboox-agent --version
 peekaboox-agent plugins --path examples/plugins
 peekaboox-agent windows
+peekaboox-agent windows --focused --limit 1 --sort focused
+peekaboox-agent windows --app calculator --diagnose
 peekaboox-agent desktop-state
 ```
 

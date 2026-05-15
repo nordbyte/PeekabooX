@@ -61,6 +61,10 @@ from peekaboox.workflows import (
 from peekaboox import __version__ as PEEKABOOX_VERSION
 
 
+WINDOW_SORT_CHOICES = ("backend", "focused", "title", "app", "area", "id", "state")
+WINDOW_BACKEND_CHOICES = ("auto", "gnome", "at-spi", "xdotool")
+
+
 @dataclass(frozen=True, slots=True)
 class VerificationResult:
     ok: bool
@@ -1731,7 +1735,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="plugin search path, repeatable",
     )
     subparsers = parser.add_subparsers(dest="command")
-    subparsers.add_parser("windows", help="list desktop windows through the daemon")
+    windows_parser = subparsers.add_parser("windows", help="list desktop windows through the daemon")
+    windows_parser.add_argument("--id", help="filter by exact window id")
+    windows_parser.add_argument("--app", help="filter by app id/name or title substring")
+    windows_parser.add_argument("--title", help="filter by title substring")
+    windows_parser.add_argument("--title-regex", help="filter by title regular expression")
+    windows_parser.add_argument("--focused", action="store_true", help="return focused windows only")
+    windows_parser.add_argument("--limit", type=_positive_int, help="maximum number of windows")
+    windows_parser.add_argument(
+        "--sort",
+        choices=WINDOW_SORT_CHOICES,
+        help="window sort order",
+    )
+    windows_parser.add_argument(
+        "--backend",
+        choices=WINDOW_BACKEND_CHOICES,
+        help="window backend to use",
+    )
+    windows_parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="include backend metadata, warnings, and diagnostic reports",
+    )
     subparsers.add_parser("desktop-state", help="print daemon desktop state")
     plugins_parser = subparsers.add_parser("plugins", help="discover local plugins")
     plugins_parser.add_argument("--path", action="append", default=[], help="plugin search path")
@@ -1758,7 +1783,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             plugin_paths=tuple(Path(path) for path in args.plugin_path),
         )
         if args.command == "windows":
-            _print_json(runtime.list_windows())
+            query = _window_query_kwargs(
+                id=args.id,
+                app=args.app,
+                title=args.title,
+                title_regex=args.title_regex,
+                focused=args.focused,
+                limit=args.limit,
+                sort=args.sort,
+                backend=args.backend,
+                diagnose=args.diagnose,
+            )
+            if args.diagnose:
+                _print_json(runtime.list_windows_result(**query))
+            else:
+                _print_json(runtime.list_windows(**query))
             return 0
         if args.command == "desktop-state":
             _print_json(runtime.get_desktop_state())
@@ -1792,15 +1831,32 @@ def _window_query_kwargs(
         "sort": sort,
         "backend": backend,
     }.items():
+        value = _clean_optional_string(value)
         if value is not None:
             kwargs[key] = value
     if focused:
         kwargs["focused"] = focused
     if limit is not None:
+        if limit <= 0:
+            raise ValueError("limit must be greater than zero")
         kwargs["limit"] = limit
     if diagnose:
         kwargs["diagnose"] = diagnose
     return kwargs
+
+
+def _clean_optional_string(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
 
 
 def _local_runtime(

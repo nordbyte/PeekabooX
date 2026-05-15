@@ -27,7 +27,9 @@ from peekaboox.client import (
     UiElement,
     UiStateResult,
     VisualDiffResult,
+    WindowBackendReport,
     WindowInfo,
+    WindowListResult,
 )
 from peekaboox.memory import MemoryStore, SQLiteMemoryStore, SemanticDesktopGraph
 from peekaboox.mcp import McpServer
@@ -73,6 +75,8 @@ class FakeClient:
         self.preserve_clipboard: bool | None = None
         self.last_find_selector: str | None = None
         self.desktop_calls: list[tuple[str, dict[str, object]]] = []
+        self.last_window_query: dict[str, object] | None = None
+        self.last_window_result_query: dict[str, object] | None = None
 
     def capture_screen(
         self,
@@ -144,7 +148,30 @@ class FakeClient:
             texture_id=None,
         )
 
-    def list_windows(self) -> tuple[WindowInfo, ...]:
+    def list_windows(
+        self,
+        *,
+        id: str | None = None,
+        app: str | None = None,
+        title: str | None = None,
+        title_regex: str | None = None,
+        focused: bool = False,
+        limit: int | None = None,
+        sort: str | None = None,
+        backend: str | None = None,
+        diagnose: bool = False,
+    ) -> tuple[WindowInfo, ...]:
+        self.last_window_query = {
+            "id": id,
+            "app": app,
+            "title": title,
+            "title_regex": title_regex,
+            "focused": focused,
+            "limit": limit,
+            "sort": sort,
+            "backend": backend,
+            "diagnose": diagnose,
+        }
         return (
             WindowInfo(
                 id="window-1",
@@ -153,6 +180,57 @@ class FakeClient:
                 bounds=Rect(x=1, y=2, width=800, height=600),
                 focused=True,
                 state="normal",
+            ),
+        )
+
+    def list_windows_result(
+        self,
+        *,
+        id: str | None = None,
+        app: str | None = None,
+        title: str | None = None,
+        title_regex: str | None = None,
+        focused: bool = False,
+        limit: int | None = None,
+        sort: str | None = None,
+        backend: str | None = None,
+        diagnose: bool = False,
+    ) -> WindowListResult:
+        self.last_window_result_query = {
+            "id": id,
+            "app": app,
+            "title": title,
+            "title_regex": title_regex,
+            "focused": focused,
+            "limit": limit,
+            "sort": sort,
+            "backend": backend,
+            "diagnose": diagnose,
+        }
+        return WindowListResult(
+            backend_name="fake",
+            backend_kind="mock",
+            warnings=("fallback used",),
+            backend_reports=(
+                WindowBackendReport(
+                    backend_name="fake",
+                    backend_kind="mock",
+                    raw_window_count=1,
+                    matched_window_count=1,
+                    selected=True,
+                    error=None,
+                ),
+            ),
+            windows=self.list_windows(
+                id=id,
+                app=app,
+                title=title,
+                title_regex=title_regex,
+                focused=focused,
+                limit=limit,
+                sort=sort,
+                backend=backend,
+                diagnose=diagnose,
             ),
         )
 
@@ -571,12 +649,27 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("query_desktop_graph", server.tools)
         self.assertIn("hotkey", server.tools)
         self.assertIn("vision_fallback", server.tools["find_element"].input_schema["properties"])
+        window_schema = server.tools["list_windows"].input_schema["properties"]
+        self.assertIn("title_regex", window_schema)
+        self.assertIn("diagnose", window_schema)
+        self.assertEqual(window_schema["limit"]["minimum"], 1)
 
     def test_agent_runtime_delegates_to_daemon_client(self) -> None:
         fake_client = FakeClient()
         runtime = AgentRuntime(client=fake_client)
 
         self.assertEqual(runtime.list_windows()[0].title, "Terminal")
+        self.assertEqual(
+            runtime.list_windows(app="Terminal", focused=True, limit=1, sort="focused")[0].title,
+            "Terminal",
+        )
+        self.assertIsNotNone(fake_client.last_window_query)
+        self.assertEqual(fake_client.last_window_query["app"], "Terminal")
+        self.assertTrue(fake_client.last_window_query["focused"])
+        self.assertEqual(fake_client.last_window_query["limit"], 1)
+        self.assertEqual(runtime.list_windows_result(diagnose=True).backend_name, "fake")
+        self.assertIsNotNone(fake_client.last_window_result_query)
+        self.assertTrue(fake_client.last_window_result_query["diagnose"])
         self.assertTrue(runtime.click(10, 20).ok)
         self.assertEqual(fake_client.clicked_at, (10, 20))
         self.assertTrue(runtime.move_mouse(30, 40).ok)
@@ -866,6 +959,63 @@ class RuntimeTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["sdk_version"], PLUGIN_SDK_VERSION)
         self.assertEqual(payload["plugins"][0]["manifest"]["id"], "org.peekaboox.examples.system-info")
+
+    def test_agent_cli_lists_filtered_windows_as_json(self) -> None:
+        fake_client = FakeClient()
+        output = StringIO()
+        with (
+            patch("sys.stdout", output),
+            patch(
+                "peekaboox.agent.runtime.AgentRuntime.connect",
+                return_value=AgentRuntime(client=fake_client),
+            ),
+        ):
+            exit_code = agent_runtime_module.main(
+                [
+                    "windows",
+                    "--app",
+                    "Terminal",
+                    "--focused",
+                    "--limit",
+                    "1",
+                    "--sort",
+                    "focused",
+                    "--backend",
+                    "at-spi",
+                ]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload[0]["title"], "Terminal")
+        self.assertIsNotNone(fake_client.last_window_query)
+        self.assertEqual(fake_client.last_window_query["app"], "Terminal")
+        self.assertTrue(fake_client.last_window_query["focused"])
+        self.assertEqual(fake_client.last_window_query["limit"], 1)
+        self.assertEqual(fake_client.last_window_query["sort"], "focused")
+        self.assertEqual(fake_client.last_window_query["backend"], "at-spi")
+
+    def test_agent_cli_windows_diagnose_prints_metadata(self) -> None:
+        fake_client = FakeClient()
+        output = StringIO()
+        with (
+            patch("sys.stdout", output),
+            patch(
+                "peekaboox.agent.runtime.AgentRuntime.connect",
+                return_value=AgentRuntime(client=fake_client),
+            ),
+        ):
+            exit_code = agent_runtime_module.main(
+                ["windows", "--title-regex", "Term.*", "--diagnose"]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["backend_name"], "fake")
+        self.assertTrue(payload["backend_reports"][0]["selected"])
+        self.assertIsNotNone(fake_client.last_window_result_query)
+        self.assertEqual(fake_client.last_window_result_query["title_regex"], "Term.*")
+        self.assertTrue(fake_client.last_window_result_query["diagnose"])
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_agent_runtime_connect_rejects_policy_and_profile_together(self) -> None:
@@ -1669,6 +1819,10 @@ class RuntimeTests(unittest.TestCase):
         server.register_default_tools()
 
         self.assertTrue(callable(server.tools["list_windows"]))
+        self.assertIn(
+            "title_regex",
+            server.tools["list_windows"].input_schema["properties"],
+        )
 
     def test_mcp_server_rebinds_default_tools_after_runtime_is_attached(self) -> None:
         server = McpServer()
@@ -1677,8 +1831,32 @@ class RuntimeTests(unittest.TestCase):
 
         server.register_default_tools()
         windows = server.call_tool("list_windows", {})
+        diagnosed = server.call_tool(
+            "list_windows",
+            {
+                "app": "Terminal",
+                "focused": True,
+                "limit": 1,
+                "sort": "focused",
+                "backend": "at-spi",
+                "diagnose": True,
+            },
+        )
 
         self.assertEqual(windows[0]["title"], "Terminal")
+        self.assertEqual(diagnosed["backend_name"], "fake")
+        self.assertEqual(diagnosed["windows"][0]["title"], "Terminal")
+        self.assertTrue(diagnosed["backend_reports"][0]["selected"])
+
+    def test_mcp_server_validates_window_query_arguments(self) -> None:
+        server = McpServer(runtime=AgentRuntime(client=FakeClient()))
+        server.register_default_tools()
+
+        with self.assertRaisesRegex(ValueError, "limit"):
+            server.call_tool("list_windows", {"limit": 0})
+
+        with self.assertRaisesRegex(ValueError, "sort"):
+            server.call_tool("list_windows", {"sort": "unknown"})
 
     def test_mcp_server_lists_tool_descriptors(self) -> None:
         server = McpServer(runtime=AgentRuntime(client=FakeClient()))

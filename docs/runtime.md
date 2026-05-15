@@ -188,6 +188,9 @@ click, text and paste input, semantic lookup, window listing, desktop state,
 desktop app-target tools, OCR, visual diff, UI-state and UI-element detection,
 plugin discovery/execution, semantic desktop graph ingestion/querying,
 workflow generation/refinement/execution, and workflow recording tools.
+`list_windows` accepts the same filtering and diagnostics fields as the daemon
+CLI: `id`, `app`, `title`, `title_regex`, `focused`, `limit`, `sort`,
+`backend`, and `diagnose`.
 
 For local inspection without an MCP client:
 
@@ -195,6 +198,8 @@ For local inspection without an MCP client:
 peekaboox-agent --version
 peekaboox-agent plugins --path examples/plugins
 peekaboox-agent windows
+peekaboox-agent windows --focused --limit 1 --sort focused
+peekaboox-agent windows --app calculator --diagnose
 peekaboox-agent desktop-state
 ```
 
