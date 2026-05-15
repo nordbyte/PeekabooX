@@ -8,7 +8,7 @@ version = "1.0.1"
 description = "Linux-native AI computer-use agent runtime for PeekabooX"
 requires-python = ">=3.12"
 readme = "README.md"
-license = { text = "Apache-2.0 OR MIT" }
+license = { text = "MIT" }
 dependencies = [
     "grpcio>=1.80",
     "protobuf>=6.31",
