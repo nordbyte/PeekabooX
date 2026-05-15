@@ -80,6 +80,18 @@ pub enum ApiRequest {
         #[serde(default)]
         paths: Vec<String>,
     },
+    CallPluginTool {
+        plugin_id: String,
+        tool: String,
+        #[serde(default)]
+        arguments: serde_json::Value,
+        #[serde(default)]
+        paths: Vec<String>,
+        #[serde(default = "default_plugin_timeout_ms")]
+        timeout_ms: u64,
+        #[serde(default = "default_plugin_max_output_bytes")]
+        max_output_bytes: usize,
+    },
     Click {
         x: i32,
         y: i32,
@@ -106,6 +118,13 @@ pub enum ApiRequest {
     },
     TypeText {
         text: String,
+        dry_run: bool,
+    },
+    PasteText {
+        text: String,
+        #[serde(default)]
+        preserve_clipboard: bool,
+        #[serde(default)]
         dry_run: bool,
     },
     Hotkey {
@@ -199,10 +218,12 @@ pub enum ApiResult {
     #[serde(rename = "dmabuf_probe")]
     DmaBufProbe(DmaBufProbeResultDto),
     Plugins(PluginListResultDto),
+    PluginToolExecution(PluginToolExecutionResultDto),
     Click(ActionResultDto),
     MoveMouse(ActionResultDto),
     Drag(ActionResultDto),
     TypeText(ActionResultDto),
+    PasteText(ActionResultDto),
     Hotkey(ActionResultDto),
     ListWindows(WindowListResultDto),
     FindElements(ElementListResultDto),
@@ -301,6 +322,18 @@ pub struct PluginToolDto {
 pub struct PluginDiscoveryErrorDto {
     pub path: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PluginToolExecutionResultDto {
+    pub ok: bool,
+    pub plugin_id: String,
+    pub tool: String,
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -480,13 +513,21 @@ fn default_drag_duration_ms() -> u32 {
     250
 }
 
+fn default_plugin_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_plugin_max_output_bytes() -> usize {
+    1_048_576
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         API_VERSION, ApiRequest, ApiRequestEnvelope, ApiResponse, ApiResponseEnvelope, ApiResult,
         DmaBufImportTargetDto, DmaBufProbeResultDto, MouseButtonDto, PluginDiscoveryErrorDto,
-        PluginDto, PluginListResultDto, PluginToolDto, decode_request, default_socket_path,
-        encode_response,
+        PluginDto, PluginListResultDto, PluginToolDto, PluginToolExecutionResultDto,
+        decode_request, default_socket_path, encode_response,
     };
 
     #[test]
@@ -546,6 +587,20 @@ mod tests {
         });
         let payload = serde_json::to_string(&request).unwrap();
 
+        assert_eq!(decode_request(&payload).unwrap(), request);
+    }
+
+    #[test]
+    fn paste_text_request_round_trips_as_json() {
+        let request = ApiRequestEnvelope::new(ApiRequest::PasteText {
+            text: "hello".to_owned(),
+            preserve_clipboard: true,
+            dry_run: true,
+        });
+        let payload = serde_json::to_string(&request).unwrap();
+
+        assert!(payload.contains(r#""method":"paste_text""#));
+        assert!(payload.contains(r#""preserve_clipboard":true"#));
         assert_eq!(decode_request(&payload).unwrap(), request);
     }
 
@@ -623,6 +678,24 @@ mod tests {
         assert!(payload.contains(r#""method":"list_plugins""#));
         assert!(payload.contains("examples/plugins"));
         assert_eq!(decode_request(&payload).unwrap(), request);
+    }
+
+    #[test]
+    fn call_plugin_tool_request_defaults_execution_limits() {
+        let payload = r#"{"version":"peekaboox.v1","request":{"method":"call_plugin_tool","plugin_id":"demo","tool":"demo.echo","arguments":{"text":"hello"}}}"#;
+        let request = decode_request(payload).unwrap();
+
+        assert_eq!(
+            request,
+            ApiRequestEnvelope::new(ApiRequest::CallPluginTool {
+                plugin_id: "demo".to_owned(),
+                tool: "demo.echo".to_owned(),
+                arguments: serde_json::json!({"text": "hello"}),
+                paths: Vec::new(),
+                timeout_ms: 10_000,
+                max_output_bytes: 1_048_576,
+            })
+        );
     }
 
     #[test]
@@ -759,6 +832,26 @@ mod tests {
                 message: "invalid manifest".to_owned(),
             }],
         }));
+        let payload = encode_response(&response).unwrap();
+        let decoded: ApiResponseEnvelope = serde_json::from_slice(&payload).unwrap();
+
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn plugin_execution_response_round_trips_as_json() {
+        let response = ApiResponseEnvelope::ok(ApiResult::PluginToolExecution(
+            PluginToolExecutionResultDto {
+                ok: true,
+                plugin_id: "demo".to_owned(),
+                tool: "demo.echo".to_owned(),
+                exit_code: 0,
+                stdout: r#"{"result":{"answer":42}}"#.to_owned(),
+                stderr: String::new(),
+                result: Some(serde_json::json!({"answer": 42})),
+                error: None,
+            },
+        ));
         let payload = encode_response(&response).unwrap();
         let decoded: ApiResponseEnvelope = serde_json::from_slice(&payload).unwrap();
 

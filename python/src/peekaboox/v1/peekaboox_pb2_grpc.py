@@ -64,6 +64,11 @@ class PeekabooXStub(object):
                 request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.TypeTextRequest.SerializeToString,
                 response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.FromString,
                 _registered_method=True)
+        self.PasteText = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/PasteText',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.PasteTextRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.FromString,
+                _registered_method=True)
         self.Hotkey = channel.unary_unary(
                 '/peekaboox.v1.PeekabooX/Hotkey',
                 request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.HotkeyRequest.SerializeToString,
@@ -104,6 +109,21 @@ class PeekabooXStub(object):
                 request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DetectUiElementsRequest.SerializeToString,
                 response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DetectUiElementsResponse.FromString,
                 _registered_method=True)
+        self.ProbeDmaBuf = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/ProbeDmaBuf',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.ProbeDmaBufRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DmaBufProbeResponse.FromString,
+                _registered_method=True)
+        self.ListPlugins = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/ListPlugins',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.ListPluginsRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.PluginListResponse.FromString,
+                _registered_method=True)
+        self.CallPluginTool = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/CallPluginTool',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.CallPluginToolRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.PluginToolExecutionResponse.FromString,
+                _registered_method=True)
 
 
 class PeekabooXServicer(object):
@@ -140,6 +160,12 @@ class PeekabooXServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def TypeText(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PasteText(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -193,6 +219,24 @@ class PeekabooXServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ProbeDmaBuf(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListPlugins(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CallPluginTool(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_PeekabooXServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -224,6 +268,11 @@ def add_PeekabooXServicer_to_server(servicer, server):
             'TypeText': grpc.unary_unary_rpc_method_handler(
                     servicer.TypeText,
                     request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.TypeTextRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.SerializeToString,
+            ),
+            'PasteText': grpc.unary_unary_rpc_method_handler(
+                    servicer.PasteText,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.PasteTextRequest.FromString,
                     response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.SerializeToString,
             ),
             'Hotkey': grpc.unary_unary_rpc_method_handler(
@@ -265,6 +314,21 @@ def add_PeekabooXServicer_to_server(servicer, server):
                     servicer.DetectUiElements,
                     request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DetectUiElementsRequest.FromString,
                     response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DetectUiElementsResponse.SerializeToString,
+            ),
+            'ProbeDmaBuf': grpc.unary_unary_rpc_method_handler(
+                    servicer.ProbeDmaBuf,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.ProbeDmaBufRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DmaBufProbeResponse.SerializeToString,
+            ),
+            'ListPlugins': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListPlugins,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.ListPluginsRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.PluginListResponse.SerializeToString,
+            ),
+            'CallPluginTool': grpc.unary_unary_rpc_method_handler(
+                    servicer.CallPluginTool,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.CallPluginToolRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.PluginToolExecutionResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -428,6 +492,33 @@ class PeekabooX(object):
             target,
             '/peekaboox.v1.PeekabooX/TypeText',
             peekaboox_dot_v1_dot_peekaboox__pb2.TypeTextRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PasteText(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/PasteText',
+            peekaboox_dot_v1_dot_peekaboox__pb2.PasteTextRequest.SerializeToString,
             peekaboox_dot_v1_dot_peekaboox__pb2.ActionResponse.FromString,
             options,
             channel_credentials,
@@ -645,6 +736,87 @@ class PeekabooX(object):
             '/peekaboox.v1.PeekabooX/DetectUiElements',
             peekaboox_dot_v1_dot_peekaboox__pb2.DetectUiElementsRequest.SerializeToString,
             peekaboox_dot_v1_dot_peekaboox__pb2.DetectUiElementsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ProbeDmaBuf(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/ProbeDmaBuf',
+            peekaboox_dot_v1_dot_peekaboox__pb2.ProbeDmaBufRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.DmaBufProbeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListPlugins(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/ListPlugins',
+            peekaboox_dot_v1_dot_peekaboox__pb2.ListPluginsRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.PluginListResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CallPluginTool(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/CallPluginTool',
+            peekaboox_dot_v1_dot_peekaboox__pb2.CallPluginToolRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.PluginToolExecutionResponse.FromString,
             options,
             channel_credentials,
             insecure,

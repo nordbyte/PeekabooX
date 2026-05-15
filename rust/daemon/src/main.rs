@@ -25,9 +25,9 @@ use peekaboox_ipc::{
     API_VERSION, ActionResultDto, ApiRequest, ApiResponseEnvelope, ApiResult,
     CaptureDeltaResultDto, CaptureResultDto, DmaBufImportTargetDto, DmaBufProbeResultDto,
     ElementDto, ElementListResultDto, MouseButtonDto, OcrBlockDto, OcrResultDto,
-    PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto, UiStateDto,
-    VisualDiffDto, WindowDto, WindowListResultDto, decode_request, default_socket_path,
-    encode_response,
+    PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
+    PluginToolExecutionResultDto, UiStateDto, VisualDiffDto, WindowDto, WindowListResultDto,
+    decode_request, default_socket_path, encode_response,
 };
 use peekaboox_vision::{
     IncrementalCaptureDelta, IncrementalCaptureOptions, OcrOptions, OcrResult, TesseractOcrBackend,
@@ -1388,6 +1388,49 @@ fn dispatch_request(
                 peekaboox_plugins::discover_plugins(&paths),
             )))
         }
+        ApiRequest::CallPluginTool {
+            plugin_id,
+            tool,
+            arguments,
+            paths,
+            timeout_ms,
+            max_output_bytes,
+        } => {
+            let paths = if paths.is_empty() {
+                config.plugin_paths.clone()
+            } else {
+                paths.into_iter().map(PathBuf::from).collect()
+            };
+            let discovery = peekaboox_plugins::discover_plugins(&paths);
+            if !discovery.errors.is_empty() {
+                return Err(format!(
+                    "plugin discovery failed: {}",
+                    discovery
+                        .errors
+                        .iter()
+                        .map(|error| format!("{}: {}", error.path.display(), error.message))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+            }
+            let plugin = discovery
+                .plugins
+                .iter()
+                .find(|plugin| plugin.manifest.id == plugin_id)
+                .ok_or_else(|| format!("unknown plugin: {plugin_id}"))?;
+            let arguments = if arguments.is_null() {
+                serde_json::json!({})
+            } else {
+                arguments
+            };
+            let policy = peekaboox_plugins::PluginExecutionPolicy {
+                timeout: Duration::from_millis(timeout_ms),
+                max_output_bytes,
+                ..Default::default()
+            };
+            let result = peekaboox_plugins::execute_plugin_tool(plugin, &tool, arguments, &policy)?;
+            Ok(ApiResult::PluginToolExecution(plugin_execution_dto(result)))
+        }
         ApiRequest::Click {
             x,
             y,
@@ -1480,6 +1523,28 @@ fn dispatch_request(
                 input_metadata_dto(metadata)
             };
             Ok(ApiResult::TypeText(metadata))
+        }
+        ApiRequest::PasteText {
+            text,
+            preserve_clipboard,
+            dry_run,
+        } => {
+            let action = peekaboox_input::InputAction::PasteText {
+                text: text.clone(),
+                preserve_clipboard,
+            };
+            let metadata = if dry_run {
+                let backend = peekaboox_input::CommandInputBackend
+                    .detect_backend_for(&action)
+                    .map_err(|error| error.to_string())?;
+                detected_input_backend_dto(backend)
+            } else {
+                ensure_input_allowed(config)?;
+                let metadata = peekaboox_input::paste_text_with_options(text, preserve_clipboard)
+                    .map_err(|error| error.to_string())?;
+                input_metadata_dto(metadata)
+            };
+            Ok(ApiResult::PasteText(metadata))
         }
         ApiRequest::Hotkey { keys, dry_run } => {
             validate_hotkey_keys(&keys).map_err(|status| status.message().to_owned())?;
@@ -1739,6 +1804,21 @@ impl PeekabooX for GrpcPeekabooXService {
         result.map(Response::new)
     }
 
+    async fn paste_text(
+        &self,
+        request: Request<proto::PasteTextRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({
+            "text_length": request.text.chars().count(),
+            "preserve_clipboard": request.preserve_clipboard
+        });
+
+        let result = grpc_paste_text(request, &self.config);
+        audit_grpc_result(&self.audit, "grpc.paste_text", &result, details);
+        result.map(Response::new)
+    }
+
     async fn hotkey(
         &self,
         request: Request<proto::HotkeyRequest>,
@@ -1891,6 +1971,46 @@ impl PeekabooX for GrpcPeekabooXService {
         });
         let result = grpc_detect_ui_elements(request);
         audit_grpc_result(&self.audit, "grpc.detect_ui_elements", &result, details);
+        result.map(Response::new)
+    }
+
+    async fn probe_dma_buf(
+        &self,
+        request: Request<proto::ProbeDmaBufRequest>,
+    ) -> Result<Response<proto::DmaBufProbeResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({ "import_target": request.import_target });
+        let result = grpc_probe_dmabuf(request);
+        audit_grpc_result(&self.audit, "grpc.probe_dmabuf", &result, details);
+        result.map(Response::new)
+    }
+
+    async fn list_plugins(
+        &self,
+        request: Request<proto::ListPluginsRequest>,
+    ) -> Result<Response<proto::PluginListResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({ "path_count": request.paths.len() });
+        let result = grpc_list_plugins(request, &self.config);
+        audit_grpc_result(&self.audit, "grpc.list_plugins", &result, details);
+        result.map(Response::new)
+    }
+
+    async fn call_plugin_tool(
+        &self,
+        request: Request<proto::CallPluginToolRequest>,
+    ) -> Result<Response<proto::PluginToolExecutionResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({
+            "plugin_id": request.plugin_id.as_str(),
+            "tool": request.tool.as_str(),
+            "arguments_bytes": request.arguments_json.len(),
+            "path_count": request.paths.len(),
+            "timeout_ms": request.timeout_ms,
+            "max_output_bytes": request.max_output_bytes
+        });
+        let result = grpc_call_plugin_tool(request, &self.config);
+        audit_grpc_result(&self.audit, "grpc.call_plugin_tool", &result, details);
         result.map(Response::new)
     }
 }
@@ -2296,14 +2416,17 @@ fn grpc_click(
     };
     let metadata = peekaboox_input::click(position, MouseButton::Left)
         .map_err(|error| Status::internal(error.to_string()))?;
+    let backend_kind = backend_kind_name(metadata.backend_kind);
+    let backend_name = metadata.backend_name;
 
     Ok(proto::ActionResponse {
         ok: true,
         message: format!(
             "clicked {target_description} using {}/{}",
-            metadata.backend_name,
-            backend_kind_name(metadata.backend_kind)
+            backend_name, backend_kind
         ),
+        backend_name: Some(backend_name),
+        backend_kind: Some(backend_kind),
     })
 }
 
@@ -2318,16 +2441,17 @@ fn grpc_move_mouse(
     let position = Point::new(coordinates.x, coordinates.y);
     let metadata = peekaboox_input::move_mouse(position)
         .map_err(|error| Status::internal(error.to_string()))?;
+    let backend_kind = backend_kind_name(metadata.backend_kind);
+    let backend_name = metadata.backend_name;
 
     Ok(proto::ActionResponse {
         ok: true,
         message: format!(
             "moved mouse to {},{} using {}/{}",
-            position.x,
-            position.y,
-            metadata.backend_name,
-            backend_kind_name(metadata.backend_kind)
+            position.x, position.y, backend_name, backend_kind
         ),
+        backend_name: Some(backend_name),
+        backend_kind: Some(backend_kind),
     })
 }
 
@@ -2348,18 +2472,17 @@ fn grpc_drag(
     let to = Point::new(to.x, to.y);
     let metadata = peekaboox_input::drag(from, to, button, duration_ms)
         .map_err(|error| Status::internal(error.to_string()))?;
+    let backend_kind = backend_kind_name(metadata.backend_kind);
+    let backend_name = metadata.backend_name;
 
     Ok(proto::ActionResponse {
         ok: true,
         message: format!(
             "dragged from {},{} to {},{} using {}/{}",
-            from.x,
-            from.y,
-            to.x,
-            to.y,
-            metadata.backend_name,
-            backend_kind_name(metadata.backend_kind)
+            from.x, from.y, to.x, to.y, backend_name, backend_kind
         ),
+        backend_name: Some(backend_name),
+        backend_kind: Some(backend_kind),
     })
 }
 
@@ -2418,14 +2541,33 @@ fn grpc_type_text(
     ensure_input_allowed(config).map_err(Status::permission_denied)?;
     let metadata = peekaboox_input::type_text(request.text)
         .map_err(|error| Status::internal(error.to_string()))?;
+    let backend_kind = backend_kind_name(metadata.backend_kind);
+    let backend_name = metadata.backend_name;
 
     Ok(proto::ActionResponse {
         ok: true,
-        message: format!(
-            "typed text using {}/{}",
-            metadata.backend_name,
-            backend_kind_name(metadata.backend_kind)
-        ),
+        message: format!("typed text using {backend_name}/{backend_kind}"),
+        backend_name: Some(backend_name),
+        backend_kind: Some(backend_kind),
+    })
+}
+
+fn grpc_paste_text(
+    request: proto::PasteTextRequest,
+    config: &ServerConfig,
+) -> Result<proto::ActionResponse, Status> {
+    ensure_input_allowed(config).map_err(Status::permission_denied)?;
+    let metadata =
+        peekaboox_input::paste_text_with_options(request.text, request.preserve_clipboard)
+            .map_err(|error| Status::internal(error.to_string()))?;
+    let backend_kind = backend_kind_name(metadata.backend_kind);
+    let backend_name = metadata.backend_name;
+
+    Ok(proto::ActionResponse {
+        ok: true,
+        message: format!("pasted text using {backend_name}/{backend_kind}"),
+        backend_name: Some(backend_name),
+        backend_kind: Some(backend_kind),
     })
 }
 
@@ -2437,14 +2579,14 @@ fn grpc_hotkey(
     validate_hotkey_keys(&request.keys)?;
     let metadata = peekaboox_input::hotkey(request.keys)
         .map_err(|error| Status::internal(error.to_string()))?;
+    let backend_kind = backend_kind_name(metadata.backend_kind);
+    let backend_name = metadata.backend_name;
 
     Ok(proto::ActionResponse {
         ok: true,
-        message: format!(
-            "pressed hotkey using {}/{}",
-            metadata.backend_name,
-            backend_kind_name(metadata.backend_kind)
-        ),
+        message: format!("pressed hotkey using {backend_name}/{backend_kind}"),
+        backend_name: Some(backend_name),
+        backend_kind: Some(backend_kind),
     })
 }
 
@@ -2589,6 +2731,79 @@ fn grpc_detect_ui_elements(
         .map_err(|error| Status::invalid_argument(error.to_string()))?;
 
     Ok(proto_detect_ui_elements_response(&elements))
+}
+
+fn grpc_probe_dmabuf(
+    request: proto::ProbeDmaBufRequest,
+) -> Result<proto::DmaBufProbeResponse, Status> {
+    let target = proto_dmabuf_import_target(request.import_target)?;
+    let result = probe_dmabuf_import(target).map_err(Status::internal)?;
+    Ok(proto_dmabuf_probe_response(result))
+}
+
+fn grpc_list_plugins(
+    request: proto::ListPluginsRequest,
+    config: &ServerConfig,
+) -> Result<proto::PluginListResponse, Status> {
+    let paths = if request.paths.is_empty() {
+        config.plugin_paths.clone()
+    } else {
+        request.paths.into_iter().map(PathBuf::from).collect()
+    };
+    Ok(proto_plugin_list_response(
+        peekaboox_plugins::discover_plugins(&paths),
+    ))
+}
+
+fn grpc_call_plugin_tool(
+    request: proto::CallPluginToolRequest,
+    config: &ServerConfig,
+) -> Result<proto::PluginToolExecutionResponse, Status> {
+    if request.plugin_id.trim().is_empty() {
+        return Err(Status::invalid_argument("plugin_id must not be empty"));
+    }
+    if request.tool.trim().is_empty() {
+        return Err(Status::invalid_argument("tool must not be empty"));
+    }
+    let arguments = if request.arguments_json.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(&request.arguments_json)
+            .map_err(|error| Status::invalid_argument(format!("invalid arguments_json: {error}")))?
+    };
+    let paths = if request.paths.is_empty() {
+        config.plugin_paths.clone()
+    } else {
+        request.paths.into_iter().map(PathBuf::from).collect()
+    };
+    let discovery = peekaboox_plugins::discover_plugins(&paths);
+    if !discovery.errors.is_empty() {
+        return Err(Status::failed_precondition(format!(
+            "plugin discovery failed: {}",
+            discovery
+                .errors
+                .iter()
+                .map(|error| format!("{}: {}", error.path.display(), error.message))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )));
+    }
+    let plugin = discovery
+        .plugins
+        .iter()
+        .find(|plugin| plugin.manifest.id == request.plugin_id)
+        .ok_or_else(|| Status::not_found(format!("unknown plugin: {}", request.plugin_id)))?;
+    let policy = peekaboox_plugins::PluginExecutionPolicy {
+        timeout: Duration::from_millis(u64::from(request.timeout_ms.unwrap_or(10_000))),
+        max_output_bytes: request
+            .max_output_bytes
+            .map(|value| value as usize)
+            .unwrap_or(1_048_576),
+        ..Default::default()
+    };
+    let result = peekaboox_plugins::execute_plugin_tool(plugin, &request.tool, arguments, &policy)
+        .map_err(Status::invalid_argument)?;
+    Ok(proto_plugin_execution_response(result))
 }
 
 fn visual_compare_options(
@@ -2925,6 +3140,123 @@ fn plugin_dto(plugin: &peekaboox_plugins::PluginDescriptor) -> PluginDto {
             })
             .collect(),
         metadata: plugin.manifest.metadata.clone(),
+    }
+}
+
+fn plugin_execution_dto(
+    result: peekaboox_plugins::PluginToolExecutionResult,
+) -> PluginToolExecutionResultDto {
+    PluginToolExecutionResultDto {
+        ok: result.ok,
+        plugin_id: result.plugin_id,
+        tool: result.tool,
+        exit_code: result.exit_code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        result: result.result,
+        error: result.error,
+    }
+}
+
+fn proto_plugin_list_response(
+    result: peekaboox_plugins::PluginDiscoveryResult,
+) -> proto::PluginListResponse {
+    proto::PluginListResponse {
+        sdk_version: peekaboox_plugins::PLUGIN_SDK_VERSION.to_owned(),
+        plugins: result.plugins.iter().map(proto_plugin).collect(),
+        errors: result
+            .errors
+            .iter()
+            .map(|error| proto::PluginDiscoveryError {
+                path: error.path.display().to_string(),
+                message: error.message.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn proto_plugin(plugin: &peekaboox_plugins::PluginDescriptor) -> proto::Plugin {
+    let entrypoint = plugin.manifest.entrypoint.as_ref();
+    proto::Plugin {
+        id: plugin.manifest.id.clone(),
+        name: plugin.manifest.name.clone(),
+        version: plugin.manifest.version.clone(),
+        description: plugin.manifest.description.clone(),
+        root_dir: plugin.root_dir.display().to_string(),
+        manifest_path: plugin.manifest_path.display().to_string(),
+        capabilities: plugin.manifest.capabilities.clone(),
+        entrypoint_kind: entrypoint.map(|entrypoint| match entrypoint.kind {
+            peekaboox_plugins::PluginEntrypointKind::Process => "process".to_owned(),
+        }),
+        entrypoint_command: entrypoint
+            .map(|entrypoint| entrypoint.command.clone())
+            .unwrap_or_default(),
+        tools: plugin
+            .manifest
+            .tools
+            .iter()
+            .map(|tool| proto::PluginTool {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                capabilities: tool.capabilities.clone(),
+                input_schema_json: serde_json::to_string(&tool.input_schema)
+                    .unwrap_or_else(|_| "{}".to_owned()),
+            })
+            .collect(),
+        metadata: plugin.manifest.metadata.clone().into_iter().collect(),
+    }
+}
+
+fn proto_plugin_execution_response(
+    result: peekaboox_plugins::PluginToolExecutionResult,
+) -> proto::PluginToolExecutionResponse {
+    proto::PluginToolExecutionResponse {
+        ok: result.ok,
+        plugin_id: result.plugin_id,
+        tool: result.tool,
+        exit_code: result.exit_code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        result_json: result
+            .result
+            .and_then(|value| serde_json::to_string(&value).ok()),
+        error: result.error,
+    }
+}
+
+fn proto_dmabuf_import_target(value: i32) -> Result<DmaBufImportTargetDto, Status> {
+    match value {
+        0 | 1 => Ok(DmaBufImportTargetDto::Compute),
+        2 => Ok(DmaBufImportTargetDto::Egl),
+        3 => Ok(DmaBufImportTargetDto::EglTexture),
+        _ => Err(Status::invalid_argument("unknown import_target")),
+    }
+}
+
+fn proto_dmabuf_import_target_value(value: DmaBufImportTargetDto) -> i32 {
+    match value {
+        DmaBufImportTargetDto::Compute => 1,
+        DmaBufImportTargetDto::Egl => 2,
+        DmaBufImportTargetDto::EglTexture => 3,
+    }
+}
+
+fn proto_dmabuf_probe_response(result: DmaBufProbeResultDto) -> proto::DmaBufProbeResponse {
+    proto::DmaBufProbeResponse {
+        import_target: proto_dmabuf_import_target_value(result.import_target),
+        backend_name: result.backend_name,
+        stream_node_id: result.stream_node_id,
+        pipewire_serial: result.pipewire_serial,
+        width: result.width,
+        height: result.height,
+        pixel_format: result.pixel_format,
+        fourcc: result.fourcc,
+        planes: result.planes as u32,
+        memory_layout: result.memory_layout,
+        synchronization: result.synchronization,
+        egl_version: result.egl_version,
+        egl_modifiers: result.egl_modifiers,
+        texture_id: result.texture_id,
     }
 }
 
@@ -3310,10 +3642,12 @@ fn request_method(request: &ApiRequest) -> &'static str {
         ApiRequest::CaptureDelta { .. } => "capture_delta",
         ApiRequest::ProbeDmaBuf { .. } => "probe_dmabuf",
         ApiRequest::ListPlugins { .. } => "list_plugins",
+        ApiRequest::CallPluginTool { .. } => "call_plugin_tool",
         ApiRequest::Click { .. } => "click",
         ApiRequest::MoveMouse { .. } => "move_mouse",
         ApiRequest::Drag { .. } => "drag",
         ApiRequest::TypeText { .. } => "type_text",
+        ApiRequest::PasteText { .. } => "paste_text",
         ApiRequest::Hotkey { .. } => "hotkey",
         ApiRequest::ListWindows => "list_windows",
         ApiRequest::FindElements { .. } => "find_elements",
@@ -3346,6 +3680,21 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
         }),
         ApiRequest::ListPlugins { paths } => json!({
             "path_count": paths.len()
+        }),
+        ApiRequest::CallPluginTool {
+            plugin_id,
+            tool,
+            arguments,
+            paths,
+            timeout_ms,
+            max_output_bytes,
+        } => json!({
+            "plugin_id": plugin_id,
+            "tool": tool,
+            "argument_keys": arguments.as_object().map(|object| object.len()).unwrap_or_default(),
+            "path_count": paths.len(),
+            "timeout_ms": timeout_ms,
+            "max_output_bytes": max_output_bytes
         }),
         ApiRequest::Click {
             x,
@@ -3382,6 +3731,17 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
         }),
         ApiRequest::TypeText { text, dry_run } => {
             json!({ "text_length": text.chars().count(), "dry_run": dry_run })
+        }
+        ApiRequest::PasteText {
+            text,
+            preserve_clipboard,
+            dry_run,
+        } => {
+            json!({
+                "text_length": text.chars().count(),
+                "preserve_clipboard": preserve_clipboard,
+                "dry_run": dry_run
+            })
         }
         ApiRequest::Hotkey { keys, dry_run } => {
             json!({ "key_count": keys.len(), "dry_run": dry_run })

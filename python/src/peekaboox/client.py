@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from importlib import import_module
 from os import PathLike
@@ -131,6 +132,8 @@ class DetectUiElementsResult:
 class ActionResult:
     ok: bool
     message: str
+    backend_name: str | None = None
+    backend_kind: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +141,72 @@ class DesktopState:
     active_window: WindowInfo | None
     windows: tuple[WindowInfo, ...]
     elements: tuple[UiElement, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DmaBufProbeResult:
+    import_target: str
+    backend_name: str
+    stream_node_id: int
+    pipewire_serial: int | None
+    width: int
+    height: int
+    pixel_format: str
+    fourcc: int
+    planes: int
+    memory_layout: str
+    synchronization: str
+    egl_version: str | None
+    egl_modifiers: bool | None
+    texture_id: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class PluginTool:
+    name: str
+    description: str
+    capabilities: tuple[str, ...]
+    input_schema: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class Plugin:
+    id: str
+    name: str
+    version: str
+    description: str | None
+    root_dir: str
+    manifest_path: str
+    capabilities: tuple[str, ...]
+    entrypoint_kind: str | None
+    entrypoint_command: tuple[str, ...]
+    tools: tuple[PluginTool, ...]
+    metadata: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class PluginDiscoveryError:
+    path: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class PluginListResult:
+    sdk_version: str
+    plugins: tuple[Plugin, ...]
+    errors: tuple[PluginDiscoveryError, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PluginToolExecutionResult:
+    ok: bool
+    plugin_id: str
+    tool: str
+    exit_code: int
+    stdout: str
+    stderr: str
+    result: Any | None
+    error: str | None
 
 
 @dataclass(slots=True)
@@ -435,6 +504,13 @@ class PeekabooXClient:
         request = self.messages.TypeTextRequest(**request_kwargs)
         return _action_result_from_proto(self._call("TypeText", request))
 
+    def paste_text(self, text: str, preserve_clipboard: bool = False) -> ActionResult:
+        request = self.messages.PasteTextRequest(
+            text=text,
+            preserve_clipboard=preserve_clipboard,
+        )
+        return _action_result_from_proto(self._call("PasteText", request))
+
     def hotkey(self, keys: Sequence[str] | str) -> ActionResult:
         if isinstance(keys, str):
             key_values = [keys]
@@ -467,6 +543,40 @@ class PeekabooXClient:
             windows=tuple(_window_from_proto(window) for window in response.windows),
             elements=tuple(_ui_element_from_proto(element) for element in response.elements),
         )
+
+    def probe_dmabuf(self, import_target: str = "compute") -> DmaBufProbeResult:
+        request = self.messages.ProbeDmaBufRequest(
+            import_target=_dmabuf_import_target_to_proto(self.messages, import_target),
+        )
+        return _dmabuf_probe_from_proto(self._call("ProbeDmaBuf", request))
+
+    def list_plugins(self, paths: Sequence[str | PathLike[str]] = ()) -> PluginListResult:
+        request = self.messages.ListPluginsRequest(paths=[str(path) for path in paths])
+        return _plugin_list_from_proto(self._call("ListPlugins", request))
+
+    def call_plugin_tool(
+        self,
+        plugin_id: str,
+        tool: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        paths: Sequence[str | PathLike[str]] = (),
+        timeout_seconds: float = 10.0,
+        max_output_bytes: int = 1_048_576,
+    ) -> PluginToolExecutionResult:
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        if max_output_bytes < 0:
+            raise ValueError("max_output_bytes must be non-negative")
+        request = self.messages.CallPluginToolRequest(
+            plugin_id=plugin_id,
+            tool=tool,
+            arguments_json=json.dumps(arguments or {}),
+            paths=[str(path) for path in paths],
+            timeout_ms=max(1, int(timeout_seconds * 1000)),
+            max_output_bytes=max_output_bytes,
+        )
+        return _plugin_execution_from_proto(self._call("CallPluginTool", request))
 
     def _call(self, method_name: str, request: Any) -> Any:
         method = getattr(self.stub, method_name)
@@ -614,6 +724,87 @@ def _detect_ui_elements_from_proto(response: Any) -> DetectUiElementsResult:
     )
 
 
+def _dmabuf_probe_from_proto(response: Any) -> DmaBufProbeResult:
+    return DmaBufProbeResult(
+        import_target=_dmabuf_import_target_name(response.import_target),
+        backend_name=response.backend_name,
+        stream_node_id=response.stream_node_id,
+        pipewire_serial=_optional_int(response, "pipewire_serial"),
+        width=response.width,
+        height=response.height,
+        pixel_format=response.pixel_format,
+        fourcc=response.fourcc,
+        planes=response.planes,
+        memory_layout=response.memory_layout,
+        synchronization=response.synchronization,
+        egl_version=_optional_scalar(response, "egl_version"),
+        egl_modifiers=_optional_bool(response, "egl_modifiers"),
+        texture_id=_optional_int(response, "texture_id"),
+    )
+
+
+def _plugin_list_from_proto(response: Any) -> PluginListResult:
+    return PluginListResult(
+        sdk_version=response.sdk_version,
+        plugins=tuple(_plugin_from_proto(plugin) for plugin in response.plugins),
+        errors=tuple(
+            PluginDiscoveryError(path=error.path, message=error.message)
+            for error in response.errors
+        ),
+    )
+
+
+def _plugin_from_proto(plugin: Any) -> Plugin:
+    return Plugin(
+        id=plugin.id,
+        name=plugin.name,
+        version=plugin.version,
+        description=_optional_scalar(plugin, "description"),
+        root_dir=plugin.root_dir,
+        manifest_path=plugin.manifest_path,
+        capabilities=tuple(plugin.capabilities),
+        entrypoint_kind=_optional_scalar(plugin, "entrypoint_kind"),
+        entrypoint_command=tuple(plugin.entrypoint_command),
+        tools=tuple(_plugin_tool_from_proto(tool) for tool in plugin.tools),
+        metadata=dict(plugin.metadata),
+    )
+
+
+def _plugin_tool_from_proto(tool: Any) -> PluginTool:
+    try:
+        input_schema = json.loads(tool.input_schema_json or "{}")
+    except json.JSONDecodeError:
+        input_schema = {}
+    if not isinstance(input_schema, dict):
+        input_schema = {}
+    return PluginTool(
+        name=tool.name,
+        description=tool.description,
+        capabilities=tuple(tool.capabilities),
+        input_schema=input_schema,
+    )
+
+
+def _plugin_execution_from_proto(response: Any) -> PluginToolExecutionResult:
+    result_json = _optional_scalar(response, "result_json")
+    result = None
+    if result_json is not None:
+        try:
+            result = json.loads(result_json)
+        except json.JSONDecodeError:
+            result = result_json
+    return PluginToolExecutionResult(
+        ok=response.ok,
+        plugin_id=response.plugin_id,
+        tool=response.tool,
+        exit_code=response.exit_code,
+        stdout=response.stdout,
+        stderr=response.stderr,
+        result=result,
+        error=_optional_scalar(response, "error"),
+    )
+
+
 def _rect_from_proto(rect: Any | None) -> Rect:
     if rect is None:
         return Rect(x=0, y=0, width=0, height=0)
@@ -644,6 +835,37 @@ def _mouse_button_to_proto(messages: Any, button: str) -> int:
     return {"MOUSE_BUTTON_LEFT": 1, "MOUSE_BUTTON_MIDDLE": 2, "MOUSE_BUTTON_RIGHT": 3}[name]
 
 
+def _dmabuf_import_target_to_proto(messages: Any, import_target: str) -> int:
+    normalized = import_target.strip().casefold().replace("-", "_")
+    names = {
+        "compute": "DMA_BUF_IMPORT_TARGET_COMPUTE",
+        "egl": "DMA_BUF_IMPORT_TARGET_EGL",
+        "egl_texture": "DMA_BUF_IMPORT_TARGET_EGL_TEXTURE",
+    }
+    try:
+        name = names[normalized]
+    except KeyError as error:
+        raise ValueError("import_target must be compute, egl, or egl_texture") from error
+    if hasattr(messages, name):
+        return int(getattr(messages, name))
+    enum = getattr(messages, "DmaBufImportTarget", None)
+    if enum is not None and hasattr(enum, "Value"):
+        return int(enum.Value(name))
+    return {
+        "DMA_BUF_IMPORT_TARGET_COMPUTE": 1,
+        "DMA_BUF_IMPORT_TARGET_EGL": 2,
+        "DMA_BUF_IMPORT_TARGET_EGL_TEXTURE": 3,
+    }[name]
+
+
+def _dmabuf_import_target_name(value: int) -> str:
+    return {
+        1: "compute",
+        2: "egl",
+        3: "egl_texture",
+    }.get(value, "unspecified")
+
+
 def _capture_metadata_from_proto(metadata: Any) -> CaptureMetadata:
     return CaptureMetadata(
         width=metadata.width,
@@ -660,12 +882,29 @@ def _message_accepts_field(message_type: Any, field_name: str) -> bool:
 
 
 def _action_result_from_proto(response: Any) -> ActionResult:
-    return ActionResult(ok=response.ok, message=response.message)
+    return ActionResult(
+        ok=response.ok,
+        message=response.message,
+        backend_name=_optional_scalar(response, "backend_name"),
+        backend_kind=_optional_scalar(response, "backend_kind"),
+    )
 
 
 def _optional_scalar(message: Any, field_name: str) -> str | None:
     if _has_field(message, field_name):
         return getattr(message, field_name)
+    return None
+
+
+def _optional_int(message: Any, field_name: str) -> int | None:
+    if _has_field(message, field_name):
+        return int(getattr(message, field_name))
+    return None
+
+
+def _optional_bool(message: Any, field_name: str) -> bool | None:
+    if _has_field(message, field_name):
+        return bool(getattr(message, field_name))
     return None
 
 

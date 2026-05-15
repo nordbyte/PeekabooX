@@ -3,8 +3,8 @@
 PeekabooX plugins are directory-based packages with a checked manifest named
 `peekaboox.plugin.json`. The SDK discovers plugins, validates their
 capabilities and tool metadata, and exposes them through CLI, daemon JSON IPC,
-Python runtime, and MCP. Python/MCP also include a process adapter for executing
-declared tools.
+gRPC, Python runtime, and MCP. Declared process tools can be executed through
+CLI `plugin-call`, daemon JSON IPC, gRPC, Python runtime, and MCP.
 
 ## Manifest
 
@@ -33,7 +33,7 @@ declared tools.
     }
   ],
   "metadata": {
-    "homepage": "https://git.marketdeck.io/marketdeck/PeekabooX/src/branch/main/examples/plugins/system-info"
+    "homepage": "https://github.com/nordbyte/PeekabooX/tree/main/examples/plugins/system-info"
   }
 }
 ```
@@ -50,8 +50,10 @@ directory, or a directory containing multiple plugin directories.
 ```bash
 peekaboox plugins --path examples/plugins
 peekaboox plugins --path examples/plugins --json
+peekaboox plugin-call org.peekaboox.examples.system-info system_info.uname --path examples/plugins --json
 peekabooxd run --plugin-path examples/plugins
 peekaboox --daemon plugins
+peekaboox --daemon plugin-call org.peekaboox.examples.system-info system_info.uname
 ```
 
 The Python runtime exposes the same contract:
@@ -69,8 +71,18 @@ result = runtime.call_plugin_tool(
 
 MCP exposes `list_plugins` with an optional `paths` array. It also exposes
 `call_plugin_tool` with `plugin_id`, `tool`, optional `arguments`, optional
-`paths`, and optional `timeout_seconds`. Execution is gated by the
-`plugin_execute` runtime capability.
+`paths`, optional `timeout_seconds`, and optional `max_output_bytes`. Python and
+MCP execution is gated by the `plugin_execute` runtime capability.
+
+## Execution Safety
+
+Before a process tool starts, PeekabooX validates `arguments` against the
+tool's `input_schema` subset: `type`, `required`, `properties`,
+`additionalProperties: false`, `enum`, scalar min/max bounds, string length,
+and array item bounds. Process tools run with a restricted inherited
+environment plus `PEEKABOOX_PLUGIN_ID`, `PEEKABOOX_PLUGIN_TOOL`, and
+`PEEKABOOX_PLUGIN_ROOT`. Timeouts return structured execution errors, and
+stdout/stderr are truncated to `max_output_bytes` before being surfaced.
 
 ## Example
 

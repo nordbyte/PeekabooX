@@ -12,6 +12,7 @@ from peekaboox.client import (
     CaptureScreenResult,
     DetectUiElementsResult,
     DesktopState,
+    DmaBufProbeResult,
     OcrResult,
     PeekabooXClient,
     Rect,
@@ -175,6 +176,7 @@ class AgentRuntime:
         *,
         paths: tuple[str | Path, ...] | list[str | Path] | None = None,
         timeout_seconds: float = 10.0,
+        max_output_bytes: int = 1_048_576,
     ) -> PluginToolExecutionResult:
         self._require_capability(
             Capability.PLUGIN_EXECUTE,
@@ -191,12 +193,15 @@ class AgentRuntime:
             tool,
             dict(arguments or {}),
             timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
         )
 
     def plan(self, goal: str) -> list[str]:
+        self._require_capability(Capability.WORKFLOW_GENERATE, "plan")
         return self.planner.decompose(goal)
 
     def plan_workflow(self, goal: str) -> Workflow:
+        self._require_capability(Capability.WORKFLOW_GENERATE, "plan_workflow")
         return self.planner.plan_workflow(goal)
 
     def capability_audit(self) -> tuple[CapabilityAuditEvent, ...]:
@@ -244,6 +249,33 @@ class AgentRuntime:
             desktop_nodes=desktop_nodes,
         )
 
+    def replan_workflow(
+        self,
+        goal: str,
+        failed_workflow: Workflow,
+        failed_result: WorkflowExecutionResult,
+        *,
+        refresh_desktop_graph: bool = False,
+    ) -> Workflow:
+        self._require_capability(Capability.WORKFLOW_GENERATE, "replan_workflow")
+        if refresh_desktop_graph:
+            self.refresh_desktop_graph()
+        desktop_nodes: tuple[GraphNode, ...] = ()
+        if (
+            self.memory.latest_desktop_snapshot() is not None
+            and not self.memory.desktop_graph_stale
+        ):
+            desktop_nodes = self.query_desktop_graph(kind="element")
+        failed_step_index = int(failed_result.recovery.get("failed_step", 0))
+        return self.planner.replan_workflow(
+            goal,
+            failed_workflow=failed_workflow,
+            failed_step_index=failed_step_index,
+            reason=str(failed_result.recovery.get("reason", "workflow failed")),
+            attempts=int(failed_result.recovery.get("attempts", 0)),
+            desktop_nodes=desktop_nodes,
+        )
+
     def save_generated_workflow(
         self,
         goal: str,
@@ -280,9 +312,71 @@ class AgentRuntime:
         self,
         goal: str,
         verifier: Verifier | None = None,
+        *,
+        replan_on_failure: bool = True,
+        max_replans: int = 1,
     ) -> WorkflowExecutionResult:
         self._require_capability(Capability.WORKFLOW_EXECUTE, "execute_goal")
-        return self.execute_workflow(self.plan_workflow(goal), verifier=verifier)
+        if max_replans < 0:
+            raise ValueError("max_replans must be non-negative")
+        workflow = self.plan_workflow(goal)
+        all_steps: list[StepExecutionResult] = []
+        replan_events: list[dict[str, object]] = []
+
+        for replan_index in range(max_replans + 1):
+            result = self.execute_workflow(workflow, verifier=verifier)
+            all_steps.extend(result.steps)
+            if result.ok:
+                recovery = dict(result.recovery)
+                if replan_events:
+                    recovery["replanned"] = True
+                    recovery["replans"] = replan_events
+                return WorkflowExecutionResult(
+                    goal=result.goal,
+                    ok=True,
+                    steps=tuple(all_steps),
+                    recovery=recovery,
+                )
+            if not replan_on_failure or replan_index >= max_replans:
+                recovery = dict(result.recovery)
+                if replan_events:
+                    recovery["replanned"] = True
+                    recovery["replans"] = replan_events
+                return WorkflowExecutionResult(
+                    goal=result.goal,
+                    ok=False,
+                    steps=tuple(all_steps),
+                    recovery=recovery,
+                )
+
+            try:
+                next_workflow = self.replan_workflow(
+                    goal,
+                    failed_workflow=workflow,
+                    failed_result=result,
+                    refresh_desktop_graph=True,
+                )
+            except Exception as exc:
+                recovery = dict(result.recovery)
+                recovery["replan_error"] = f"{type(exc).__name__}: {exc}"
+                return WorkflowExecutionResult(
+                    goal=result.goal,
+                    ok=False,
+                    steps=tuple(all_steps),
+                    recovery=recovery,
+                )
+
+            replan_events.append(
+                {
+                    "attempt": replan_index + 1,
+                    "workflow": next_workflow.name,
+                    "steps": len(next_workflow.steps),
+                    "reason": result.recovery.get("reason", "workflow failed"),
+                }
+            )
+            workflow = next_workflow
+
+        raise RuntimeError("unreachable execute_goal replanning state")
 
     def execute_workflow(
         self,
@@ -509,6 +603,7 @@ class AgentRuntime:
         return self._require_client().ocr_screen(region, language)
 
     def ocr_region(self, region: Rect, language: str | None = None) -> OcrResult:
+        self._require_capability(Capability.VISION, "ocr_region")
         return self._require_client().ocr_region(region, language)
 
     def compare_images(
@@ -637,6 +732,10 @@ class AgentRuntime:
             max_elements,
             merge_distance,
         )
+
+    def probe_dmabuf(self, import_target: str = "compute") -> DmaBufProbeResult:
+        self._require_capability(Capability.OBSERVE, "probe_dmabuf", import_target=import_target)
+        return self._require_client().probe_dmabuf(import_target)
 
     def list_windows(self) -> tuple[WindowInfo, ...]:
         self._require_capability(Capability.OBSERVE, "list_windows")
@@ -896,6 +995,18 @@ class AgentRuntime:
         self._record_step(WorkflowStep(action="type_text", value=text))
         return result
 
+    def paste_text(self, text: str, preserve_clipboard: bool = False) -> ActionResult:
+        self._require_capability(Capability.TYPE_TEXT, "paste_text", text_length=len(text))
+        self._require_confirmation(
+            DangerousAction.TYPE_TEXT,
+            "paste_text",
+            text_length=len(text),
+            preserve_clipboard=preserve_clipboard,
+        )
+        result = self._require_client().paste_text(text, preserve_clipboard=preserve_clipboard)
+        self._record_step(WorkflowStep(action="paste_text", value=text))
+        return result
+
     def hotkey(self, keys: Sequence[str] | str) -> ActionResult:
         key_values = _hotkey_keys(keys)
         self._require_capability(Capability.CLICK, "hotkey", key_count=len(key_values))
@@ -971,6 +1082,10 @@ class AgentRuntime:
             if step.value is None:
                 raise ValueError("type_text step requires value")
             return self.type_text(step.value)
+        if action in {"paste", "paste_text"}:
+            if step.value is None:
+                raise ValueError("paste_text step requires value")
+            return self.paste_text(step.value)
         if action == "hotkey":
             if step.value is None:
                 raise ValueError("hotkey step requires value")
@@ -1014,7 +1129,17 @@ class AgentRuntime:
         if not step.verify:
             return VerificationResult(ok=True, message="verification skipped")
 
-        if action in {"click", "move", "move_mouse", "drag", "type", "type_text", "hotkey"}:
+        if action in {
+            "click",
+            "move",
+            "move_mouse",
+            "drag",
+            "type",
+            "type_text",
+            "paste",
+            "paste_text",
+            "hotkey",
+        }:
             state = self.get_desktop_state()
             self.ingest_desktop_snapshot(state)
             return VerificationResult(

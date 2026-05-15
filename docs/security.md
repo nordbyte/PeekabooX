@@ -30,10 +30,10 @@ or:
 PEEKABOOX_ALLOW_INPUT=1 peekabooxd run
 ```
 
-This applies to daemon-routed `click`, gRPC `Click` including semantic
-selectors, and `type_text` requests. Direct local CLI execution remains
-available for development, but agent-facing integrations should route through
-the daemon policy.
+This applies to daemon-routed clicks, pointer movement, drags, hotkeys,
+`type_text`, `paste_text`, and gRPC input requests including semantic
+selectors. Direct local CLI execution remains available for development, but
+agent-facing integrations should route through the daemon policy.
 
 ## Audit Logs
 
@@ -68,7 +68,7 @@ handling.
 
 `AgentRuntime` has an in-process capability policy for Python and MCP callers.
 The default policy allows all runtime capabilities, while the daemon's real
-input gate still applies to daemon-routed `click` and `type_text` requests.
+input gate still applies to daemon-routed input requests.
 
 Available runtime capabilities:
 
@@ -129,8 +129,9 @@ runtime = AgentRuntime(audit_logger=JsonlAuditLogger("peekaboox-runtime-audit.js
 
 `AgentRuntime` also supports an optional confirmation policy for dangerous
 agent-facing operations. The default policy is disabled. When enabled, `click`,
-`type_text`, and `execute_workflow` can require an application-provided
-confirmer before any daemon call or workflow step is executed.
+`type_text`, `paste_text`, and `execute_workflow` can require an
+application-provided confirmer before any daemon call or workflow step is
+executed.
 
 Example:
 

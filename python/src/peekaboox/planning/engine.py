@@ -25,10 +25,27 @@ WorkflowRefinementProvider = Callable[
 ]
 
 
+@dataclass(frozen=True, slots=True)
+class WorkflowReplanningRequest:
+    goal: str
+    failed_workflow: Workflow
+    failed_step_index: int
+    reason: str
+    desktop_nodes: tuple[GraphNode, ...]
+    attempts: int
+
+
+WorkflowReplanningProvider = Callable[
+    [WorkflowReplanningRequest],
+    Workflow | dict[str, object] | str,
+]
+
+
 @dataclass(slots=True)
 class PlanningEngine:
     max_steps: int = 16
     workflow_refiner: WorkflowRefinementProvider | None = None
+    workflow_replanner: WorkflowReplanningProvider | None = None
 
     def decompose(self, goal: str) -> list[str]:
         normalized = goal.strip()
@@ -60,16 +77,21 @@ class PlanningEngine:
         typed_text = _typed_text(normalized)
         intent = _intent(normalized)
 
-        if target is not None and (intent in {"click", "type"} or typed_text is None):
+        if target is not None and (intent in {"click", "type", "paste"} or typed_text is None):
             steps.append(WorkflowStep(action="find_element", selector=target))
 
-        if target is not None and intent in {"click", "type"}:
+        if target is not None and intent in {"click", "type", "paste"}:
             steps.append(
                 WorkflowStep(action="click", selector=target, vision_fallback=True)
             )
 
         if typed_text is not None:
-            steps.append(WorkflowStep(action="type_text", value=typed_text))
+            steps.append(
+                WorkflowStep(
+                    action="paste_text" if intent == "paste" else "type_text",
+                    value=typed_text,
+                )
+            )
 
         if len(steps) == 1 and target is not None:
             steps.append(WorkflowStep(action="find_element", selector=target))
@@ -102,6 +124,38 @@ class PlanningEngine:
             desktop_nodes=tuple(desktop_nodes),
         )
         proposed = _workflow_from_provider_result(refiner(request), default_name=normalized)
+        return self._validate_workflow(proposed)
+
+    def replan_workflow(
+        self,
+        goal: str,
+        *,
+        failed_workflow: Workflow,
+        failed_step_index: int,
+        reason: str,
+        attempts: int = 0,
+        desktop_nodes: tuple[GraphNode, ...] | list[GraphNode] = (),
+        provider: WorkflowReplanningProvider | None = None,
+    ) -> Workflow:
+        normalized = goal.strip()
+        if not normalized:
+            raise ValueError("goal must not be empty")
+        replanner = provider or self.workflow_replanner
+        if replanner is None:
+            return self.refine_workflow(
+                normalized,
+                draft=self.generate_workflow(normalized, desktop_nodes=desktop_nodes),
+                desktop_nodes=desktop_nodes,
+            )
+        request = WorkflowReplanningRequest(
+            goal=normalized,
+            failed_workflow=failed_workflow,
+            failed_step_index=failed_step_index,
+            reason=reason,
+            desktop_nodes=tuple(desktop_nodes),
+            attempts=attempts,
+        )
+        proposed = _workflow_from_provider_result(replanner(request), default_name=normalized)
         return self._validate_workflow(proposed)
 
     def _validate_workflow(self, workflow: Workflow) -> Workflow:
@@ -156,7 +210,7 @@ def _validate_step(step: WorkflowStep, index: int) -> None:
             raise ValueError(f"steps[{index}].duration_ms must be non-negative")
         if step.button is not None and step.button.casefold() not in {"left", "middle", "right"}:
             raise ValueError(f"steps[{index}].button must be left, middle, or right")
-    if action in {"type", "type_text"} and step.value is None:
+    if action in {"type", "type_text", "paste", "paste_text"} and step.value is None:
         raise ValueError(f"steps[{index}].value is required for type_text")
     if action == "hotkey" and step.value is None:
         raise ValueError(f"steps[{index}].value is required for hotkey")
@@ -173,6 +227,8 @@ _SUPPORTED_ACTIONS = {
     "drag",
     "type",
     "type_text",
+    "paste",
+    "paste_text",
     "hotkey",
     "list_windows",
     "get_desktop_state",
@@ -181,6 +237,8 @@ _SUPPORTED_ACTIONS = {
 
 def _intent(goal: str) -> str | None:
     normalized = goal.casefold()
+    if "paste" in normalized:
+        return "paste"
     if any(word in normalized for word in ("type", "enter", "write", "input")):
         return "type"
     if any(word in normalized for word in ("click", "press", "select", "open", "submit")):
@@ -193,7 +251,7 @@ def _typed_text(goal: str) -> str | None:
     if quoted is not None:
         return quoted.group(1) or quoted.group(2)
     typed = re.search(
-        r"\b(?:type|enter|write|input)\s+(.+?)"
+        r"\b(?:type|enter|write|input|paste)\s+(.+?)"
         r"(?:\s+(?:into|in|to|and)\b|$)",
         goal,
         re.IGNORECASE,

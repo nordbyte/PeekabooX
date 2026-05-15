@@ -30,7 +30,10 @@ pub enum InputAction {
         duration_ms: u64,
     },
     TypeText(String),
-    PasteText(String),
+    PasteText {
+        text: String,
+        preserve_clipboard: bool,
+    },
     Hotkey(Vec<String>),
 }
 
@@ -113,7 +116,9 @@ pub struct InputEnvironment {
 
 impl InputEnvironment {
     pub fn detect() -> Self {
-        let command_names = ["ydotool", "wtype", "xdotool", "wl-copy", "xclip", "xsel"];
+        let command_names = [
+            "ydotool", "wtype", "xdotool", "wl-copy", "wl-paste", "xclip", "xsel",
+        ];
 
         Self {
             session_type: SessionType::from_value(
@@ -188,9 +193,9 @@ impl InputTool {
                 | (Self::Xdotool, InputAction::Drag { .. })
                 | (Self::Xdotool, InputAction::TypeText(_))
                 | (Self::Xdotool, InputAction::Hotkey(_))
-                | (Self::WlClipboard, InputAction::PasteText(_))
-                | (Self::XclipClipboard, InputAction::PasteText(_))
-                | (Self::XselClipboard, InputAction::PasteText(_))
+                | (Self::WlClipboard, InputAction::PasteText { .. })
+                | (Self::XclipClipboard, InputAction::PasteText { .. })
+                | (Self::XselClipboard, InputAction::PasteText { .. })
         )
     }
 
@@ -319,7 +324,17 @@ pub fn type_text(text: impl Into<String>) -> Result<InputExecutionMetadata> {
 }
 
 pub fn paste_text(text: impl Into<String>) -> Result<InputExecutionMetadata> {
-    CommandInputBackend.execute_with_metadata(InputAction::PasteText(text.into()))
+    paste_text_with_options(text, false)
+}
+
+pub fn paste_text_with_options(
+    text: impl Into<String>,
+    preserve_clipboard: bool,
+) -> Result<InputExecutionMetadata> {
+    CommandInputBackend.execute_with_metadata(InputAction::PasteText {
+        text: text.into(),
+        preserve_clipboard,
+    })
 }
 
 pub fn hotkey(keys: Vec<String>) -> Result<InputExecutionMetadata> {
@@ -338,7 +353,7 @@ pub fn candidate_backends(
 
     match environment.session_type {
         SessionType::Wayland => {
-            if matches!(action, InputAction::PasteText(_)) {
+            if matches!(action, InputAction::PasteText { .. }) {
                 candidates.push(InputTool::WlClipboard);
                 candidates.push(InputTool::XclipClipboard);
                 candidates.push(InputTool::XselClipboard);
@@ -355,7 +370,7 @@ pub fn candidate_backends(
             }
         }
         SessionType::X11 => {
-            if matches!(action, InputAction::PasteText(_)) {
+            if matches!(action, InputAction::PasteText { .. }) {
                 candidates.push(InputTool::XclipClipboard);
                 candidates.push(InputTool::XselClipboard);
                 candidates.push(InputTool::WlClipboard);
@@ -367,7 +382,7 @@ pub fn candidate_backends(
             }
         }
         SessionType::Unknown => {
-            if matches!(action, InputAction::PasteText(_)) {
+            if matches!(action, InputAction::PasteText { .. }) {
                 candidates.push(InputTool::WlClipboard);
                 candidates.push(InputTool::XclipClipboard);
                 candidates.push(InputTool::XselClipboard);
@@ -456,9 +471,27 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
             run_command("xdotool", ["type", "--delay", "0", "--", text])
         }
         (InputTool::Xdotool, InputAction::Hotkey(keys)) => xdotool_hotkey(keys),
-        (InputTool::WlClipboard, InputAction::PasteText(text))
-        | (InputTool::XclipClipboard, InputAction::PasteText(text))
-        | (InputTool::XselClipboard, InputAction::PasteText(text)) => clipboard_paste(tool, text),
+        (
+            InputTool::WlClipboard,
+            InputAction::PasteText {
+                text,
+                preserve_clipboard,
+            },
+        )
+        | (
+            InputTool::XclipClipboard,
+            InputAction::PasteText {
+                text,
+                preserve_clipboard,
+            },
+        )
+        | (
+            InputTool::XselClipboard,
+            InputAction::PasteText {
+                text,
+                preserve_clipboard,
+            },
+        ) => clipboard_paste(tool, text, *preserve_clipboard),
         _ => Err(PeekabooXError::new(format!(
             "{} does not support action {:?}",
             tool.name(),
@@ -467,14 +500,16 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
     }
 }
 
-fn clipboard_paste(tool: InputTool, text: &str) -> Result<()> {
+fn clipboard_paste(tool: InputTool, text: &str, preserve_clipboard: bool) -> Result<()> {
+    let previous_clipboard = if preserve_clipboard {
+        Some(read_clipboard_text(tool)?)
+    } else {
+        None
+    };
+
     match tool {
-        InputTool::WlClipboard => run_clipboard_command_with_stdin("wl-copy", [], text)?,
-        InputTool::XclipClipboard => {
-            run_clipboard_command_with_stdin("xclip", ["-selection", "clipboard"], text)?
-        }
-        InputTool::XselClipboard => {
-            run_clipboard_command_with_stdin("xsel", ["--clipboard", "--input"], text)?
+        InputTool::WlClipboard | InputTool::XclipClipboard | InputTool::XselClipboard => {
+            set_clipboard_text(tool, text)?
         }
         _ => {
             return Err(PeekabooXError::new(format!(
@@ -485,7 +520,46 @@ fn clipboard_paste(tool: InputTool, text: &str) -> Result<()> {
     }
 
     sleep(Duration::from_millis(80));
-    send_paste_hotkey()
+    let paste_result = send_paste_hotkey();
+    if let Some(previous_text) = previous_clipboard {
+        sleep(Duration::from_millis(120));
+        if let Err(restore_error) = set_clipboard_text(tool, &previous_text)
+            && paste_result.is_ok()
+        {
+            return Err(restore_error);
+        }
+    }
+    paste_result
+}
+
+fn set_clipboard_text(tool: InputTool, text: &str) -> Result<()> {
+    match tool {
+        InputTool::WlClipboard => run_clipboard_command_with_stdin("wl-copy", [], text),
+        InputTool::XclipClipboard => {
+            run_clipboard_command_with_stdin("xclip", ["-selection", "clipboard"], text)
+        }
+        InputTool::XselClipboard => {
+            run_clipboard_command_with_stdin("xsel", ["--clipboard", "--input"], text)
+        }
+        _ => Err(PeekabooXError::new(format!(
+            "{} is not a clipboard backend",
+            tool.name()
+        ))),
+    }
+}
+
+fn read_clipboard_text(tool: InputTool) -> Result<String> {
+    match tool {
+        InputTool::WlClipboard => run_command_capture_stdout("wl-paste", ["--no-newline"]),
+        InputTool::XclipClipboard => {
+            run_command_capture_stdout("xclip", ["-selection", "clipboard", "-out"])
+        }
+        InputTool::XselClipboard => run_command_capture_stdout("xsel", ["--clipboard", "--output"]),
+        _ => Err(PeekabooXError::new(format!(
+            "{} is not a clipboard backend",
+            tool.name()
+        ))),
+    }
 }
 
 fn run_clipboard_command_with_stdin<const N: usize>(
@@ -524,6 +598,25 @@ fn run_clipboard_command_with_stdin<const N: usize>(
     }
 
     Ok(())
+}
+
+fn run_command_capture_stdout<const N: usize>(program: &str, args: [&str; N]) -> Result<String> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+
+    Err(PeekabooXError::new(format!(
+        "{program} failed with status {}; stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    )))
 }
 
 fn ydotool_mousemove(position: Point) -> Result<()> {
@@ -1191,7 +1284,10 @@ mod tests {
     #[test]
     fn selects_wl_clipboard_for_wayland_paste_when_hotkey_is_available() {
         let environment = environment(SessionType::Wayland, ["wl-copy", "ydotool"], true);
-        let action = InputAction::PasteText("/tmp/peekaboox-output.txt".to_owned());
+        let action = InputAction::PasteText {
+            text: "/tmp/peekaboox-output.txt".to_owned(),
+            preserve_clipboard: false,
+        };
 
         let backend = candidate_backends(&environment, &action).remove(0);
 
@@ -1201,7 +1297,10 @@ mod tests {
     #[test]
     fn selects_xclip_for_x11_paste_when_hotkey_is_available() {
         let environment = environment(SessionType::X11, ["xclip", "xdotool"], false);
-        let action = InputAction::PasteText("/tmp/peekaboox-output.txt".to_owned());
+        let action = InputAction::PasteText {
+            text: "/tmp/peekaboox-output.txt".to_owned(),
+            preserve_clipboard: false,
+        };
 
         let backend = candidate_backends(&environment, &action).remove(0);
 
@@ -1211,7 +1310,10 @@ mod tests {
     #[test]
     fn paste_has_no_backend_without_clipboard_tool() {
         let environment = environment(SessionType::Wayland, ["ydotool"], true);
-        let action = InputAction::PasteText("/tmp/peekaboox-output.txt".to_owned());
+        let action = InputAction::PasteText {
+            text: "/tmp/peekaboox-output.txt".to_owned(),
+            preserve_clipboard: false,
+        };
 
         assert!(candidate_backends(&environment, &action).is_empty());
     }
@@ -1219,7 +1321,10 @@ mod tests {
     #[test]
     fn paste_has_no_backend_without_hotkey_tool() {
         let environment = environment(SessionType::Wayland, ["wl-copy"], false);
-        let action = InputAction::PasteText("/tmp/peekaboox-output.txt".to_owned());
+        let action = InputAction::PasteText {
+            text: "/tmp/peekaboox-output.txt".to_owned(),
+            preserve_clipboard: false,
+        };
 
         assert!(candidate_backends(&environment, &action).is_empty());
     }

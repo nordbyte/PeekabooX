@@ -5,7 +5,7 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 PLUGIN_SDK_VERSION = "peekaboox.plugin.v1"
@@ -58,6 +58,13 @@ class PluginDiscoveryResult:
     sdk_version: str
     plugins: tuple[PluginDescriptor, ...]
     errors: tuple[PluginDiscoveryError, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class PluginExecutionPolicy:
+    timeout_seconds: float = 10.0
+    max_output_bytes: int = 1_048_576
+    environment: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,37 +156,72 @@ def execute_plugin_tool(
     arguments: dict[str, Any] | None = None,
     *,
     timeout_seconds: float = 10.0,
+    max_output_bytes: int = 1_048_576,
+    environment: Mapping[str, str] | None = None,
 ) -> PluginToolExecutionResult:
     if plugin.manifest.entrypoint is None:
         raise ValueError(f"plugin {plugin.manifest.id!r} does not declare an entrypoint")
-    if not any(tool.name == tool_name for tool in plugin.manifest.tools):
+    plugin_tool = next((tool for tool in plugin.manifest.tools if tool.name == tool_name), None)
+    if plugin_tool is None:
         raise ValueError(f"plugin {plugin.manifest.id!r} does not declare tool {tool_name!r}")
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    if max_output_bytes < 0:
+        raise ValueError("max_output_bytes must be non-negative")
+    plugin_arguments = dict(arguments or {})
+    validate_json_schema(plugin_tool.input_schema, plugin_arguments)
+    policy = PluginExecutionPolicy(
+        timeout_seconds=timeout_seconds,
+        max_output_bytes=max_output_bytes,
+        environment=dict(environment or {}),
+    )
     request = {
         "schema_version": PLUGIN_SDK_VERSION,
         "plugin_id": plugin.manifest.id,
         "tool": tool_name,
-        "arguments": arguments or {},
+        "arguments": plugin_arguments,
     }
-    completed = subprocess.run(
-        plugin.manifest.entrypoint.command,
-        input=json.dumps(request),
-        text=True,
-        capture_output=True,
-        cwd=plugin.root_dir,
-        timeout=timeout_seconds,
-        check=False,
-    )
-    payload = _parse_stdout_json(completed.stdout)
+    try:
+        completed = subprocess.run(
+            plugin.manifest.entrypoint.command,
+            input=json.dumps(request),
+            text=True,
+            capture_output=True,
+            cwd=plugin.root_dir,
+            timeout=policy.timeout_seconds,
+            check=False,
+            env=_plugin_environment(plugin, tool_name, policy.environment),
+        )
+    except subprocess.TimeoutExpired as error:
+        return PluginToolExecutionResult(
+            ok=False,
+            plugin_id=plugin.manifest.id,
+            tool=tool_name,
+            exit_code=-1,
+            stdout=_limited_text(error.stdout or "", policy.max_output_bytes),
+            stderr=_limited_text(error.stderr or "", policy.max_output_bytes),
+            result=None,
+            error=f"plugin timed out after {policy.timeout_seconds:g} seconds",
+        )
+
+    stdout_too_large = len(completed.stdout.encode("utf-8")) > policy.max_output_bytes
+    stderr_too_large = len(completed.stderr.encode("utf-8")) > policy.max_output_bytes
+    stdout = _limited_text(completed.stdout, policy.max_output_bytes)
+    stderr = _limited_text(completed.stderr, policy.max_output_bytes)
+    payload = _parse_stdout_json(stdout)
     ok = completed.returncode == 0 and not (
         isinstance(payload, dict) and payload.get("ok") is False
     )
     result = payload.get("result") if isinstance(payload, dict) else payload
     error = None
-    if not ok:
+    if stdout_too_large or stderr_too_large:
+        ok = False
+        error = f"plugin output exceeded max_output_bytes={policy.max_output_bytes}"
+    elif not ok:
         if isinstance(payload, dict) and payload.get("error") is not None:
             error = str(payload["error"])
-        elif completed.stderr:
-            error = completed.stderr.strip()
+        elif stderr:
+            error = stderr.strip()
         else:
             error = f"plugin exited with status {completed.returncode}"
     return PluginToolExecutionResult(
@@ -187,8 +229,8 @@ def execute_plugin_tool(
         plugin_id=plugin.manifest.id,
         tool=tool_name,
         exit_code=completed.returncode,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
+        stdout=stdout,
+        stderr=stderr,
         result=result,
         error=error,
     )
@@ -318,6 +360,133 @@ def _validate_identifier(label: str, value: str) -> None:
         raise ValueError(
             f"{label} {value!r} must use only ASCII letters, digits, dots, underscores, or dashes"
         )
+
+
+def validate_json_schema(schema: dict[str, Any], value: Any) -> None:
+    _validate_json_schema_at(schema, value, "$")
+
+
+def _validate_json_schema_at(schema: Any, value: Any, path: str) -> None:
+    if not isinstance(schema, dict):
+        raise ValueError(f"{path}: schema must be an object")
+
+    if "enum" in schema:
+        enum_values = schema["enum"]
+        if not isinstance(enum_values, list):
+            raise ValueError(f"{path}: enum must be an array")
+        if value not in enum_values:
+            raise ValueError(f"{path}: value is not one of the allowed enum values")
+
+    if "type" in schema and not _matches_schema_type(value, schema["type"]):
+        raise ValueError(f"{path}: value does not match schema type {schema['type']!r}")
+
+    if isinstance(value, dict):
+        _validate_object_schema(schema, value, path)
+    elif schema.get("required"):
+        raise ValueError(f"{path}: required fields need an object value")
+
+    if isinstance(value, list):
+        if "minItems" in schema and len(value) < int(schema["minItems"]):
+            raise ValueError(f"{path}: array has fewer than minItems {schema['minItems']}")
+        if "maxItems" in schema and len(value) > int(schema["maxItems"]):
+            raise ValueError(f"{path}: array has more than maxItems {schema['maxItems']}")
+        if "items" in schema:
+            for index, item in enumerate(value):
+                _validate_json_schema_at(schema["items"], item, f"{path}[{index}]")
+
+    if isinstance(value, str):
+        if "minLength" in schema and len(value) < int(schema["minLength"]):
+            raise ValueError(f"{path}: string is shorter than minLength {schema['minLength']}")
+        if "maxLength" in schema and len(value) > int(schema["maxLength"]):
+            raise ValueError(f"{path}: string is longer than maxLength {schema['maxLength']}")
+
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        if "minimum" in schema and value < float(schema["minimum"]):
+            raise ValueError(f"{path}: value is smaller than minimum {schema['minimum']}")
+        if "maximum" in schema and value > float(schema["maximum"]):
+            raise ValueError(f"{path}: value is greater than maximum {schema['maximum']}")
+
+
+def _matches_schema_type(value: Any, expected: Any) -> bool:
+    if isinstance(expected, list):
+        return any(_matches_schema_type(value, item) for item in expected)
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, int | float) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "null":
+        return value is None
+    return False
+
+
+def _validate_object_schema(schema: dict[str, Any], value: dict[str, Any], path: str) -> None:
+    required = schema.get("required", [])
+    if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
+        raise ValueError(f"{path}: required must be a string array")
+    for field in required:
+        if field not in value:
+            raise ValueError(f"{path}.{field}: required field is missing")
+
+    properties = schema.get("properties", {})
+    if properties is None:
+        properties = {}
+    if not isinstance(properties, dict):
+        raise ValueError(f"{path}: properties must be an object")
+    for field, field_schema in properties.items():
+        if field in value:
+            _validate_json_schema_at(field_schema, value[field], f"{path}.{field}")
+
+    if schema.get("additionalProperties") is False:
+        for field in value:
+            if field not in properties:
+                raise ValueError(f"{path}.{field}: additional property is not allowed")
+
+
+SAFE_PLUGIN_ENV = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "VIRTUAL_ENV",
+    "XDG_RUNTIME_DIR",
+)
+
+
+def _plugin_environment(
+    plugin: PluginDescriptor,
+    tool_name: str,
+    extra: Mapping[str, str],
+) -> dict[str, str]:
+    environment = {
+        key: os.environ[key]
+        for key in SAFE_PLUGIN_ENV
+        if key in os.environ
+    }
+    environment.update({str(key): str(value) for key, value in extra.items()})
+    environment["PEEKABOOX_PLUGIN_ID"] = plugin.manifest.id
+    environment["PEEKABOOX_PLUGIN_TOOL"] = tool_name
+    environment["PEEKABOOX_PLUGIN_ROOT"] = str(plugin.root_dir)
+    return environment
+
+
+def _limited_text(value: str | bytes, max_output_bytes: int) -> str:
+    if max_output_bytes < 0:
+        raise ValueError("max_output_bytes must be non-negative")
+    if isinstance(value, bytes):
+        data = value
+    else:
+        data = value.encode("utf-8")
+    return data[:max_output_bytes].decode("utf-8", errors="replace")
 
 
 def _parse_stdout_json(stdout: str) -> Any:

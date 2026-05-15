@@ -16,9 +16,9 @@ The Rust side owns low-latency desktop integration:
 The Python side owns agent orchestration:
 
 - deterministic planning, graph-assisted workflow draft generation, optional
-  provider-backed workflow refinement, semantic workflow recording, and
-  self-healing workflow execution with retries, verification, and structured
-  recovery metadata, including reusable JSON/YAML workflow files
+  provider-backed workflow refinement and replanning, semantic workflow
+  recording, and self-healing workflow execution with retries, verification,
+  and structured recovery metadata, including reusable JSON/YAML workflow files
 - MCP integration through a transport-neutral tool registry and dispatcher bound
   to `AgentRuntime`, with stdio JSON-RPC transport for MCP clients
 - runtime security policy for Python and MCP callers, including granular

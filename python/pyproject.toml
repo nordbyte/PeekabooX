@@ -14,6 +14,11 @@ dependencies = [
     "protobuf>=6.31",
 ]
 
+[project.urls]
+Homepage = "https://github.com/nordbyte/PeekabooX"
+Repository = "https://github.com/nordbyte/PeekabooX"
+Issues = "https://github.com/nordbyte/PeekabooX/issues"
+
 [project.optional-dependencies]
 dev = [
     "grpcio-tools>=1.80",

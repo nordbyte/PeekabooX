@@ -10,8 +10,9 @@ use peekaboox_input::MouseButton;
 use peekaboox_ipc::{
     ActionResultDto, ApiRequest, ApiResponse, ApiResult, CaptureDeltaResultDto,
     DmaBufImportTargetDto, DmaBufProbeResultDto, ElementDto, ElementListResultDto, MouseButtonDto,
-    OcrResultDto, PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto, RectDto,
-    UiStateDto, VisualDiffDto, WindowDto, WindowListResultDto, default_socket_path, send_request,
+    OcrResultDto, PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
+    PluginToolExecutionResultDto, RectDto, UiStateDto, VisualDiffDto, WindowDto,
+    WindowListResultDto, default_socket_path, send_request,
 };
 use peekaboox_vision::{
     OcrOptions, OcrResult, TesseractOcrBackend, UiElementDetectionOptions, UiStateOptions,
@@ -76,6 +77,16 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some("plugin-call") | Some("call-plugin") => {
+            match plugin_call(args.collect(), &global.context) {
+                Ok(()) => {}
+                Err(CliError::HelpRequested) => {}
+                Err(CliError::Failure(error)) => {
+                    eprintln!("plugin-call failed: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("windows") => match windows(args.collect(), &global.context) {
             Ok(()) => {}
             Err(CliError::HelpRequested) => {}
@@ -294,6 +305,23 @@ struct PluginsArgs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PluginsCommand {
     Run(PluginsArgs),
+    Help,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PluginCallArgs {
+    plugin_id: String,
+    tool: String,
+    arguments: serde_json::Value,
+    paths: Vec<PathBuf>,
+    timeout_ms: u64,
+    max_output_bytes: usize,
+    json: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum PluginCallCommand {
+    Run(PluginCallArgs),
     Help,
 }
 
@@ -973,6 +1001,170 @@ fn parse_plugins_args(args: Vec<String>) -> Result<PluginsCommand, CliError> {
     Ok(PluginsCommand::Run(PluginsArgs { paths, json }))
 }
 
+fn plugin_call(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
+    let PluginCallCommand::Run(args) = parse_plugin_call_args(args)? else {
+        print_plugin_call_usage();
+        return Err(CliError::HelpRequested);
+    };
+
+    let result = if context.use_daemon {
+        let result = daemon_request(
+            context,
+            ApiRequest::CallPluginTool {
+                plugin_id: args.plugin_id.clone(),
+                tool: args.tool.clone(),
+                arguments: args.arguments.clone(),
+                paths: args
+                    .paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+                timeout_ms: args.timeout_ms,
+                max_output_bytes: args.max_output_bytes,
+            },
+        )?;
+        let ApiResult::PluginToolExecution(result) = result else {
+            return Err(CliError::Failure(
+                "daemon returned unexpected plugin execution response".to_owned(),
+            ));
+        };
+        result
+    } else {
+        let discovery = peekaboox_plugins::discover_plugins(&args.paths);
+        if !discovery.errors.is_empty() {
+            return Err(CliError::Failure(format!(
+                "plugin discovery failed: {}",
+                discovery
+                    .errors
+                    .iter()
+                    .map(|error| format!("{}: {}", error.path.display(), error.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )));
+        }
+        let plugin = discovery
+            .plugins
+            .iter()
+            .find(|plugin| plugin.manifest.id == args.plugin_id)
+            .ok_or_else(|| CliError::Failure(format!("unknown plugin: {}", args.plugin_id)))?;
+        let policy = peekaboox_plugins::PluginExecutionPolicy {
+            timeout: std::time::Duration::from_millis(args.timeout_ms),
+            max_output_bytes: args.max_output_bytes,
+            ..Default::default()
+        };
+        plugin_execution_dto(
+            peekaboox_plugins::execute_plugin_tool(
+                plugin,
+                &args.tool,
+                args.arguments.clone(),
+                &policy,
+            )
+            .map_err(CliError::Failure)?,
+        )
+    };
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result)
+                .map_err(|error| CliError::Failure(error.to_string()))?
+        );
+    } else {
+        print_plugin_execution_result(&result);
+    }
+    Ok(())
+}
+
+fn parse_plugin_call_args(args: Vec<String>) -> Result<PluginCallCommand, CliError> {
+    let mut paths = Vec::new();
+    let mut arguments = serde_json::json!({});
+    let mut timeout_ms = 10_000;
+    let mut max_output_bytes = 1_048_576;
+    let mut json = false;
+    let mut positional = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--path" | "-p" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --path".to_owned()));
+                };
+                paths.push(PathBuf::from(value));
+            }
+            "--arguments-json" | "--args-json" | "--args" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --arguments-json".to_owned(),
+                    ));
+                };
+                arguments = serde_json::from_str(value).map_err(|error| {
+                    CliError::Failure(format!("invalid arguments JSON: {error}"))
+                })?;
+            }
+            "--timeout-ms" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --timeout-ms".to_owned(),
+                    ));
+                };
+                timeout_ms = parse_u64("--timeout-ms", value)?;
+            }
+            "--max-output-bytes" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --max-output-bytes".to_owned(),
+                    ));
+                };
+                max_output_bytes = parse_usize("--max-output-bytes", value)?;
+            }
+            "--json" => json = true,
+            "--help" | "-h" => return Ok(PluginCallCommand::Help),
+            value if value.starts_with('-') => {
+                return Err(CliError::Failure(format!(
+                    "unknown plugin-call argument: {value}"
+                )));
+            }
+            value => positional.push(value.to_owned()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 2 {
+        return Err(CliError::Failure(
+            "plugin-call requires <plugin-id> and <tool>".to_owned(),
+        ));
+    }
+    Ok(PluginCallCommand::Run(PluginCallArgs {
+        plugin_id: positional.remove(0),
+        tool: positional.remove(0),
+        arguments,
+        paths,
+        timeout_ms,
+        max_output_bytes,
+        json,
+    }))
+}
+
+fn plugin_execution_dto(
+    result: peekaboox_plugins::PluginToolExecutionResult,
+) -> PluginToolExecutionResultDto {
+    PluginToolExecutionResultDto {
+        ok: result.ok,
+        plugin_id: result.plugin_id,
+        tool: result.tool,
+        exit_code: result.exit_code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        result: result.result,
+        error: result.error,
+    }
+}
+
 fn plugin_list_dto(result: peekaboox_plugins::PluginDiscoveryResult) -> PluginListResultDto {
     PluginListResultDto {
         sdk_version: peekaboox_plugins::PLUGIN_SDK_VERSION.to_owned(),
@@ -1050,6 +1242,25 @@ fn print_plugin_list_dto(result: &PluginListResultDto) {
             error.path,
             error.message.replace('\n', " ")
         );
+    }
+}
+
+fn print_plugin_execution_result(result: &PluginToolExecutionResultDto) {
+    println!(
+        "plugin_tool plugin_id={} tool={} ok={} exit_code={}",
+        result.plugin_id, result.tool, result.ok, result.exit_code
+    );
+    if let Some(value) = &result.result {
+        println!("result={value}");
+    }
+    if let Some(error) = &result.error {
+        println!("error={}", error.replace('\n', " "));
+    }
+    if !result.stdout.trim().is_empty() {
+        println!("stdout={}", result.stdout.trim().replace('\n', "\\n"));
+    }
+    if !result.stderr.trim().is_empty() {
+        println!("stderr={}", result.stderr.trim().replace('\n', "\\n"));
     }
 }
 
@@ -3259,6 +3470,7 @@ struct TypeArgs {
     text: String,
     dry_run: bool,
     paste: bool,
+    preserve_clipboard: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3288,29 +3500,38 @@ fn paste_text(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
 
 fn run_text_input(args: TypeArgs, context: &CliContext) -> Result<(), CliError> {
     let action = if args.paste {
-        peekaboox_input::InputAction::PasteText(args.text.clone())
+        peekaboox_input::InputAction::PasteText {
+            text: args.text.clone(),
+            preserve_clipboard: args.preserve_clipboard,
+        }
     } else {
         peekaboox_input::InputAction::TypeText(args.text.clone())
     };
 
     if context.use_daemon {
-        if args.paste {
-            return Err(CliError::Failure(
-                "paste is local-only because it uses the active desktop clipboard; run without --daemon".to_owned(),
-            ));
-        }
-
         let result = daemon_request(
             context,
-            ApiRequest::TypeText {
-                text: args.text.clone(),
-                dry_run: args.dry_run,
+            if args.paste {
+                ApiRequest::PasteText {
+                    text: args.text.clone(),
+                    preserve_clipboard: args.preserve_clipboard,
+                    dry_run: args.dry_run,
+                }
+            } else {
+                ApiRequest::TypeText {
+                    text: args.text.clone(),
+                    dry_run: args.dry_run,
+                }
             },
         )?;
-        let ApiResult::TypeText(metadata) = result else {
-            return Err(CliError::Failure(
-                "daemon returned unexpected type response".to_owned(),
-            ));
+        let metadata = match result {
+            ApiResult::TypeText(metadata) if !args.paste => metadata,
+            ApiResult::PasteText(metadata) if args.paste => metadata,
+            _ => {
+                return Err(CliError::Failure(
+                    "daemon returned unexpected text input response".to_owned(),
+                ));
+            }
         };
         print_type_result(&args, metadata);
         return Ok(());
@@ -3331,7 +3552,7 @@ fn run_text_input(args: TypeArgs, context: &CliContext) -> Result<(), CliError> 
     }
 
     let metadata = if args.paste {
-        peekaboox_input::paste_text(args.text.clone())
+        peekaboox_input::paste_text_with_options(args.text.clone(), args.preserve_clipboard)
     } else {
         peekaboox_input::type_text(args.text.clone())
     }
@@ -3359,6 +3580,7 @@ fn print_type_result(args: &TypeArgs, metadata: ActionResultDto) {
 fn parse_type_args(args: Vec<String>) -> Result<TypeCommand, CliError> {
     let mut dry_run = false;
     let mut paste = false;
+    let mut preserve_clipboard = false;
     let mut text_parts = Vec::new();
     let mut index = 0;
 
@@ -3366,6 +3588,7 @@ fn parse_type_args(args: Vec<String>) -> Result<TypeCommand, CliError> {
         match args[index].as_str() {
             "--dry-run" => dry_run = true,
             "--paste" => paste = true,
+            "--preserve-clipboard" => preserve_clipboard = true,
             "--help" | "-h" => return Ok(TypeCommand::Help),
             value => text_parts.push(value.to_owned()),
         }
@@ -3382,6 +3605,7 @@ fn parse_type_args(args: Vec<String>) -> Result<TypeCommand, CliError> {
         text,
         dry_run,
         paste,
+        preserve_clipboard,
     }))
 }
 
@@ -3679,13 +3903,16 @@ fn daemon_request(context: &CliContext, request: ApiRequest) -> Result<ApiResult
 
 fn print_usage() {
     println!(
-        "Usage: peekaboox [--daemon] [--socket <path>] <capture|capture-delta|capture-backends|capture-dmabuf|plugins|windows|elements|ocr|compare|state|vision-elements|desktop|click|move|drag|type|paste|hotkey>"
+        "Usage: peekaboox [--daemon] [--socket <path>] <capture|capture-delta|capture-backends|capture-dmabuf|plugins|plugin-call|windows|elements|ocr|compare|state|vision-elements|desktop|click|move|drag|type|paste|hotkey>"
     );
     println!("Try:   peekaboox capture --output screenshot.png");
     println!("Try:   peekaboox --daemon capture-delta --stream agent-loop");
     println!("Try:   peekaboox capture-backends");
     println!("Try:   peekaboox capture-dmabuf");
     println!("Try:   peekaboox plugins --path examples/plugins");
+    println!(
+        "Try:   peekaboox plugin-call org.peekaboox.examples.system-info system_info.uname --path examples/plugins --json"
+    );
     println!("Try:   peekaboox --daemon windows");
     println!("Try:   peekaboox windows");
     println!("Try:   peekaboox elements --role \"push button\" --state enabled");
@@ -3723,6 +3950,12 @@ fn print_capture_dmabuf_usage() {
 
 fn print_plugins_usage() {
     println!("Usage: peekaboox [--daemon] plugins [--path <plugin-dir-or-manifest>]... [--json]");
+}
+
+fn print_plugin_call_usage() {
+    println!(
+        "Usage: peekaboox [--daemon] plugin-call <plugin-id> <tool> [--arguments-json <json>] [--path <plugin-dir-or-manifest>]... [--timeout-ms <ms>] [--max-output-bytes <n>] [--json]"
+    );
 }
 
 fn print_windows_usage() {
@@ -3802,11 +4035,11 @@ fn print_drag_usage() {
 }
 
 fn print_type_usage() {
-    println!("Usage: peekaboox type [--dry-run] [--paste] <text>");
+    println!("Usage: peekaboox type [--dry-run] [--paste] [--preserve-clipboard] <text>");
 }
 
 fn print_paste_usage() {
-    println!("Usage: peekaboox paste [--dry-run] <text>");
+    println!("Usage: peekaboox paste [--dry-run] [--preserve-clipboard] <text>");
 }
 
 fn print_hotkey_usage() {
@@ -4780,7 +5013,8 @@ mod tests {
             TypeCommand::Run(TypeArgs {
                 text: "hello world".to_owned(),
                 dry_run: false,
-                paste: false
+                paste: false,
+                preserve_clipboard: false
             })
         );
     }
@@ -4794,7 +5028,8 @@ mod tests {
             TypeCommand::Run(TypeArgs {
                 text: "hello".to_owned(),
                 dry_run: true,
-                paste: false
+                paste: false,
+                preserve_clipboard: false
             })
         );
     }
@@ -4808,7 +5043,28 @@ mod tests {
             TypeCommand::Run(TypeArgs {
                 text: "hello".to_owned(),
                 dry_run: false,
-                paste: true
+                paste: true,
+                preserve_clipboard: false
+            })
+        );
+    }
+
+    #[test]
+    fn type_accepts_preserve_clipboard_for_paste() {
+        let command = parse_type_args(vec![
+            "--paste".to_owned(),
+            "--preserve-clipboard".to_owned(),
+            "hello".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            TypeCommand::Run(TypeArgs {
+                text: "hello".to_owned(),
+                dry_run: false,
+                paste: true,
+                preserve_clipboard: true
             })
         );
     }

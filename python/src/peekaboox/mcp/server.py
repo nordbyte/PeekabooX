@@ -260,6 +260,20 @@ class McpServer:
                 self._capture_delta,
             ),
             self._tool(
+                "probe_dmabuf",
+                "Probe the optional DMA-BUF capture/import path.",
+                _schema(
+                    {
+                        "import_target": {
+                            "type": "string",
+                            "enum": ["compute", "egl", "egl_texture"],
+                            "default": "compute",
+                        },
+                    }
+                ),
+                self._probe_dmabuf,
+            ),
+            self._tool(
                 "click",
                 "Click screen coordinates or a semantic selector.",
                 _schema(
@@ -317,6 +331,18 @@ class McpServer:
                     required=["text"],
                 ),
                 self._type_text,
+            ),
+            self._tool(
+                "paste_text",
+                "Paste text through the daemon clipboard backend.",
+                _schema(
+                    {
+                        "text": {"type": "string"},
+                        "preserve_clipboard": {"type": "boolean", "default": False},
+                    },
+                    required=["text"],
+                ),
+                self._paste_text,
             ),
             self._tool(
                 "hotkey",
@@ -377,6 +403,7 @@ class McpServer:
                             "items": {"type": "string"},
                         },
                         "timeout_seconds": {"type": "number", "minimum": 0.1},
+                        "max_output_bytes": {"type": "integer", "minimum": 0},
                     },
                     required=["plugin_id", "tool"],
                 ),
@@ -457,6 +484,8 @@ class McpServer:
                 _schema(
                     {
                         "goal": {"type": "string"},
+                        "replan_on_failure": {"type": "boolean", "default": True},
+                        "max_replans": {"type": "integer", "minimum": 0, "default": 1},
                     },
                     required=["goal"],
                 ),
@@ -714,6 +743,13 @@ class McpServer:
         payload["patch_base64"] = payload.pop("patch")
         return payload
 
+    def _probe_dmabuf(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return _to_mcp_value(
+            self._require_runtime().probe_dmabuf(
+                _optional_string(arguments, "import_target") or "compute"
+            )
+        )
+
     def _click(self, arguments: dict[str, Any]) -> dict[str, Any]:
         runtime = self._require_runtime()
         vision_fallback = bool(arguments.get("vision_fallback", False))
@@ -770,6 +806,14 @@ class McpServer:
             )
         )
 
+    def _paste_text(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return _to_mcp_value(
+            self._require_runtime().paste_text(
+                _required_str(arguments, "text"),
+                preserve_clipboard=bool(arguments.get("preserve_clipboard", False)),
+            )
+        )
+
     def _hotkey(self, arguments: dict[str, Any]) -> dict[str, Any]:
         keys = arguments.get("keys")
         if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
@@ -811,6 +855,7 @@ class McpServer:
                 arguments=plugin_arguments,
                 paths=paths,
                 timeout_seconds=float(arguments.get("timeout_seconds", 10.0)),
+                max_output_bytes=int(arguments.get("max_output_bytes", 1_048_576)),
             )
         )
 
@@ -869,7 +914,11 @@ class McpServer:
 
     def _execute_goal(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return _to_mcp_value(
-            self._require_runtime().execute_goal(_required_str(arguments, "goal"))
+            self._require_runtime().execute_goal(
+                _required_str(arguments, "goal"),
+                replan_on_failure=bool(arguments.get("replan_on_failure", True)),
+                max_replans=int(arguments.get("max_replans", 1)),
+            )
         )
 
     def _generate_workflow(self, arguments: dict[str, Any]) -> dict[str, Any]:

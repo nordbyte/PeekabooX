@@ -9,6 +9,7 @@ service PeekabooX {
   rpc Click(ClickRequest) returns (ActionResponse);
   rpc Drag(DragRequest) returns (ActionResponse);
   rpc TypeText(TypeTextRequest) returns (ActionResponse);
+  rpc PasteText(PasteTextRequest) returns (ActionResponse);
   rpc Hotkey(HotkeyRequest) returns (ActionResponse);
   rpc FindElement(FindElementRequest) returns (FindElementResponse);
   rpc ListWindows(ListWindowsRequest) returns (ListWindowsResponse);
@@ -17,6 +18,9 @@ service PeekabooX {
   rpc CompareImages(CompareImagesRequest) returns (VisualDiffResponse);
   rpc DetectUiState(DetectUiStateRequest) returns (UiStateResponse);
   rpc DetectUiElements(DetectUiElementsRequest) returns (DetectUiElementsResponse);
+  rpc ProbeDmaBuf(ProbeDmaBufRequest) returns (DmaBufProbeResponse);
+  rpc ListPlugins(ListPluginsRequest) returns (PluginListResponse);
+  rpc CallPluginTool(CallPluginToolRequest) returns (PluginToolExecutionResponse);
 }
 
 message CaptureScreenRequest {
@@ -100,6 +104,11 @@ message DragRequest {
 message TypeTextRequest {
   string text = 1;
   optional uint32 typing_speed_chars_per_second = 2;
+}
+
+message PasteTextRequest {
+  string text = 1;
+  bool preserve_clipboard = 2;
 }
 
 message HotkeyRequest {
@@ -218,9 +227,95 @@ message DetectUiElementsResponse {
   repeated UiElement elements = 4;
 }
 
+enum DmaBufImportTarget {
+  DMA_BUF_IMPORT_TARGET_UNSPECIFIED = 0;
+  DMA_BUF_IMPORT_TARGET_COMPUTE = 1;
+  DMA_BUF_IMPORT_TARGET_EGL = 2;
+  DMA_BUF_IMPORT_TARGET_EGL_TEXTURE = 3;
+}
+
+message ProbeDmaBufRequest {
+  DmaBufImportTarget import_target = 1;
+}
+
+message DmaBufProbeResponse {
+  DmaBufImportTarget import_target = 1;
+  string backend_name = 2;
+  uint32 stream_node_id = 3;
+  optional uint64 pipewire_serial = 4;
+  uint32 width = 5;
+  uint32 height = 6;
+  string pixel_format = 7;
+  uint32 fourcc = 8;
+  uint32 planes = 9;
+  string memory_layout = 10;
+  string synchronization = 11;
+  optional string egl_version = 12;
+  optional bool egl_modifiers = 13;
+  optional uint32 texture_id = 14;
+}
+
+message ListPluginsRequest {
+  repeated string paths = 1;
+}
+
+message PluginListResponse {
+  string sdk_version = 1;
+  repeated Plugin plugins = 2;
+  repeated PluginDiscoveryError errors = 3;
+}
+
+message Plugin {
+  string id = 1;
+  string name = 2;
+  string version = 3;
+  optional string description = 4;
+  string root_dir = 5;
+  string manifest_path = 6;
+  repeated string capabilities = 7;
+  optional string entrypoint_kind = 8;
+  repeated string entrypoint_command = 9;
+  repeated PluginTool tools = 10;
+  map<string, string> metadata = 11;
+}
+
+message PluginTool {
+  string name = 1;
+  string description = 2;
+  repeated string capabilities = 3;
+  string input_schema_json = 4;
+}
+
+message PluginDiscoveryError {
+  string path = 1;
+  string message = 2;
+}
+
+message CallPluginToolRequest {
+  string plugin_id = 1;
+  string tool = 2;
+  string arguments_json = 3;
+  repeated string paths = 4;
+  optional uint32 timeout_ms = 5;
+  optional uint32 max_output_bytes = 6;
+}
+
+message PluginToolExecutionResponse {
+  bool ok = 1;
+  string plugin_id = 2;
+  string tool = 3;
+  int32 exit_code = 4;
+  string stdout = 5;
+  string stderr = 6;
+  optional string result_json = 7;
+  optional string error = 8;
+}
+
 message ActionResponse {
   bool ok = 1;
   string message = 2;
+  optional string backend_name = 3;
+  optional string backend_kind = 4;
 }
 
 message WindowInfo {

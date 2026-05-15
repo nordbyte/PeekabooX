@@ -17,6 +17,7 @@ from peekaboox.client import (
     CaptureScreenResult,
     DetectUiElementsResult,
     DesktopState,
+    DmaBufProbeResult,
     OcrBlock,
     OcrResult,
     PeekabooXClient,
@@ -29,8 +30,13 @@ from peekaboox.client import (
 from peekaboox.memory import MemoryStore, SQLiteMemoryStore, SemanticDesktopGraph
 from peekaboox.mcp import McpServer
 from peekaboox.mcp.server import create_server
-from peekaboox.planning import PlanningEngine, WorkflowRefinementRequest
-from peekaboox.plugins import PLUGIN_MANIFEST_FILE, PLUGIN_SDK_VERSION, discover_plugins
+from peekaboox.planning import PlanningEngine, WorkflowRefinementRequest, WorkflowReplanningRequest
+from peekaboox.plugins import (
+    PLUGIN_MANIFEST_FILE,
+    PLUGIN_SDK_VERSION,
+    discover_plugins,
+    execute_plugin_tool,
+)
 from peekaboox.security import (
     Capability,
     CapabilityDeniedError,
@@ -61,6 +67,8 @@ class FakeClient:
         self.hotkeys: list[tuple[str, ...]] = []
         self.last_vision_fallback = False
         self.typed_text: str | None = None
+        self.pasted_text: str | None = None
+        self.preserve_clipboard: bool | None = None
         self.last_find_selector: str | None = None
 
     def capture_screen(self, include_semantic_tree: bool = False) -> CaptureScreenResult:
@@ -107,6 +115,24 @@ class FakeClient:
                 backend="fake",
                 captured_at_unix_ms=124,
             ),
+        )
+
+    def probe_dmabuf(self, import_target: str = "compute") -> DmaBufProbeResult:
+        return DmaBufProbeResult(
+            import_target=import_target,
+            backend_name="fake-dmabuf",
+            stream_node_id=7,
+            pipewire_serial=11,
+            width=800,
+            height=600,
+            pixel_format="rgba8",
+            fourcc=875713112,
+            planes=1,
+            memory_layout="single-plane",
+            synchronization="implicit",
+            egl_version=None,
+            egl_modifiers=None,
+            texture_id=None,
         )
 
     def list_windows(self) -> tuple[WindowInfo, ...]:
@@ -314,6 +340,11 @@ class FakeClient:
         self.typed_text = text
         return ActionResult(ok=True, message=f"typed {len(text)} chars")
 
+    def paste_text(self, text: str, preserve_clipboard: bool = False) -> ActionResult:
+        self.pasted_text = text
+        self.preserve_clipboard = preserve_clipboard
+        return ActionResult(ok=True, message=f"pasted {len(text)} chars")
+
     def hotkey(self, keys: list[str] | tuple[str, ...] | str) -> ActionResult:
         if isinstance(keys, str):
             key_values = tuple(keys.split("+"))
@@ -440,11 +471,13 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertIn("capture_screen", server.tools)
         self.assertIn("capture_delta", server.tools)
+        self.assertIn("probe_dmabuf", server.tools)
         self.assertIn("get_desktop_state", server.tools)
         self.assertIn("find_element", server.tools)
         self.assertIn("click", server.tools)
         self.assertIn("move_mouse", server.tools)
         self.assertIn("drag", server.tools)
+        self.assertIn("paste_text", server.tools)
         self.assertIn("execute_goal", server.tools)
         self.assertIn("generate_workflow", server.tools)
         self.assertIn("save_generated_workflow", server.tools)
@@ -524,6 +557,17 @@ class RuntimeTests(unittest.TestCase):
         audit = runtime.capability_audit()
         self.assertEqual(audit[0].capability, Capability.WORKFLOW_EXECUTE)
         self.assertFalse(audit[0].allowed)
+
+    def test_capability_policy_blocks_ocr_region(self) -> None:
+        runtime = AgentRuntime(
+            client=FakeClient(),
+            capability_policy=CapabilityPolicy.deny([Capability.VISION]),
+        )
+
+        with self.assertRaises(CapabilityDeniedError):
+            runtime.ocr_region(Rect(x=1, y=2, width=3, height=4))
+
+        self.assertEqual(runtime.capability_audit()[0].capability, Capability.VISION)
 
     def test_capability_policy_profiles_define_reusable_allowlists(self) -> None:
         policy = CapabilityPolicy.from_profile(CapabilityProfile.OBSERVE)
@@ -636,6 +680,49 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.result["answer"], 42)
         self.assertEqual(runtime.capability_audit()[0].capability, Capability.PLUGIN_EXECUTE)
+
+    def test_process_plugin_tool_validates_input_schema(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "demo"
+            plugin_dir.mkdir()
+            (plugin_dir / "plugin.py").write_text(
+                "import json, sys\njson.dump({'ok': True}, sys.stdout)\n",
+                encoding="utf-8",
+            )
+            (plugin_dir / PLUGIN_MANIFEST_FILE).write_text(
+                json.dumps(
+                    {
+                        "schema_version": PLUGIN_SDK_VERSION,
+                        "id": "schema.demo",
+                        "name": "Schema Demo",
+                        "version": "1.0.0",
+                        "entrypoint": {
+                            "kind": "process",
+                            "command": [sys.executable, "plugin.py"],
+                        },
+                        "tools": [
+                            {
+                                "name": "schema.echo",
+                                "description": "Echo",
+                                "input_schema": {
+                                    "type": "object",
+                                    "required": ["text"],
+                                    "properties": {"text": {"type": "string"}},
+                                    "additionalProperties": False,
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            plugin = discover_plugins([Path(tmpdir)]).plugins[0]
+
+            with self.assertRaisesRegex(ValueError, "required field"):
+                execute_plugin_tool(plugin, "schema.echo", {})
+
+            with self.assertRaisesRegex(ValueError, "additional property"):
+                execute_plugin_tool(plugin, "schema.echo", {"text": "ok", "extra": True})
 
     def test_capability_policy_can_load_profile_from_env(self) -> None:
         with patch.dict("os.environ", {"PEEKABOOX_CAPABILITY_PROFILE": "plan"}):
@@ -1221,6 +1308,27 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.steps[0].step.action, "observe")
         self.assertEqual(result.steps[0].result.mime_type, "image/png")
 
+    def test_agent_runtime_replans_failed_goal_with_provider(self) -> None:
+        class FailingFirstPlanner(PlanningEngine):
+            def plan_workflow(self, goal: str) -> Workflow:
+                return Workflow(name=goal, steps=[WorkflowStep(action="click")])
+
+        def replanner(request: WorkflowReplanningRequest) -> Workflow:
+            self.assertEqual(request.failed_step_index, 0)
+            self.assertIn("click step requires", request.reason)
+            return Workflow(name=request.goal, steps=[WorkflowStep(action="observe")])
+
+        runtime = AgentRuntime(
+            client=FakeClient(),
+            planner=FailingFirstPlanner(workflow_replanner=replanner),
+        )
+
+        result = runtime.execute_goal("Recover desktop", max_replans=1)
+
+        self.assertTrue(result.ok)
+        self.assertTrue(result.recovery["replanned"])
+        self.assertEqual([step.step.action for step in result.steps], ["click", "observe"])
+
     def test_agent_runtime_generates_editable_workflow_from_goal_and_graph(self) -> None:
         runtime = AgentRuntime(client=FakeClient())
         runtime.ingest_desktop_snapshot(snapshot_id="snapshot:generate")
@@ -1507,6 +1615,7 @@ class RuntimeTests(unittest.TestCase):
                 "low_bandwidth": True,
             },
         )
+        dmabuf = server.call_tool("probe_dmabuf", {"import_target": "compute"})
         elements = server.call_tool(
             "find_element",
             {"selector": "role=push button,label=Submit", "vision_fallback": True},
@@ -1525,6 +1634,7 @@ class RuntimeTests(unittest.TestCase):
             },
         )
         typed = server.call_tool("type_text", {"text": "Hello"})
+        pasted = server.call_tool("paste_text", {"text": "World", "preserve_clipboard": True})
         hotkey = server.call_tool("hotkey", {"keys": ["ctrl", "s"]})
         state = server.call_tool("get_desktop_state", {})
 
@@ -1533,6 +1643,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(delta["stream_id"], "agent-loop")
         self.assertEqual(delta["patch_base64"], "cGF0Y2g=")
         self.assertEqual(delta["changed_bounds"]["width"], 3)
+        self.assertEqual(dmabuf["backend_name"], "fake-dmabuf")
         self.assertEqual(elements[0]["bounds"]["x"], 10)
         self.assertEqual(fake_client.last_find_selector, "role=push button,label=Submit")
         self.assertTrue(fake_client.last_vision_fallback)
@@ -1544,6 +1655,9 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(fake_client.dragged, (1, 2, 3, 4, "right", 75))
         self.assertEqual(fake_client.typed_text, "Hello")
         self.assertEqual(typed["message"], "typed 5 chars")
+        self.assertEqual(fake_client.pasted_text, "World")
+        self.assertTrue(fake_client.preserve_clipboard)
+        self.assertEqual(pasted["message"], "pasted 5 chars")
         self.assertTrue(hotkey["ok"])
         self.assertEqual(fake_client.hotkeys[-1], ("ctrl", "s"))
         self.assertEqual(state["active_window"]["title"], "Terminal")
@@ -1598,6 +1712,11 @@ class RuntimeTests(unittest.TestCase):
                             {
                                 "name": "mcp.echo",
                                 "description": "Echo arguments",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {"value": {"type": "string"}},
+                                    "additionalProperties": False,
+                                },
                             }
                         ],
                     }
@@ -2306,6 +2425,98 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(stub.requests[1][1].button, peekaboox_pb2.MOUSE_BUTTON_RIGHT)
         self.assertEqual(stub.requests[1][1].duration_ms, 500)
         self.assertEqual(list(stub.requests[2][1].keys), ["ctrl", "s"])
+
+    @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
+    def test_python_client_builds_generated_paste_probe_and_plugin_requests(self) -> None:
+        from peekaboox.v1 import peekaboox_pb2
+
+        class Stub:
+            def __init__(self) -> None:
+                self.requests = []
+
+            def PasteText(self, request, timeout):
+                self.requests.append(("paste", request))
+                return peekaboox_pb2.ActionResponse(
+                    ok=True,
+                    message="ok",
+                    backend_name="clipboard",
+                    backend_kind="wayland",
+                )
+
+            def ProbeDmaBuf(self, request, timeout):
+                self.requests.append(("dmabuf", request))
+                return peekaboox_pb2.DmaBufProbeResponse(
+                    import_target=peekaboox_pb2.DMA_BUF_IMPORT_TARGET_EGL_TEXTURE,
+                    backend_name="dmabuf",
+                    stream_node_id=7,
+                    width=800,
+                    height=600,
+                    pixel_format="rgba8",
+                    fourcc=875713112,
+                    planes=1,
+                    memory_layout="single-plane",
+                    synchronization="implicit",
+                )
+
+            def ListPlugins(self, request, timeout):
+                self.requests.append(("list_plugins", request))
+                return peekaboox_pb2.PluginListResponse(
+                    sdk_version=PLUGIN_SDK_VERSION,
+                    plugins=[
+                        peekaboox_pb2.Plugin(
+                            id="demo",
+                            name="Demo",
+                            version="1.0.0",
+                            root_dir="/tmp/demo",
+                            manifest_path="/tmp/demo/peekaboox.plugin.json",
+                            tools=[
+                                peekaboox_pb2.PluginTool(
+                                    name="demo.echo",
+                                    description="Echo",
+                                    input_schema_json='{"type":"object"}',
+                                )
+                            ],
+                        )
+                    ],
+                )
+
+            def CallPluginTool(self, request, timeout):
+                self.requests.append(("call_plugin", request))
+                return peekaboox_pb2.PluginToolExecutionResponse(
+                    ok=True,
+                    plugin_id=request.plugin_id,
+                    tool=request.tool,
+                    exit_code=0,
+                    stdout='{"result":{"ok":true}}',
+                    result_json='{"ok":true}',
+                )
+
+        stub = Stub()
+        client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
+
+        paste = client.paste_text("Hello", preserve_clipboard=True)
+        dmabuf = client.probe_dmabuf("egl_texture")
+        plugins = client.list_plugins(paths=["examples/plugins"])
+        executed = client.call_plugin_tool(
+            "demo",
+            "demo.echo",
+            {"value": "ok"},
+            paths=["examples/plugins"],
+            timeout_seconds=1.5,
+        )
+
+        self.assertEqual(paste.backend_name, "clipboard")
+        self.assertTrue(stub.requests[0][1].preserve_clipboard)
+        self.assertEqual(
+            stub.requests[1][1].import_target,
+            peekaboox_pb2.DMA_BUF_IMPORT_TARGET_EGL_TEXTURE,
+        )
+        self.assertEqual(dmabuf.import_target, "egl_texture")
+        self.assertEqual(stub.requests[2][1].paths[0], "examples/plugins")
+        self.assertEqual(plugins.plugins[0].tools[0].name, "demo.echo")
+        self.assertEqual(json.loads(stub.requests[3][1].arguments_json)["value"], "ok")
+        self.assertEqual(stub.requests[3][1].timeout_ms, 1500)
+        self.assertEqual(executed.result["ok"], True)
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_python_client_maps_generated_ui_elements(self) -> None:

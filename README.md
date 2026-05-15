@@ -70,7 +70,7 @@ cargo run -q -p peekaboox-cli -- move --x 100 --y 200 --dry-run
 cargo run -q -p peekaboox-cli -- drag --from 100,200 --to 320,240 --dry-run
 cargo run -q -p peekaboox-cli -- type --dry-run "Hello World"
 cargo run -q -p peekaboox-cli -- paste --dry-run "/tmp/PeekabooX Example.txt"
-cargo run -q -p peekaboox-cli -- type --paste --dry-run "/tmp/PeekabooX Example.txt"
+cargo run -q -p peekaboox-cli -- type --paste --preserve-clipboard --dry-run "/tmp/PeekabooX Example.txt"
 cargo run -q -p peekaboox-cli -- hotkey --dry-run ctrl+s
 ```
 
@@ -79,7 +79,9 @@ prefers direct `/dev/uinput` pointer events on Wayland, uses `ydotool` for
 Wayland hotkeys, prefers `wtype` for Wayland text where available with
 `ydotool` as fallback, and prefers `xdotool` on X11. Clipboard paste uses
 `wl-copy`, `xclip`, or `xsel` plus the safest available `ctrl+v` hotkey backend,
-which is better than synthetic typing for paths and layout-sensitive text.
+can optionally restore the previous textual clipboard with
+`--preserve-clipboard`, and is better than synthetic typing for paths and
+layout-sensitive text.
 Semantic click targets use AT-SPI and resolve to the center of the matching UI
 element.
 
@@ -126,8 +128,9 @@ The daemon listens on `127.0.0.1:47777` for gRPC by default using
 `proto/peekaboox/v1/peekaboox.proto`. It also listens on
 `$XDG_RUNTIME_DIR/peekabooxd.sock` for the CLI's newline-delimited JSON protocol:
 `ping`, `capture`, `capture_delta`, `move_mouse`, `click`, `drag`, `type_text`,
-`hotkey`, `list_windows`, `find_elements`, `ocr`, `compare_images`, `detect_ui_state`,
-`detect_ui_elements`, `probe_dmabuf`, and `list_plugins`.
+`paste_text`, `hotkey`, `list_windows`, `find_elements`, `ocr`, `compare_images`,
+`detect_ui_state`, `detect_ui_elements`, `probe_dmabuf`, `list_plugins`, and
+`call_plugin_tool`.
 Daemon-side semantic queries use a short AT-SPI cache with a 500ms default TTL;
 override it with `peekabooxd run --accessibility-cache-ttl-ms <ms>`. The daemon
 also listens for AT-SPI focus/window/object events to invalidate that cache when
@@ -179,9 +182,13 @@ peekaboox plugins --path examples/plugins
 ```
 
 Plugins use the declarative SDK manifest `peekaboox.plugin.json`. Discovery is
-available through the CLI, daemon JSON IPC, Python runtime, and MCP
-`list_plugins`; Python and MCP can execute declared process tools through
-`call_plugin_tool`. See `docs/plugins.md` and `examples/plugins/system-info`.
+available through the CLI, daemon JSON IPC, gRPC, Python runtime, and MCP
+`list_plugins`; declared process tools can be executed through CLI
+`plugin-call`, daemon JSON IPC, gRPC, Python runtime, and MCP
+`call_plugin_tool`. Tool arguments are validated against the manifest
+`input_schema`, process execution uses bounded time/output, and process
+environment inheritance is restricted. See `docs/plugins.md` and
+`examples/plugins/system-info`.
 
 Release versioning and artifact manifest generation are documented in
 `docs/release.md`. CI uploads wheels, Debian packages, Docker metadata,
@@ -263,15 +270,15 @@ callers, with in-memory audit events available through
 `runtime.capability_audit()`. The daemon's separate `--profile operator` or
 `--allow-input` gate still controls real input injection.
 An optional `ConfirmationPolicy` can require application-provided confirmation
-before dangerous `click`, `type_text`, or `execute_workflow` operations. Pointer
-movement, drags, and hotkeys use the `click` confirmation gate. Decisions are
-available through `runtime.confirmation_audit()`.
+before dangerous `click`, `type_text`, `paste_text`, or `execute_workflow`
+operations. Pointer movement, drags, and hotkeys use the `click` confirmation
+gate. Decisions are available through `runtime.confirmation_audit()`.
 Pass `audit_log_path` or run `peekaboox-mcp --audit-log <path>` to persist those
 runtime security checks as JSONL.
 
 The runtime also has a deterministic workflow execution loop. `WorkflowStep`
 actions such as `find_element`, `click`, `move_mouse`, `drag`, `hotkey`,
-`type_text`, and `observe` are retried according to `AgentRuntime.retries`,
+`type_text`, `paste_text`, and `observe` are retried according to `AgentRuntime.retries`,
 verified after execution, and return structured attempt and recovery metadata:
 
 ```python
@@ -300,7 +307,9 @@ runtime.save_generated_workflow("Click Submit and type 'Hello'", "generated.yaml
 Projects can attach a structured refinement provider to `PlanningEngine`. The
 provider may improve a draft, but PeekabooX only accepts returned `Workflow`
 objects or JSON/YAML workflow definitions that validate as supported
-`WorkflowStep` sequences:
+`WorkflowStep` sequences. A separate replanning provider can return a validated
+replacement workflow after `execute_goal` fails, so provider output is still
+reviewed by the same workflow validator before execution:
 
 ```python
 refined = runtime.refine_workflow("Click Submit and type 'Hello'")
@@ -368,10 +377,10 @@ or has no match.
 
 `peekaboox-mcp` now exposes a concrete MCP-style tool registry and dispatcher
 over the Python runtime. Registered tools include `capture_screen`,
-`capture_delta`, `click`, `type_text`, `find_element`, `list_windows`,
-`get_desktop_state`, OCR, visual diff, UI-state, UI-element detection, plugin
-discovery/execution, semantic desktop graph snapshot ingestion, event
-invalidation, graph querying, `execute_goal`, `generate_workflow`,
+`capture_delta`, `probe_dmabuf`, `click`, `type_text`, `paste_text`,
+`find_element`, `list_windows`, `get_desktop_state`, OCR, visual diff, UI-state,
+UI-element detection, plugin discovery/execution, semantic desktop graph
+snapshot ingestion, event invalidation, graph querying, `execute_goal`, `generate_workflow`,
 `save_generated_workflow`, `refine_workflow`, `save_refined_workflow`,
 `execute_workflow`, and `execute_workflow_file`, plus workflow recording tools
 to start, stop, inspect, and save recorded workflows.

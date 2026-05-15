@@ -105,6 +105,8 @@ Current gRPC method coverage:
   optional `vision_fallback`
 - `Drag` for coordinate drags with button and duration controls
 - `TypeText`
+- `PasteText` for clipboard-backed text insertion with optional textual
+  clipboard restoration
 - `Hotkey` for keyboard shortcuts such as `ctrl+s`
 - `FindElement` through AT-SPI selector queries, with optional `vision_fallback`
 - `ListWindows`
@@ -113,6 +115,9 @@ Current gRPC method coverage:
 - `CompareImages` for image-byte visual diffs with region and tolerance options
 - `DetectUiState` for image-sequence stable/loading/changing classification
 - `DetectUiElements` for vision-only UI-region detection from image bytes
+- `ProbeDmaBuf` for the optional DMA-BUF capture/import path
+- `ListPlugins` and `CallPluginTool` for plugin discovery and bounded process
+  tool execution
 
 Supported `FindElement` selector forms:
 
@@ -190,8 +195,9 @@ requires `peekabooxd run --profile operator`, `--allow-input`, or
 
 `ConfirmationPolicy` adds optional confirmation checks for dangerous runtime
 operations before execution. The dangerous action names are `click`,
-`type_text`, and `workflow_execute`; pointer movement, drags, and hotkeys are
-confirmed under the `click` action gate. Required confirmations without a
+`type_text`, and `workflow_execute`; `paste_text` is confirmed under
+`type_text`, while pointer movement, drags, and hotkeys are confirmed under the
+`click` action gate. Required confirmations without a
 configured confirmer raise `ConfirmationRequiredError`; rejected confirmations
 raise `ConfirmationDeniedError`. Audit events are available through
 `runtime.confirmation_audit()`.
@@ -265,9 +271,14 @@ JSON round-trips through `export_desktop_graph()` and `import_desktop_graph()`.
   JSON or YAML.
 - `refine_workflow(goal, workflow=None, refresh_desktop_graph=False)` sends a
   draft through the configured structured workflow provider.
+- `replan_workflow(goal, failed_workflow, failed_result, ...)` asks the
+  configured replanning provider for a validated replacement workflow after a
+  failed execution.
 - `save_refined_workflow(goal, path, workflow=None, format_name=None)` writes
   the refined draft as JSON or YAML.
-- `execute_goal(goal)` plans and executes that workflow.
+- `execute_goal(goal, replan_on_failure=True, max_replans=1)` plans and
+  executes that workflow, then can run one or more validated replans after a
+  failure.
 - `execute_workflow(workflow)` executes explicit `WorkflowStep` sequences.
 - `load_workflow_file(path)` loads a JSON or YAML workflow definition.
 - `execute_workflow_file(path)` loads and executes that workflow definition.
@@ -281,9 +292,9 @@ Execution results include per-attempt messages, verification results, and
 structured recovery metadata. Failed workflows report `failed_step`, `action`,
 `reason`, `attempts`, and `next_action`. Selector replay can also report
 `strategies` and `events` when self-healing was attempted. Built-in actions are
-`observe`, `find_element`, `click`, `type_text`, `list_windows`, and
-`get_desktop_state`.
-`click` and `type_text` sample desktop state after successful execution as the
+`observe`, `find_element`, `click`, `move_mouse`, `drag`, `type_text`,
+`paste_text`, `hotkey`, `list_windows`, and `get_desktop_state`.
+`click`, `type_text`, `paste_text`, and other input actions sample desktop state after successful execution as the
 current verification hook; callers can pass a custom verifier for stricter
 domain-specific checks.
 For selector-based `find_element` and `click` steps, retry attempts first
@@ -294,10 +305,11 @@ Generated workflows are drafts, not implicit execution. They start with
 `observe`, use graph-backed selectors when a target label is known, include
 `find_element` before selector clicks, and can be serialized through the same
 JSON/YAML workflow file helpers.
-Provider-backed refinement is optional and never executes provider output
-directly. A provider must return a `Workflow`, a workflow object, or JSON/YAML
-workflow text. The runtime validates every returned `WorkflowStep` against the
-supported action set before exposing or saving it.
+Provider-backed refinement and replanning are optional and never execute
+provider output directly. A provider must return a `Workflow`, a workflow
+object, or JSON/YAML workflow text. The runtime validates every returned
+`WorkflowStep` against the supported action set before exposing, saving, or
+executing it.
 
 Workflow files use the same fields as `WorkflowStep`: `action`, `selector`,
 `value`, `x`, `y`, `vision_fallback`, and `verify`. JSON is parsed with the
@@ -342,8 +354,10 @@ The current tool surface includes:
 
 - `capture_screen`
 - `capture_delta`
+- `probe_dmabuf`
 - `click`
 - `type_text`
+- `paste_text`
 - `find_element`
 - `list_windows`
 - `list_plugins`
@@ -388,8 +402,9 @@ the latest invalidation; `refresh_desktop_graph` samples a fresh graph snapshot.
 `query_desktop_graph` filters stored graph nodes by `kind`, `label_contains`,
 `role`, `attribute_equals`, `contained_by`, `latest_only`, and optionally
 `refresh_if_stale`.
-`execute_goal` accepts a `goal` string and runs the runtime planner plus
-workflow loop. `generate_workflow` accepts `goal`, optional
+`execute_goal` accepts a `goal` string plus optional `replan_on_failure` and
+`max_replans`, then runs the runtime planner plus workflow loop.
+`generate_workflow` accepts `goal`, optional
 `refresh_desktop_graph`, and optional `format` of `json` or `yaml`; it returns
 the workflow object plus serialized text. `save_generated_workflow` writes the
 same draft to `path`. `refine_workflow` accepts `goal`, optional `workflow`,
@@ -397,15 +412,17 @@ optional `refresh_desktop_graph`, and optional `format`; it returns the validate
 provider-refined workflow object plus serialized text. `save_refined_workflow`
 writes that validated draft to `path`. `execute_workflow` accepts `name` and
 `steps`; each step supports `action`, `selector`, `value`, `x`, `y`,
+`from_x`, `from_y`, `to_x`, `to_y`, `button`, `duration_ms`,
 `vision_fallback`, and `verify`. `execute_workflow_file` accepts `path` and
 loads a JSON/YAML workflow file before executing the same retry/verification
 loop. Workflow recording tools capture subsequent `capture_screen`,
-`find_element`, `click`, and `type_text` calls as replayable steps;
+`find_element`, `click`, `type_text`, and `paste_text` calls as replayable steps;
 `save_recorded_workflow` accepts `path` and an optional `format` of `json` or
 `yaml`.
 `list_plugins` accepts optional `paths`, and `call_plugin_tool` accepts
 `plugin_id`, `tool`, optional `arguments`, optional `paths`, and optional
-`timeout_seconds`; execution is gated by `plugin_execute`.
+`timeout_seconds` and `max_output_bytes`; execution is gated by
+`plugin_execute`.
 Recorded coordinate clicks are enriched from the graph cache when possible, so
 the saved step can replay through `selector` instead of fixed `x`/`y`.
 Workflow tool results include the same per-attempt verification and recovery
@@ -463,7 +480,11 @@ Supported request methods:
 - `capture`
 - `capture_delta`
 - `click`
+- `move_mouse`
+- `drag`
 - `type_text`
+- `paste_text`
+- `hotkey`
 - `list_windows`
 - `find_elements`
 - `ocr`
@@ -472,6 +493,7 @@ Supported request methods:
 - `detect_ui_elements`
 - `probe_dmabuf`
 - `list_plugins`
+- `call_plugin_tool`
 
 Daemon-routed `capture_delta` requests accept `stream_id`, `reset`, `region`,
 `per_channel_threshold`, and `low_bandwidth`. `low_bandwidth=true` is the
@@ -483,10 +505,14 @@ Daemon-routed `probe_dmabuf` requests accept `import_target` values `compute`,
 `pipewire-backend`/`egl-backend` features.
 Daemon-routed `list_plugins` requests accept optional plugin `paths`; otherwise
 the daemon uses its configured `--plugin-path` values plus SDK defaults.
+Daemon-routed `call_plugin_tool` requests accept `plugin_id`, `tool`, optional
+JSON `arguments`, optional plugin `paths`, `timeout_ms`, and
+`max_output_bytes`. Arguments are validated against the tool `input_schema`, the
+process runs with a restricted environment, and stdout/stderr are capped.
 Daemon-routed `find_elements` requests accept `vision_fallback: true`.
-Daemon-routed `click` and `type_text` requests require `dry_run: true` unless
-the daemon was started with `--profile operator`, `--allow-input`, or
-`PEEKABOOX_ALLOW_INPUT=1`.
+Daemon-routed `click`, `type_text`, `paste_text`, pointer movement, drags, and
+hotkeys require `dry_run: true` where supported unless the daemon was started
+with `--profile operator`, `--allow-input`, or `PEEKABOOX_ALLOW_INPUT=1`.
 Use `--sandbox basic` for `no_new_privileges` and non-dumpable daemon process
 state. Use `--sandbox strict` only on Linux hosts where unprivileged user
 namespaces are available; startup fails if namespace isolation cannot be
@@ -612,10 +638,11 @@ Plugin discovery is defined by `docs/plugins.md`. The stable manifest name is
 `peekaboox.plugin.v1`. The SDK validates plugin ids, declared capabilities,
 process entrypoints, and JSON-schema-shaped tool input metadata. The same
 validated descriptors are exposed through `peekaboox plugins`, daemon JSON IPC
-`list_plugins`, Python `AgentRuntime.list_plugins()`, and MCP `list_plugins`.
-Python and MCP can execute declared process-plugin tools through
-`AgentRuntime.call_plugin_tool()` and MCP `call_plugin_tool`, gated by the
-`plugin_execute` capability.
+and gRPC `list_plugins`, Python `AgentRuntime.list_plugins()`, and MCP
+`list_plugins`. Declared process-plugin tools can be executed through
+`peekaboox plugin-call`, daemon JSON IPC and gRPC `call_plugin_tool`, Python
+`AgentRuntime.call_plugin_tool()`, and MCP `call_plugin_tool`, gated by the
+`plugin_execute` capability where the Python runtime is in the path.
 
 ## Rust UI-State Detection
 
