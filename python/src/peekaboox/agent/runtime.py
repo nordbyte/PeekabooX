@@ -11,6 +11,8 @@ from peekaboox.client import (
     CaptureDeltaResult,
     CaptureScreenResult,
     DetectUiElementsResult,
+    DesktopActionResult,
+    DesktopLocateResult,
     DesktopState,
     DmaBufProbeResult,
     OcrResult,
@@ -569,9 +571,18 @@ class AgentRuntime:
             },
         )
 
-    def capture_screen(self, include_semantic_tree: bool = False) -> CaptureScreenResult:
+    def capture_screen(
+        self,
+        include_semantic_tree: bool = False,
+        region: Rect | None = None,
+        window_id: str | None = None,
+    ) -> CaptureScreenResult:
         self._require_capability(Capability.OBSERVE, "capture_screen")
-        result = self._require_client().capture_screen(include_semantic_tree)
+        result = self._require_client().capture_screen(
+            include_semantic_tree,
+            region=region,
+            window_id=window_id,
+        )
         self._record_step(WorkflowStep(action="observe"))
         return result
 
@@ -580,6 +591,7 @@ class AgentRuntime:
         stream_id: str = "default",
         reset: bool = False,
         region: Rect | None = None,
+        window_id: str | None = None,
         per_channel_threshold: int | None = None,
         low_bandwidth: bool = True,
     ) -> CaptureDeltaResult:
@@ -588,6 +600,7 @@ class AgentRuntime:
             stream_id=stream_id,
             reset=reset,
             region=region,
+            window_id=window_id,
             per_channel_threshold=per_channel_threshold,
             low_bandwidth=low_bandwidth,
         )
@@ -744,6 +757,196 @@ class AgentRuntime:
     def get_desktop_state(self) -> DesktopState:
         self._require_capability(Capability.OBSERVE, "get_desktop_state")
         return self._require_client().get_desktop_state()
+
+    def desktop_focus(
+        self,
+        app: str,
+        *,
+        use_gnome_overview: bool = True,
+        launch_if_needed: bool = True,
+        wait_after_focus_ms: int = 1_000,
+        overview_wait_ms: int = 800,
+        window_title: str | None = None,
+    ) -> DesktopActionResult:
+        self._require_capability(Capability.OBSERVE, "desktop_focus", app=app)
+        self._require_capability(Capability.CLICK, "desktop_focus", app=app)
+        self._require_confirmation(
+            DangerousAction.CLICK,
+            "desktop_focus",
+            app=app,
+            has_window_title=bool(window_title),
+        )
+        return self._require_client().desktop_focus(
+            app,
+            use_gnome_overview=use_gnome_overview,
+            launch_if_needed=launch_if_needed,
+            wait_after_focus_ms=wait_after_focus_ms,
+            overview_wait_ms=overview_wait_ms,
+            window_title=window_title,
+        )
+
+    def desktop_locate(
+        self,
+        app: str,
+        target: str,
+        *,
+        image_path: str | Path | None = None,
+        prefer_accessibility: bool = True,
+        window_title: str | None = None,
+    ) -> DesktopLocateResult:
+        self._require_capability(Capability.OBSERVE, "desktop_locate", app=app, target=target)
+        self._require_capability(Capability.VISION, "desktop_locate", app=app, target=target)
+        return self._require_client().desktop_locate(
+            app,
+            target,
+            image_path=image_path,
+            prefer_accessibility=prefer_accessibility,
+            window_title=window_title,
+        )
+
+    def desktop_click(
+        self,
+        app: str,
+        target: str,
+        *,
+        image_path: str | Path | None = None,
+        prefer_accessibility: bool = True,
+        window_title: str | None = None,
+        button: str = "left",
+        dry_run: bool = False,
+    ) -> DesktopActionResult:
+        self._require_capability(Capability.OBSERVE, "desktop_click", app=app, target=target)
+        self._require_capability(Capability.VISION, "desktop_click", app=app, target=target)
+        self._require_capability(Capability.CLICK, "desktop_click", app=app, target=target)
+        if not dry_run:
+            self._require_confirmation(
+                DangerousAction.CLICK,
+                "desktop_click",
+                app=app,
+                target=target,
+                button=button,
+            )
+        return self._require_client().desktop_click(
+            app,
+            target,
+            image_path=image_path,
+            prefer_accessibility=prefer_accessibility,
+            window_title=window_title,
+            button=button,
+            dry_run=dry_run,
+        )
+
+    def desktop_drag(
+        self,
+        app: str,
+        target: str,
+        *,
+        image_path: str | Path | None = None,
+        prefer_accessibility: bool = True,
+        window_title: str | None = None,
+        button: str = "left",
+        from_ratio: tuple[float, float] = (0.5, 0.5),
+        to_ratio: tuple[float, float] = (0.5, 0.5),
+        duration_ms: int = 250,
+        dry_run: bool = False,
+    ) -> DesktopActionResult:
+        if duration_ms < 0:
+            raise ValueError("duration_ms must be non-negative")
+        self._require_capability(Capability.OBSERVE, "desktop_drag", app=app, target=target)
+        self._require_capability(Capability.VISION, "desktop_drag", app=app, target=target)
+        self._require_capability(Capability.CLICK, "desktop_drag", app=app, target=target)
+        if not dry_run:
+            self._require_confirmation(
+                DangerousAction.CLICK,
+                "desktop_drag",
+                app=app,
+                target=target,
+                button=button,
+                duration_ms=duration_ms,
+            )
+        return self._require_client().desktop_drag(
+            app,
+            target,
+            image_path=image_path,
+            prefer_accessibility=prefer_accessibility,
+            window_title=window_title,
+            button=button,
+            from_ratio=from_ratio,
+            to_ratio=to_ratio,
+            duration_ms=duration_ms,
+            dry_run=dry_run,
+        )
+
+    def desktop_type_into(
+        self,
+        app: str,
+        target: str,
+        text: str,
+        *,
+        image_path: str | Path | None = None,
+        prefer_accessibility: bool = True,
+        window_title: str | None = None,
+        clear: bool = False,
+        dry_run: bool = False,
+    ) -> DesktopActionResult:
+        self._require_capability(Capability.OBSERVE, "desktop_type_into", app=app, target=target)
+        self._require_capability(Capability.VISION, "desktop_type_into", app=app, target=target)
+        self._require_capability(Capability.CLICK, "desktop_type_into", app=app, target=target)
+        self._require_capability(
+            Capability.TYPE_TEXT,
+            "desktop_type_into",
+            app=app,
+            target=target,
+            text_length=len(text),
+        )
+        if not dry_run:
+            self._require_confirmation(
+                DangerousAction.TYPE_TEXT,
+                "desktop_type_into",
+                app=app,
+                target=target,
+                text_length=len(text),
+                clear=clear,
+            )
+        return self._require_client().desktop_type_into(
+            app,
+            target,
+            text,
+            image_path=image_path,
+            prefer_accessibility=prefer_accessibility,
+            window_title=window_title,
+            clear=clear,
+            dry_run=dry_run,
+        )
+
+    def desktop_assert(
+        self,
+        app: str,
+        target: str,
+        *,
+        assertion: str = "present",
+        expected_text: str | None = None,
+        image_path: str | Path | None = None,
+        prefer_accessibility: bool = True,
+        window_title: str | None = None,
+    ) -> DesktopActionResult:
+        self._require_capability(Capability.OBSERVE, "desktop_assert", app=app, target=target)
+        if assertion.strip().casefold().replace("-", "_") in {
+            "active",
+            "not_active",
+            "contains",
+            "not_contains",
+        }:
+            self._require_capability(Capability.VISION, "desktop_assert", app=app, target=target)
+        return self._require_client().desktop_assert(
+            app,
+            target,
+            assertion=assertion,
+            expected_text=expected_text,
+            image_path=image_path,
+            prefer_accessibility=prefer_accessibility,
+            window_title=window_title,
+        )
 
     def ingest_desktop_snapshot(
         self,

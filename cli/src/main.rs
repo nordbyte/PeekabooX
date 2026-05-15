@@ -9,8 +9,9 @@ use peekaboox_desktop::{
 use peekaboox_input::MouseButton;
 use peekaboox_ipc::{
     ActionResultDto, ApiRequest, ApiResponse, ApiResult, CaptureDeltaResultDto,
-    DmaBufImportTargetDto, DmaBufProbeResultDto, ElementDto, ElementListResultDto, MouseButtonDto,
-    OcrResultDto, PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
+    DesktopActionResultDto, DesktopAssertionDto, DesktopLocateResultDto, DmaBufImportTargetDto,
+    DmaBufProbeResultDto, ElementDto, ElementListResultDto, MouseButtonDto, OcrResultDto,
+    PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
     PluginToolExecutionResultDto, RectDto, UiStateDto, VisualDiffDto, WindowDto,
     WindowListResultDto, default_socket_path, send_request,
 };
@@ -249,6 +250,8 @@ fn parse_global_args(args: Vec<String>) -> Result<GlobalArgs, String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CaptureArgs {
     output: PathBuf,
+    region: Option<Rect>,
+    window_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,6 +265,7 @@ struct CaptureDeltaArgs {
     stream_id: Option<String>,
     reset: bool,
     region: Option<Rect>,
+    window_id: Option<String>,
     per_channel_threshold: u8,
     low_bandwidth: bool,
 }
@@ -500,6 +504,8 @@ fn capture(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
             context,
             ApiRequest::Capture {
                 output: args.output.display().to_string(),
+                region: args.region.map(RectDto::from),
+                window_id: args.window_id,
             },
         )?;
         let ApiResult::Capture(metadata) = result else {
@@ -514,7 +520,8 @@ fn capture(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         return Ok(());
     }
 
-    let metadata = peekaboox_capture::capture_screen_to_file(&args.output)
+    let region = capture_region_from_args(args.region, args.window_id.as_deref())?;
+    let metadata = capture_cli_to_file(&args.output, region)
         .map_err(|error| CliError::Failure(error.to_string()))?;
 
     println!(
@@ -529,6 +536,8 @@ fn capture(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
 
 fn parse_capture_args(args: Vec<String>) -> Result<CaptureCommand, CliError> {
     let mut output = PathBuf::from("screenshot.png");
+    let mut region = None;
+    let mut window_id = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -539,6 +548,22 @@ fn parse_capture_args(args: Vec<String>) -> Result<CaptureCommand, CliError> {
                     return Err(CliError::Failure("missing value for --output".to_owned()));
                 };
                 output = PathBuf::from(value);
+            }
+            "--region" | "-r" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --region".to_owned()));
+                };
+                region = Some(parse_rect("--region", value)?);
+            }
+            "--window-id" | "--window" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --window-id".to_owned(),
+                    ));
+                };
+                window_id = non_empty_cli_string(value);
             }
             "--help" | "-h" => return Ok(CaptureCommand::Help),
             unknown => {
@@ -551,7 +576,17 @@ fn parse_capture_args(args: Vec<String>) -> Result<CaptureCommand, CliError> {
         index += 1;
     }
 
-    Ok(CaptureCommand::Run(CaptureArgs { output }))
+    if region.is_some() && window_id.is_some() {
+        return Err(CliError::Failure(
+            "provide either --region or --window-id, not both".to_owned(),
+        ));
+    }
+
+    Ok(CaptureCommand::Run(CaptureArgs {
+        output,
+        region,
+        window_id,
+    }))
 }
 
 fn capture_delta(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
@@ -572,6 +607,7 @@ fn capture_delta(args: Vec<String>, context: &CliContext) -> Result<(), CliError
             stream_id: args.stream_id,
             reset: args.reset,
             region: args.region.map(RectDto::from),
+            window_id: args.window_id,
             per_channel_threshold: args.per_channel_threshold,
             low_bandwidth: args.low_bandwidth,
         },
@@ -589,6 +625,7 @@ fn parse_capture_delta_args(args: Vec<String>) -> Result<CaptureDeltaCommand, Cl
     let mut stream_id = None;
     let mut reset = false;
     let mut region = None;
+    let mut window_id = None;
     let mut per_channel_threshold = 0_u8;
     let mut low_bandwidth = true;
     let mut index = 0;
@@ -609,6 +646,15 @@ fn parse_capture_delta_args(args: Vec<String>) -> Result<CaptureDeltaCommand, Cl
                     return Err(CliError::Failure("missing value for --region".to_owned()));
                 };
                 region = Some(parse_rect("--region", value)?);
+            }
+            "--window-id" | "--window" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --window-id".to_owned(),
+                    ));
+                };
+                window_id = non_empty_cli_string(value);
             }
             "--threshold" | "-t" => {
                 index += 1;
@@ -632,10 +678,17 @@ fn parse_capture_delta_args(args: Vec<String>) -> Result<CaptureDeltaCommand, Cl
         index += 1;
     }
 
+    if region.is_some() && window_id.is_some() {
+        return Err(CliError::Failure(
+            "provide either --region or --window-id, not both".to_owned(),
+        ));
+    }
+
     Ok(CaptureDeltaCommand::Run(CaptureDeltaArgs {
         stream_id,
         reset,
         region,
+        window_id,
         per_channel_threshold,
         low_bandwidth,
     }))
@@ -2359,13 +2412,12 @@ fn vision_element_options(
 }
 
 fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
+    let command = parse_desktop_args(args)?;
     if context.use_daemon {
-        return Err(CliError::Failure(
-            "desktop commands orchestrate local capture and input; run without --daemon".to_owned(),
-        ));
+        return desktop_daemon(command, context);
     }
 
-    match parse_desktop_args(args)? {
+    match command {
         DesktopCommand::Profiles => {
             println!(
                 "supported apps: {}",
@@ -2495,10 +2547,179 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
     }
 }
 
+fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), CliError> {
+    match command {
+        DesktopCommand::Profiles => {
+            println!(
+                "supported apps: {}",
+                peekaboox_desktop::supported_apps().join(", ")
+            );
+            Ok(())
+        }
+        DesktopCommand::Focus(args) => {
+            let result = daemon_request(
+                context,
+                ApiRequest::DesktopFocus {
+                    app: args.app,
+                    use_gnome_overview: args.use_gnome_overview,
+                    launch_if_needed: args.launch_if_needed,
+                    wait_after_focus_ms: args.wait_after_focus_ms,
+                    overview_wait_ms: args.overview_wait_ms,
+                    window_title: args.window_title,
+                },
+            )?;
+            let ApiResult::DesktopAction(result) = result else {
+                return Err(CliError::Failure(
+                    "daemon returned unexpected desktop focus response".to_owned(),
+                ));
+            };
+            print_desktop_action_dto(result);
+            Ok(())
+        }
+        DesktopCommand::Locate(args) => {
+            let result = daemon_request(
+                context,
+                ApiRequest::DesktopLocate {
+                    app: args.app,
+                    target: args.target,
+                    image_path: args.image.map(path_to_cli_string),
+                    prefer_accessibility: args.prefer_accessibility,
+                    window_title: args.window_title,
+                },
+            )?;
+            let ApiResult::DesktopLocate(result) = result else {
+                return Err(CliError::Failure(
+                    "daemon returned unexpected desktop locate response".to_owned(),
+                ));
+            };
+            print_desktop_locate_dto(result);
+            Ok(())
+        }
+        DesktopCommand::Click(args) => {
+            let result = daemon_request(
+                context,
+                ApiRequest::DesktopClick {
+                    app: args.app,
+                    target: args.target,
+                    image_path: args.image.map(path_to_cli_string),
+                    prefer_accessibility: args.prefer_accessibility,
+                    window_title: args.window_title,
+                    button: mouse_button_dto(args.button),
+                    dry_run: args.dry_run,
+                },
+            )?;
+            let ApiResult::DesktopAction(result) = result else {
+                return Err(CliError::Failure(
+                    "daemon returned unexpected desktop click response".to_owned(),
+                ));
+            };
+            print_desktop_action_dto(result);
+            Ok(())
+        }
+        DesktopCommand::Drag(args) => {
+            let result = daemon_request(
+                context,
+                ApiRequest::DesktopDrag {
+                    app: args.app,
+                    target: args.target,
+                    image_path: args.image.map(path_to_cli_string),
+                    prefer_accessibility: args.prefer_accessibility,
+                    window_title: args.window_title,
+                    button: mouse_button_dto(args.button),
+                    from_ratio_x: args.from_ratio.0,
+                    from_ratio_y: args.from_ratio.1,
+                    to_ratio_x: args.to_ratio.0,
+                    to_ratio_y: args.to_ratio.1,
+                    duration_ms: args.duration_ms,
+                    dry_run: args.dry_run,
+                },
+            )?;
+            let ApiResult::DesktopAction(result) = result else {
+                return Err(CliError::Failure(
+                    "daemon returned unexpected desktop drag response".to_owned(),
+                ));
+            };
+            print_desktop_action_dto(result);
+            Ok(())
+        }
+        DesktopCommand::TypeInto(args) => {
+            let result = daemon_request(
+                context,
+                ApiRequest::DesktopTypeInto {
+                    app: args.app,
+                    target: args.target,
+                    text: args.text,
+                    image_path: args.image.map(path_to_cli_string),
+                    prefer_accessibility: args.prefer_accessibility,
+                    window_title: args.window_title,
+                    clear: args.clear,
+                    dry_run: args.dry_run,
+                },
+            )?;
+            let ApiResult::DesktopAction(result) = result else {
+                return Err(CliError::Failure(
+                    "daemon returned unexpected desktop type-into response".to_owned(),
+                ));
+            };
+            print_desktop_action_dto(result);
+            Ok(())
+        }
+        DesktopCommand::Assert(args) => {
+            let (assertion, expected_text) = desktop_assertion_dto(&args.assertion);
+            let result = daemon_request(
+                context,
+                ApiRequest::DesktopAssert {
+                    app: args.app,
+                    target: args.target,
+                    image_path: args.image.map(path_to_cli_string),
+                    prefer_accessibility: args.prefer_accessibility,
+                    window_title: args.window_title,
+                    assertion,
+                    expected_text,
+                },
+            )?;
+            let ApiResult::DesktopAction(result) = result else {
+                return Err(CliError::Failure(
+                    "daemon returned unexpected desktop assert response".to_owned(),
+                ));
+            };
+            print_desktop_action_dto(result);
+            Ok(())
+        }
+        DesktopCommand::Help => {
+            print_desktop_usage();
+            Err(CliError::HelpRequested)
+        }
+    }
+}
+
 fn print_desktop_action_result(result: peekaboox_desktop::DesktopActionResult) {
     println!(
         "{} {}: {} via {}",
         result.app, result.action, result.detail, result.backend_name
+    );
+}
+
+fn print_desktop_action_dto(result: DesktopActionResultDto) {
+    println!(
+        "{} {}: {} via {}",
+        result.app, result.action, result.detail, result.backend_name
+    );
+}
+
+fn print_desktop_locate_dto(target: DesktopLocateResultDto) {
+    println!(
+        "{} {} {},{} rect={} via {}",
+        target.app,
+        target.target,
+        target.point.x,
+        target.point.y,
+        target
+            .rect
+            .map(Rect::from)
+            .map(format_rect)
+            .unwrap_or_else(|| "-".to_owned()),
+        target.source
     );
 }
 
@@ -2906,6 +3127,46 @@ fn parse_desktop_assert_args(args: Vec<String>, negated: bool) -> Result<Desktop
             }
         }),
     }))
+}
+
+fn capture_cli_to_file(
+    output: impl AsRef<std::path::Path>,
+    region: Option<Rect>,
+) -> peekaboox_core::Result<peekaboox_capture::CaptureFileMetadata> {
+    match region {
+        Some(region) => peekaboox_capture::capture_region_to_file(region, output),
+        None => peekaboox_capture::capture_screen_to_file(output),
+    }
+}
+
+fn capture_region_from_args(
+    region: Option<Rect>,
+    window_id: Option<&str>,
+) -> Result<Option<Rect>, CliError> {
+    if region.is_some() && window_id.is_some_and(|value| !value.trim().is_empty()) {
+        return Err(CliError::Failure(
+            "provide either --region or --window-id, not both".to_owned(),
+        ));
+    }
+    if let Some(region) = region {
+        return Ok(Some(region));
+    }
+    let Some(window_id) = window_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let metadata =
+        peekaboox_windows::list_windows().map_err(|error| CliError::Failure(error.to_string()))?;
+    let window = metadata
+        .windows
+        .iter()
+        .find(|window| window.id == window_id)
+        .ok_or_else(|| CliError::Failure(format!("window not found: {window_id}")))?;
+    if window.bounds.width == 0 || window.bounds.height == 0 {
+        return Err(CliError::Failure(format!(
+            "window {window_id} has empty bounds"
+        )));
+    }
+    Ok(Some(window.bounds))
 }
 
 fn format_rect(rect: Rect) -> String {
@@ -3880,6 +4141,25 @@ fn mouse_button_dto(button: MouseButton) -> MouseButtonDto {
     }
 }
 
+fn desktop_assertion_dto(assertion: &DesktopAssertion) -> (DesktopAssertionDto, Option<String>) {
+    match assertion {
+        DesktopAssertion::Present => (DesktopAssertionDto::Present, None),
+        DesktopAssertion::NotPresent => (DesktopAssertionDto::NotPresent, None),
+        DesktopAssertion::Active => (DesktopAssertionDto::Active, None),
+        DesktopAssertion::NotActive => (DesktopAssertionDto::NotActive, None),
+        DesktopAssertion::Contains(expected) => {
+            (DesktopAssertionDto::Contains, Some(expected.clone()))
+        }
+        DesktopAssertion::NotContains(expected) => {
+            (DesktopAssertionDto::NotContains, Some(expected.clone()))
+        }
+    }
+}
+
+fn path_to_cli_string(path: PathBuf) -> String {
+    path.display().to_string()
+}
+
 fn input_metadata_dto(metadata: peekaboox_input::InputExecutionMetadata) -> ActionResultDto {
     ActionResultDto {
         backend_name: metadata.backend_name,
@@ -3931,12 +4211,14 @@ fn print_usage() {
 }
 
 fn print_capture_usage() {
-    println!("Usage: peekaboox capture [--output <path>]");
+    println!(
+        "Usage: peekaboox capture [--output <path>] [--region x,y,width,height | --window-id <id>]"
+    );
 }
 
 fn print_capture_delta_usage() {
     println!(
-        "Usage: peekaboox --daemon capture-delta [--stream <id>] [--reset] [--region x,y,width,height] [--threshold <0-255>] [--low-bandwidth|--full-frame]"
+        "Usage: peekaboox --daemon capture-delta [--stream <id>] [--reset] [--region x,y,width,height | --window-id <id>] [--threshold <0-255>] [--low-bandwidth|--full-frame]"
     );
 }
 
@@ -4076,7 +4358,9 @@ mod tests {
         assert_eq!(
             args,
             CaptureCommand::Run(CaptureArgs {
-                output: PathBuf::from("screenshot.png")
+                output: PathBuf::from("screenshot.png"),
+                region: None,
+                window_id: None,
             })
         );
     }
@@ -4111,8 +4395,56 @@ mod tests {
         assert_eq!(
             args,
             CaptureCommand::Run(CaptureArgs {
-                output: PathBuf::from("tmp/screenshot.png")
+                output: PathBuf::from("tmp/screenshot.png"),
+                region: None,
+                window_id: None,
             })
+        );
+    }
+
+    #[test]
+    fn capture_accepts_region_and_window_id_targets() {
+        let region = parse_capture_args(vec![
+            "--output".to_owned(),
+            "tmp/region.png".to_owned(),
+            "--region".to_owned(),
+            "10,20,100,40".to_owned(),
+        ])
+        .unwrap();
+        let window =
+            parse_capture_args(vec!["--window-id".to_owned(), "window-1".to_owned()]).unwrap();
+
+        assert_eq!(
+            region,
+            CaptureCommand::Run(CaptureArgs {
+                output: PathBuf::from("tmp/region.png"),
+                region: Some(Rect::new(10, 20, 100, 40)),
+                window_id: None,
+            })
+        );
+        assert_eq!(
+            window,
+            CaptureCommand::Run(CaptureArgs {
+                output: PathBuf::from("screenshot.png"),
+                region: None,
+                window_id: Some("window-1".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn capture_rejects_region_and_window_id_together() {
+        let error = parse_capture_args(vec![
+            "--region".to_owned(),
+            "10,20,100,40".to_owned(),
+            "--window-id".to_owned(),
+            "window-1".to_owned(),
+        ])
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            CliError::Failure("provide either --region or --window-id, not both".to_owned())
         );
     }
 
@@ -4153,8 +4485,32 @@ mod tests {
                 stream_id: Some("agent-loop".to_owned()),
                 reset: true,
                 region: Some(Rect::new(10, 20, 100, 40)),
+                window_id: None,
                 per_channel_threshold: 3,
                 low_bandwidth: false,
+            })
+        );
+    }
+
+    #[test]
+    fn capture_delta_accepts_window_id_target() {
+        let args = parse_capture_delta_args(vec![
+            "--stream".to_owned(),
+            "agent-loop".to_owned(),
+            "--window-id".to_owned(),
+            "window-1".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            args,
+            CaptureDeltaCommand::Run(CaptureDeltaArgs {
+                stream_id: Some("agent-loop".to_owned()),
+                reset: false,
+                region: None,
+                window_id: Some("window-1".to_owned()),
+                per_channel_threshold: 0,
+                low_bandwidth: true,
             })
         );
     }

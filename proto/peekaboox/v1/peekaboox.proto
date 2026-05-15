@@ -21,6 +21,12 @@ service PeekabooX {
   rpc ProbeDmaBuf(ProbeDmaBufRequest) returns (DmaBufProbeResponse);
   rpc ListPlugins(ListPluginsRequest) returns (PluginListResponse);
   rpc CallPluginTool(CallPluginToolRequest) returns (PluginToolExecutionResponse);
+  rpc DesktopFocus(DesktopFocusRequest) returns (DesktopActionResponse);
+  rpc DesktopLocate(DesktopLocateRequest) returns (DesktopLocateResponse);
+  rpc DesktopClick(DesktopClickRequest) returns (DesktopActionResponse);
+  rpc DesktopDrag(DesktopDragRequest) returns (DesktopActionResponse);
+  rpc DesktopTypeInto(DesktopTypeIntoRequest) returns (DesktopActionResponse);
+  rpc DesktopAssert(DesktopAssertRequest) returns (DesktopActionResponse);
 }
 
 message CaptureScreenRequest {
@@ -309,6 +315,94 @@ message PluginToolExecutionResponse {
   string stderr = 6;
   optional string result_json = 7;
   optional string error = 8;
+}
+
+message DesktopFocusRequest {
+  string app = 1;
+  optional bool use_gnome_overview = 2;
+  optional bool launch_if_needed = 3;
+  optional uint64 wait_after_focus_ms = 4;
+  optional uint64 overview_wait_ms = 5;
+  optional string window_title = 6;
+}
+
+message DesktopLocateRequest {
+  string app = 1;
+  string target = 2;
+  optional string image_path = 3;
+  optional bool prefer_accessibility = 4;
+  optional string window_title = 5;
+}
+
+message DesktopClickRequest {
+  string app = 1;
+  string target = 2;
+  optional string image_path = 3;
+  optional bool prefer_accessibility = 4;
+  optional string window_title = 5;
+  optional MouseButton button = 6;
+  bool dry_run = 7;
+}
+
+message DesktopDragRequest {
+  string app = 1;
+  string target = 2;
+  optional string image_path = 3;
+  optional bool prefer_accessibility = 4;
+  optional string window_title = 5;
+  optional MouseButton button = 6;
+  optional float from_ratio_x = 7;
+  optional float from_ratio_y = 8;
+  optional float to_ratio_x = 9;
+  optional float to_ratio_y = 10;
+  optional uint64 duration_ms = 11;
+  bool dry_run = 12;
+}
+
+message DesktopTypeIntoRequest {
+  string app = 1;
+  string target = 2;
+  string text = 3;
+  optional string image_path = 4;
+  optional bool prefer_accessibility = 5;
+  optional string window_title = 6;
+  bool clear = 7;
+  bool dry_run = 8;
+}
+
+enum DesktopAssertionKind {
+  DESKTOP_ASSERTION_KIND_UNSPECIFIED = 0;
+  DESKTOP_ASSERTION_KIND_PRESENT = 1;
+  DESKTOP_ASSERTION_KIND_NOT_PRESENT = 2;
+  DESKTOP_ASSERTION_KIND_ACTIVE = 3;
+  DESKTOP_ASSERTION_KIND_NOT_ACTIVE = 4;
+  DESKTOP_ASSERTION_KIND_CONTAINS = 5;
+  DESKTOP_ASSERTION_KIND_NOT_CONTAINS = 6;
+}
+
+message DesktopAssertRequest {
+  string app = 1;
+  string target = 2;
+  optional string image_path = 3;
+  optional bool prefer_accessibility = 4;
+  optional string window_title = 5;
+  DesktopAssertionKind assertion = 6;
+  optional string expected_text = 7;
+}
+
+message DesktopActionResponse {
+  string app = 1;
+  string action = 2;
+  string detail = 3;
+  string backend_name = 4;
+}
+
+message DesktopLocateResponse {
+  string app = 1;
+  string target = 2;
+  Point point = 3;
+  optional Rect rect = 4;
+  string source = 5;
 }
 
 message ActionResponse {

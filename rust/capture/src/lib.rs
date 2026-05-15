@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use dbus::arg::{PropMap, RefArg, Variant};
 use dbus::blocking::Connection;
 use dbus::message::MatchRule;
-use image::{DynamicImage, ImageReader};
+use image::codecs::png::PngEncoder;
+use image::{ColorType, DynamicImage, ImageEncoder, ImageReader};
 use peekaboox_core::{BackendKind, CaptureFrame, PeekabooXError, PixelFormat, Rect, Result};
 
 pub trait CaptureBackend {
@@ -1807,6 +1808,40 @@ pub fn capture_region_frame(region: Rect) -> Result<CaptureFrameMetadata> {
     CommandCaptureBackend.capture_region_frame(region)
 }
 
+pub fn encode_frame_png(frame: &CaptureFrame) -> Result<Vec<u8>> {
+    let rgba = frame_to_rgba_bytes(frame)?;
+    let mut output = Vec::new();
+    PngEncoder::new(&mut output)
+        .write_image(&rgba, frame.width, frame.height, ColorType::Rgba8.into())
+        .map_err(|error| PeekabooXError::new(format!("failed to encode frame as PNG: {error}")))?;
+    Ok(output)
+}
+
+pub fn write_frame_png(frame: &CaptureFrame, output: impl AsRef<Path>) -> Result<u64> {
+    let output = absolute_output_path(output.as_ref())?;
+    prepare_output_parent(&output)?;
+    let png = encode_frame_png(frame)?;
+    std::fs::write(&output, &png).map_err(|error| {
+        PeekabooXError::new(format!("failed to write {}: {error}", output.display()))
+    })?;
+    Ok(png.len() as u64)
+}
+
+pub fn capture_region_to_file(
+    region: Rect,
+    output: impl AsRef<Path>,
+) -> Result<CaptureFileMetadata> {
+    let metadata = capture_region_frame(region)?;
+    let output = absolute_output_path(output.as_ref())?;
+    let bytes_written = write_frame_png(&metadata.frame, &output)?;
+    Ok(CaptureFileMetadata {
+        output_path: output,
+        backend_name: metadata.backend_name,
+        backend_kind: metadata.backend_kind,
+        bytes_written,
+    })
+}
+
 pub fn capture_screen_dmabuf() -> Result<DmaBufFrameDescriptor> {
     DmaBufCaptureBackend.capture_screen_dmabuf()
 }
@@ -3102,6 +3137,49 @@ fn crop_frame(frame: &CaptureFrame, region: Rect) -> Result<CaptureFrame> {
         format: frame.format,
         data,
     })
+}
+
+fn frame_to_rgba_bytes(frame: &CaptureFrame) -> Result<Vec<u8>> {
+    validate_frame(frame, "PNG encode source")?;
+    let width = usize::try_from(frame.width)
+        .map_err(|_| PeekabooXError::new("frame width overflows usize"))?;
+    let height = usize::try_from(frame.height)
+        .map_err(|_| PeekabooXError::new("frame height overflows usize"))?;
+    let stride = usize::try_from(frame.stride)
+        .map_err(|_| PeekabooXError::new("frame stride overflows usize"))?;
+    let bytes_per_pixel = bytes_per_pixel(frame.format);
+    let row_bytes = width
+        .checked_mul(bytes_per_pixel)
+        .ok_or_else(|| PeekabooXError::new("frame row size overflows usize"))?;
+    let output_len = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| PeekabooXError::new("PNG output size overflows usize"))?;
+    let mut rgba = Vec::with_capacity(output_len);
+
+    for y in 0..height {
+        let row_offset = y
+            .checked_mul(stride)
+            .ok_or_else(|| PeekabooXError::new("frame row offset overflows usize"))?;
+        let row_end = row_offset
+            .checked_add(row_bytes)
+            .ok_or_else(|| PeekabooXError::new("frame row end overflows usize"))?;
+        let row = frame
+            .data
+            .get(row_offset..row_end)
+            .ok_or_else(|| PeekabooXError::new("frame row exceeds frame data"))?;
+        for pixel in row.chunks_exact(bytes_per_pixel) {
+            match frame.format {
+                PixelFormat::Rgb8 => rgba.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]),
+                PixelFormat::Rgba8 => rgba.extend_from_slice(pixel),
+                PixelFormat::Bgra8 => {
+                    rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+                }
+            }
+        }
+    }
+
+    Ok(rgba)
 }
 
 fn validate_frame(frame: &CaptureFrame, name: &str) -> Result<()> {

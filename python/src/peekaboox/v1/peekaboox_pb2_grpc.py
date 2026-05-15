@@ -124,6 +124,36 @@ class PeekabooXStub(object):
                 request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.CallPluginToolRequest.SerializeToString,
                 response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.PluginToolExecutionResponse.FromString,
                 _registered_method=True)
+        self.DesktopFocus = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/DesktopFocus',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopFocusRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.FromString,
+                _registered_method=True)
+        self.DesktopLocate = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/DesktopLocate',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopLocateRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopLocateResponse.FromString,
+                _registered_method=True)
+        self.DesktopClick = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/DesktopClick',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopClickRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.FromString,
+                _registered_method=True)
+        self.DesktopDrag = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/DesktopDrag',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopDragRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.FromString,
+                _registered_method=True)
+        self.DesktopTypeInto = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/DesktopTypeInto',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopTypeIntoRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.FromString,
+                _registered_method=True)
+        self.DesktopAssert = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/DesktopAssert',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopAssertRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.FromString,
+                _registered_method=True)
 
 
 class PeekabooXServicer(object):
@@ -237,6 +267,42 @@ class PeekabooXServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def DesktopFocus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DesktopLocate(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DesktopClick(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DesktopDrag(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DesktopTypeInto(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DesktopAssert(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_PeekabooXServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -329,6 +395,36 @@ def add_PeekabooXServicer_to_server(servicer, server):
                     servicer.CallPluginTool,
                     request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.CallPluginToolRequest.FromString,
                     response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.PluginToolExecutionResponse.SerializeToString,
+            ),
+            'DesktopFocus': grpc.unary_unary_rpc_method_handler(
+                    servicer.DesktopFocus,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopFocusRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.SerializeToString,
+            ),
+            'DesktopLocate': grpc.unary_unary_rpc_method_handler(
+                    servicer.DesktopLocate,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopLocateRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopLocateResponse.SerializeToString,
+            ),
+            'DesktopClick': grpc.unary_unary_rpc_method_handler(
+                    servicer.DesktopClick,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopClickRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.SerializeToString,
+            ),
+            'DesktopDrag': grpc.unary_unary_rpc_method_handler(
+                    servicer.DesktopDrag,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopDragRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.SerializeToString,
+            ),
+            'DesktopTypeInto': grpc.unary_unary_rpc_method_handler(
+                    servicer.DesktopTypeInto,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopTypeIntoRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.SerializeToString,
+            ),
+            'DesktopAssert': grpc.unary_unary_rpc_method_handler(
+                    servicer.DesktopAssert,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopAssertRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -817,6 +913,168 @@ class PeekabooX(object):
             '/peekaboox.v1.PeekabooX/CallPluginTool',
             peekaboox_dot_v1_dot_peekaboox__pb2.CallPluginToolRequest.SerializeToString,
             peekaboox_dot_v1_dot_peekaboox__pb2.PluginToolExecutionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DesktopFocus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/DesktopFocus',
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopFocusRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DesktopLocate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/DesktopLocate',
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopLocateRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopLocateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DesktopClick(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/DesktopClick',
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopClickRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DesktopDrag(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/DesktopDrag',
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopDragRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DesktopTypeInto(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/DesktopTypeInto',
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopTypeIntoRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DesktopAssert(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/DesktopAssert',
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopAssertRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.FromString,
             options,
             channel_credentials,
             insecure,

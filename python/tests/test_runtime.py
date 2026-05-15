@@ -16,6 +16,8 @@ from peekaboox.client import (
     CaptureMetadata,
     CaptureScreenResult,
     DetectUiElementsResult,
+    DesktopActionResult,
+    DesktopLocateResult,
     DesktopState,
     DmaBufProbeResult,
     OcrBlock,
@@ -70,8 +72,14 @@ class FakeClient:
         self.pasted_text: str | None = None
         self.preserve_clipboard: bool | None = None
         self.last_find_selector: str | None = None
+        self.desktop_calls: list[tuple[str, dict[str, object]]] = []
 
-    def capture_screen(self, include_semantic_tree: bool = False) -> CaptureScreenResult:
+    def capture_screen(
+        self,
+        include_semantic_tree: bool = False,
+        region: Rect | None = None,
+        window_id: str | None = None,
+    ) -> CaptureScreenResult:
         semantic_tree = (
             self._submit_button(),
         ) if include_semantic_tree else ()
@@ -92,6 +100,7 @@ class FakeClient:
         stream_id: str = "default",
         reset: bool = False,
         region: Rect | None = None,
+        window_id: str | None = None,
         per_channel_threshold: int | None = None,
         low_bandwidth: bool = True,
     ) -> CaptureDeltaResult:
@@ -365,6 +374,64 @@ class FakeClient:
             elements=(self._submit_button(),),
         )
 
+    def desktop_focus(self, app: str, **kwargs) -> DesktopActionResult:
+        self.desktop_calls.append(("focus", {"app": app, **kwargs}))
+        return DesktopActionResult(
+            app=app,
+            action="focus",
+            detail="focused",
+            backend_name="fake-desktop",
+        )
+
+    def desktop_locate(self, app: str, target: str, **kwargs) -> DesktopLocateResult:
+        self.desktop_calls.append(("locate", {"app": app, "target": target, **kwargs}))
+        return DesktopLocateResult(
+            app=app,
+            target=target,
+            x=10,
+            y=20,
+            rect=Rect(x=1, y=2, width=30, height=40),
+            source="fake",
+        )
+
+    def desktop_click(self, app: str, target: str, **kwargs) -> DesktopActionResult:
+        self.desktop_calls.append(("click", {"app": app, "target": target, **kwargs}))
+        return DesktopActionResult(
+            app=app,
+            action="click",
+            detail=f"clicked {target}",
+            backend_name="fake-desktop",
+        )
+
+    def desktop_drag(self, app: str, target: str, **kwargs) -> DesktopActionResult:
+        self.desktop_calls.append(("drag", {"app": app, "target": target, **kwargs}))
+        return DesktopActionResult(
+            app=app,
+            action="drag",
+            detail=f"dragged {target}",
+            backend_name="fake-desktop",
+        )
+
+    def desktop_type_into(self, app: str, target: str, text: str, **kwargs) -> DesktopActionResult:
+        self.desktop_calls.append(
+            ("type_into", {"app": app, "target": target, "text": text, **kwargs})
+        )
+        return DesktopActionResult(
+            app=app,
+            action="type-into",
+            detail=f"typed into {target}",
+            backend_name="fake-desktop",
+        )
+
+    def desktop_assert(self, app: str, target: str, **kwargs) -> DesktopActionResult:
+        self.desktop_calls.append(("assert", {"app": app, "target": target, **kwargs}))
+        return DesktopActionResult(
+            app=app,
+            action="assert",
+            detail=f"asserted {target}",
+            backend_name="fake-desktop",
+        )
+
     def _submit_button(self) -> UiElement:
         return UiElement(
             id="button-1",
@@ -477,6 +544,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("click", server.tools)
         self.assertIn("move_mouse", server.tools)
         self.assertIn("drag", server.tools)
+        self.assertIn("desktop_focus", server.tools)
+        self.assertIn("desktop_locate", server.tools)
+        self.assertIn("desktop_click", server.tools)
+        self.assertIn("desktop_drag", server.tools)
+        self.assertIn("desktop_type_into", server.tools)
+        self.assertIn("desktop_assert", server.tools)
         self.assertIn("paste_text", server.tools)
         self.assertIn("execute_goal", server.tools)
         self.assertIn("generate_workflow", server.tools)
@@ -516,6 +589,25 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(runtime.compare_images(b"a", b"b").matches)
         self.assertEqual(runtime.detect_ui_state([b"a", b"b"]).state, "stable")
         self.assertEqual(runtime.detect_ui_elements(b"image").elements[0].role, "visual-region")
+        self.assertEqual(runtime.desktop_focus("telegram").action, "focus")
+        self.assertEqual(runtime.desktop_locate("telegram", "search-input").x, 10)
+        self.assertEqual(
+            runtime.desktop_click("telegram", "search-input", dry_run=True).action,
+            "click",
+        )
+        self.assertEqual(
+            runtime.desktop_type_into(
+                "telegram",
+                "search-input",
+                "PeekabooX",
+                dry_run=True,
+            ).action,
+            "type-into",
+        )
+        self.assertEqual(
+            runtime.desktop_assert("telegram", "saved-messages").action,
+            "assert",
+        )
 
     def test_capability_policy_blocks_direct_runtime_actions_and_audits(self) -> None:
         policy = CapabilityPolicy.allow_only([Capability.OBSERVE])
@@ -1637,6 +1729,38 @@ class RuntimeTests(unittest.TestCase):
         pasted = server.call_tool("paste_text", {"text": "World", "preserve_clipboard": True})
         hotkey = server.call_tool("hotkey", {"keys": ["ctrl", "s"]})
         state = server.call_tool("get_desktop_state", {})
+        desktop_focus = server.call_tool("desktop_focus", {"app": "telegram"})
+        desktop_locate = server.call_tool(
+            "desktop_locate",
+            {"app": "telegram", "target": "search-input"},
+        )
+        desktop_click = server.call_tool(
+            "desktop_click",
+            {"app": "telegram", "target": "search-input", "dry_run": True},
+        )
+        desktop_drag = server.call_tool(
+            "desktop_drag",
+            {
+                "app": "paint",
+                "target": "canvas",
+                "from_ratio": [0.1, 0.2],
+                "to_ratio": [0.9, 0.8],
+                "dry_run": True,
+            },
+        )
+        desktop_type = server.call_tool(
+            "desktop_type_into",
+            {
+                "app": "telegram",
+                "target": "message-input",
+                "text": "PeekabooX",
+                "dry_run": True,
+            },
+        )
+        desktop_assert = server.call_tool(
+            "desktop_assert",
+            {"app": "telegram", "target": "saved-messages"},
+        )
 
         self.assertEqual(capture["image_base64"], "cG5n")
         self.assertEqual(capture["semantic_tree"][0]["label"], "Submit")
@@ -1661,6 +1785,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(hotkey["ok"])
         self.assertEqual(fake_client.hotkeys[-1], ("ctrl", "s"))
         self.assertEqual(state["active_window"]["title"], "Terminal")
+        self.assertEqual(desktop_focus["action"], "focus")
+        self.assertEqual(desktop_locate["x"], 10)
+        self.assertEqual(desktop_click["action"], "click")
+        self.assertEqual(desktop_drag["action"], "drag")
+        self.assertEqual(desktop_type["action"], "type-into")
+        self.assertEqual(desktop_assert["action"], "assert")
+        self.assertEqual(fake_client.desktop_calls[-1][0], "assert")
 
     def test_mcp_server_calls_list_plugins_tool(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -2348,6 +2479,141 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.capture_region, Rect(x=1, y=2, width=3, height=4))
         self.assertEqual(result.changed_bounds.width, 30)
         self.assertEqual(result.patch, b"patch")
+
+    @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
+    def test_python_client_builds_generated_capture_screen_window_target(self) -> None:
+        from peekaboox.v1 import peekaboox_pb2
+
+        class Stub:
+            def __init__(self) -> None:
+                self.request = None
+
+            def CaptureScreen(self, request, timeout):
+                self.request = request
+                return peekaboox_pb2.CaptureScreenResponse(
+                    image=b"png",
+                    mime_type="image/png",
+                    metadata=peekaboox_pb2.CaptureMetadata(
+                        width=800,
+                        height=600,
+                        backend="fake",
+                        captured_at_unix_ms=123,
+                    ),
+                )
+
+        stub = Stub()
+        client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
+
+        result = client.capture_screen(window_id="window-1")
+
+        self.assertEqual(stub.request.target.window_id, "window-1")
+        self.assertEqual(result.image, b"png")
+        self.assertEqual(result.metadata.width, 800)
+
+    @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
+    def test_python_client_builds_generated_desktop_requests(self) -> None:
+        from peekaboox.v1 import peekaboox_pb2
+
+        class Stub:
+            def __init__(self) -> None:
+                self.requests = []
+
+            def DesktopFocus(self, request, timeout):
+                self.requests.append(("focus", request))
+                return peekaboox_pb2.DesktopActionResponse(
+                    app=request.app,
+                    action="focus",
+                    detail="focused",
+                    backend_name="fake-desktop",
+                )
+
+            def DesktopLocate(self, request, timeout):
+                self.requests.append(("locate", request))
+                return peekaboox_pb2.DesktopLocateResponse(
+                    app=request.app,
+                    target=request.target,
+                    point=peekaboox_pb2.Point(x=10, y=20),
+                    rect=peekaboox_pb2.Rect(x=1, y=2, width=30, height=40),
+                    source="fake",
+                )
+
+            def DesktopClick(self, request, timeout):
+                self.requests.append(("click", request))
+                return peekaboox_pb2.DesktopActionResponse(
+                    app=request.app,
+                    action="click",
+                    detail="clicked",
+                    backend_name="fake-desktop",
+                )
+
+            def DesktopDrag(self, request, timeout):
+                self.requests.append(("drag", request))
+                return peekaboox_pb2.DesktopActionResponse(
+                    app=request.app,
+                    action="drag",
+                    detail="dragged",
+                    backend_name="fake-desktop",
+                )
+
+            def DesktopTypeInto(self, request, timeout):
+                self.requests.append(("type", request))
+                return peekaboox_pb2.DesktopActionResponse(
+                    app=request.app,
+                    action="type-into",
+                    detail="typed",
+                    backend_name="fake-desktop",
+                )
+
+            def DesktopAssert(self, request, timeout):
+                self.requests.append(("assert", request))
+                return peekaboox_pb2.DesktopActionResponse(
+                    app=request.app,
+                    action="assert",
+                    detail="asserted",
+                    backend_name="fake-desktop",
+                )
+
+        stub = Stub()
+        client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
+
+        self.assertEqual(client.desktop_focus("telegram").action, "focus")
+        locate = client.desktop_locate("telegram", "search-input")
+        self.assertEqual(locate.rect.width, 30)
+        self.assertEqual(
+            client.desktop_click("telegram", "search-input", button="right", dry_run=True).action,
+            "click",
+        )
+        self.assertEqual(
+            client.desktop_drag(
+                "paint",
+                "canvas",
+                from_ratio=(0.1, 0.2),
+                to_ratio=(0.9, 0.8),
+                dry_run=True,
+            ).action,
+            "drag",
+        )
+        self.assertEqual(
+            client.desktop_type_into("telegram", "message-input", "PeekabooX").action,
+            "type-into",
+        )
+        self.assertEqual(
+            client.desktop_assert(
+                "telegram",
+                "message-list",
+                assertion="contains",
+                expected_text="PeekabooX",
+            ).action,
+            "assert",
+        )
+
+        self.assertEqual(stub.requests[2][1].button, peekaboox_pb2.MOUSE_BUTTON_RIGHT)
+        self.assertAlmostEqual(stub.requests[3][1].from_ratio_x, 0.1)
+        self.assertEqual(
+            stub.requests[5][1].assertion,
+            peekaboox_pb2.DESKTOP_ASSERTION_KIND_CONTAINS,
+        )
+        self.assertEqual(stub.requests[5][1].expected_text, "PeekabooX")
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_python_client_builds_generated_click_request(self) -> None:

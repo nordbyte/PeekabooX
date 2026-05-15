@@ -33,6 +33,8 @@ Create a screenshot in the current Linux desktop session:
 
 ```bash
 cargo run -q -p peekaboox-cli -- capture --output screenshot.png
+cargo run -q -p peekaboox-cli -- capture --region 10,20,400,240 --output region.png
+cargo run -q -p peekaboox-cli -- --daemon capture --window-id window-1 --output window.png
 ```
 
 The current capture implementation detects the session and prefers
@@ -96,6 +98,7 @@ cargo run -q -p peekaboox-cli -- desktop type-into --app telegram --target searc
 cargo run -q -p peekaboox-cli -- desktop assert --app telegram --target send-button --not-active
 cargo run -q -p peekaboox-cli -- desktop drag --app drawing --target canvas --from-ratio 0.2,0.3 --to-ratio 0.8,0.3
 cargo run -q -p peekaboox-cli -- desktop type-into --app text-editor --target document --window-title notes.txt --clear "PeekabooX"
+cargo run -q -p peekaboox-cli -- --daemon desktop click --app telegram --target search-input --dry-run
 ```
 
 The built-in profiles include `telegram`, `paint`, `drawing`, `pinta`,
@@ -106,6 +109,11 @@ Telegram's `search-input` and `message-input`, Paint's `canvas`, or Text
 Editor's `document`. Pass `--window-title <text>` to `desktop focus`, `locate`,
 `click`, `drag`, `type-into`, or `assert` when an action must target one
 specific window instead of the currently focused matching app.
+The same desktop-helper surface is exposed through daemon JSON IPC, gRPC,
+`PeekabooXClient`, `AgentRuntime`, and MCP tools (`desktop_focus`,
+`desktop_locate`, `desktop_click`, `desktop_drag`, `desktop_type_into`, and
+`desktop_assert`) so agents can use named app targets instead of brittle screen
+coordinates.
 
 List visible desktop windows:
 
@@ -130,7 +138,8 @@ The daemon listens on `127.0.0.1:47777` for gRPC by default using
 `ping`, `capture`, `capture_delta`, `move_mouse`, `click`, `drag`, `type_text`,
 `paste_text`, `hotkey`, `list_windows`, `find_elements`, `ocr`, `compare_images`,
 `detect_ui_state`, `detect_ui_elements`, `probe_dmabuf`, `list_plugins`, and
-`call_plugin_tool`.
+`call_plugin_tool`, plus `desktop_focus`, `desktop_locate`, `desktop_click`,
+`desktop_drag`, `desktop_type_into`, and `desktop_assert`.
 Daemon-side semantic queries use a short AT-SPI cache with a 500ms default TTL;
 override it with `peekabooxd run --accessibility-cache-ttl-ms <ms>`. The daemon
 also listens for AT-SPI focus/window/object events to invalidate that cache when
@@ -174,6 +183,7 @@ Python runtime, and MCP:
 
 ```bash
 peekaboox --daemon capture-delta --stream agent-loop --threshold 2
+peekaboox --daemon capture-delta --stream agent-loop --window-id window-1
 peekaboox --daemon capture-delta --stream agent-loop --low-bandwidth
 peekaboox --daemon capture-delta --stream agent-loop --full-frame
 peekaboox --daemon capture-delta --stream agent-loop --reset
@@ -257,6 +267,9 @@ print(
 print(runtime.compare_image_files("before.png", "after.png").matches)
 print(runtime.detect_ui_state_from_image_files(["frame1.png", "frame2.png"]).state)
 print(runtime.detect_ui_elements_from_image_file("screenshot.png").elements)
+print(runtime.desktop_locate("telegram", "search-input"))
+runtime.desktop_click("telegram", "search-input", dry_run=True)
+runtime.desktop_type_into("telegram", "message-input", "PeekabooX", dry_run=True)
 runtime.click_selector("role=push button,label=Submit", vision_fallback=True)
 runtime.move_mouse(100, 200)
 runtime.drag(100, 200, 320, 240, duration_ms=350)
@@ -378,7 +391,8 @@ or has no match.
 `peekaboox-mcp` now exposes a concrete MCP-style tool registry and dispatcher
 over the Python runtime. Registered tools include `capture_screen`,
 `capture_delta`, `probe_dmabuf`, `click`, `type_text`, `paste_text`,
-`find_element`, `list_windows`, `get_desktop_state`, OCR, visual diff, UI-state,
+`find_element`, `list_windows`, `get_desktop_state`, desktop app-target tools,
+OCR, visual diff, UI-state,
 UI-element detection, plugin discovery/execution, semantic desktop graph
 snapshot ingestion, event invalidation, graph querying, `execute_goal`, `generate_workflow`,
 `save_generated_workflow`, `refine_workflow`, `save_refined_workflow`,

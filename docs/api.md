@@ -97,9 +97,10 @@ cargo run -q -p peekabooxd -- run --no-accessibility-events
 
 Current gRPC method coverage:
 
-- `CaptureScreen` for full-screen PNG capture
-- `CaptureDelta` for persistent low-bandwidth full-screen or region deltas with
-  raw changed-rectangle patch bytes, plus explicit full-frame mode
+- `CaptureScreen` for full-screen, region, or `window_id` PNG capture
+- `CaptureDelta` for persistent low-bandwidth full-screen, region, or
+  `window_id` deltas with raw changed-rectangle patch bytes, plus explicit
+  full-frame mode
 - `MoveMouse` for absolute pointer movement
 - `Click` for coordinate clicks and AT-SPI `semantic_selector` clicks, with
   optional `vision_fallback`
@@ -118,6 +119,9 @@ Current gRPC method coverage:
 - `ProbeDmaBuf` for the optional DMA-BUF capture/import path
 - `ListPlugins` and `CallPluginTool` for plugin discovery and bounded process
   tool execution
+- `DesktopFocus`, `DesktopLocate`, `DesktopClick`, `DesktopDrag`,
+  `DesktopTypeInto`, and `DesktopAssert` for named app-target desktop helpers
+  backed by the Rust desktop profiles
 
 Supported `FindElement` selector forms:
 
@@ -173,8 +177,12 @@ delta = runtime.capture_delta(
     per_channel_threshold=2,
     low_bandwidth=True,
 )
+window_capture = runtime.capture_screen(window_id="window-1")
 diff = runtime.compare_image_files("before.png", "after.png", max_changed_ratio=0.01)
 ui_state = runtime.detect_ui_state_from_image_files(["frame1.png", "frame2.png", "frame3.png"])
+target = runtime.desktop_locate("telegram", "search-input")
+runtime.desktop_click("telegram", "search-input", dry_run=True)
+runtime.desktop_type_into("telegram", "message-input", "PeekabooX", dry_run=True)
 runtime.click_selector("role=push button,label=Submit", vision_fallback=True)
 runtime.move_mouse(100, 200)
 runtime.drag(100, 200, 360, 260, button="left", duration_ms=350)
@@ -363,6 +371,12 @@ The current tool surface includes:
 - `list_plugins`
 - `call_plugin_tool`
 - `get_desktop_state`
+- `desktop_focus`
+- `desktop_locate`
+- `desktop_click`
+- `desktop_drag`
+- `desktop_type_into`
+- `desktop_assert`
 - `ingest_desktop_snapshot`
 - `latest_desktop_snapshot`
 - `record_desktop_event`
@@ -386,9 +400,14 @@ The current tool surface includes:
 - `save_recorded_workflow`
 
 `click` accepts either `x`/`y` coordinates or `selector`/`semantic_selector`.
-`capture_delta` accepts `stream_id`, `reset`, optional `region`,
+`capture_screen` accepts optional `region` or `window_id`; `capture_delta`
+accepts `stream_id`, `reset`, optional `region` or `window_id`,
 `per_channel_threshold`, and `low_bandwidth` for persistent low-bandwidth
 capture streams.
+The desktop helper tools accept supported app profile names such as `telegram`,
+`paint`, `drawing`, `pinta`, `kolourpaint`, and `text-editor`, plus named
+targets such as Telegram's `search-input`/`message-input`, Paint's `canvas`, or
+Text Editor's `document`.
 `click` and `find_element` both accept `vision_fallback: true`; when a fresh
 graph cache hits, `find_element` returns cached elements directly and semantic
 `click` uses the cached element center as a coordinate click.
@@ -479,6 +498,12 @@ Supported request methods:
 - `ping`
 - `capture`
 - `capture_delta`
+- `desktop_focus`
+- `desktop_locate`
+- `desktop_click`
+- `desktop_drag`
+- `desktop_type_into`
+- `desktop_assert`
 - `click`
 - `move_mouse`
 - `drag`
@@ -495,11 +520,12 @@ Supported request methods:
 - `list_plugins`
 - `call_plugin_tool`
 
-Daemon-routed `capture_delta` requests accept `stream_id`, `reset`, `region`,
-`per_channel_threshold`, and `low_bandwidth`. `low_bandwidth=true` is the
-default and returns changed-rectangle patches after the first frame;
-`low_bandwidth=false` forces a full-frame patch for that request. Responses
-carry patch bytes as `patch_base64` and echo `low_bandwidth`.
+Daemon-routed `capture` requests accept `output` plus optional `region` or
+`window_id`. Daemon-routed `capture_delta` requests accept `stream_id`, `reset`,
+optional `region` or `window_id`, `per_channel_threshold`, and `low_bandwidth`.
+`low_bandwidth=true` is the default and returns changed-rectangle patches after
+the first frame; `low_bandwidth=false` forces a full-frame patch for that
+request. Responses carry patch bytes as `patch_base64` and echo `low_bandwidth`.
 Daemon-routed `probe_dmabuf` requests accept `import_target` values `compute`,
 `egl`, or `egl_texture` when `peekabooxd` is built with the matching
 `pipewire-backend`/`egl-backend` features.
@@ -597,10 +623,10 @@ the captured screen coordinate space.
   daemon keeps the previous decoded frame per `stream_id`; `reset=true` forces a
   fresh full-frame patch. `low_bandwidth=false` also suppresses previous-frame
   reuse for that request and returns a full-frame patch while preserving the
-  stream sequence. Region targets use native region capture for supported tools
-  and fall back to full-frame crop otherwise. Local IPC and CLI expose the same
-  stream controls, and Python/MCP clients return patch bytes as bytes/base64
-  respectively.
+  stream sequence. Region targets use native region capture, and `window_id`
+  targets resolve current window bounds through the window enumerator before
+  capture. Local IPC and CLI expose the same stream controls, and Python/MCP
+  clients return patch bytes as bytes/base64 respectively.
 - The live daemon path calls `peekaboox-capture::capture_screen_frame()` so
   incremental capture no longer performs PNG temp-file decoding in daemon code;
   stdout-capable capture tools feed decoded frames directly, with file-only

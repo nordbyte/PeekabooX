@@ -241,6 +241,8 @@ class McpServer:
                 _schema(
                     {
                         "include_semantic_tree": {"type": "boolean", "default": False},
+                        "region": RECT_SCHEMA,
+                        "window_id": {"type": "string"},
                     }
                 ),
                 self._capture_screen,
@@ -253,6 +255,7 @@ class McpServer:
                         "stream_id": {"type": "string", "default": "default"},
                         "reset": {"type": "boolean", "default": False},
                         "region": RECT_SCHEMA,
+                        "window_id": {"type": "string"},
                         "per_channel_threshold": {"type": "integer", "minimum": 0, "maximum": 255},
                         "low_bandwidth": {"type": "boolean", "default": True},
                     }
@@ -376,6 +379,130 @@ class McpServer:
                 "List visible desktop windows.",
                 _schema({}),
                 self._list_windows,
+            ),
+            self._tool(
+                "desktop_focus",
+                "Focus or launch a supported desktop application.",
+                _schema(
+                    {
+                        "app": {"type": "string"},
+                        "use_gnome_overview": {"type": "boolean", "default": True},
+                        "launch_if_needed": {"type": "boolean", "default": True},
+                        "wait_after_focus_ms": {"type": "integer", "minimum": 0, "default": 1000},
+                        "overview_wait_ms": {"type": "integer", "minimum": 0, "default": 800},
+                        "window_title": {"type": "string"},
+                    },
+                    required=["app"],
+                ),
+                self._desktop_focus,
+            ),
+            self._tool(
+                "desktop_locate",
+                "Resolve a named app target to screen coordinates.",
+                _schema(
+                    {
+                        "app": {"type": "string"},
+                        "target": {"type": "string"},
+                        "image_path": {"type": "string"},
+                        "prefer_accessibility": {"type": "boolean", "default": True},
+                        "window_title": {"type": "string"},
+                    },
+                    required=["app", "target"],
+                ),
+                self._desktop_locate,
+            ),
+            self._tool(
+                "desktop_click",
+                "Click a named target inside a supported desktop application.",
+                _schema(
+                    {
+                        "app": {"type": "string"},
+                        "target": {"type": "string"},
+                        "image_path": {"type": "string"},
+                        "prefer_accessibility": {"type": "boolean", "default": True},
+                        "window_title": {"type": "string"},
+                        "button": {"type": "string", "enum": ["left", "middle", "right"]},
+                        "dry_run": {"type": "boolean", "default": False},
+                    },
+                    required=["app", "target"],
+                ),
+                self._desktop_click,
+            ),
+            self._tool(
+                "desktop_drag",
+                "Drag inside a named app target using rectangle-relative ratios.",
+                _schema(
+                    {
+                        "app": {"type": "string"},
+                        "target": {"type": "string"},
+                        "image_path": {"type": "string"},
+                        "prefer_accessibility": {"type": "boolean", "default": True},
+                        "window_title": {"type": "string"},
+                        "button": {"type": "string", "enum": ["left", "middle", "right"]},
+                        "from_ratio": {
+                            "type": "array",
+                            "items": {"type": "number", "minimum": 0, "maximum": 1},
+                            "minItems": 2,
+                            "maxItems": 2,
+                        },
+                        "to_ratio": {
+                            "type": "array",
+                            "items": {"type": "number", "minimum": 0, "maximum": 1},
+                            "minItems": 2,
+                            "maxItems": 2,
+                        },
+                        "duration_ms": {"type": "integer", "minimum": 0, "default": 250},
+                        "dry_run": {"type": "boolean", "default": False},
+                    },
+                    required=["app", "target"],
+                ),
+                self._desktop_drag,
+            ),
+            self._tool(
+                "desktop_type_into",
+                "Type text into a named target inside a supported desktop application.",
+                _schema(
+                    {
+                        "app": {"type": "string"},
+                        "target": {"type": "string"},
+                        "text": {"type": "string"},
+                        "image_path": {"type": "string"},
+                        "prefer_accessibility": {"type": "boolean", "default": True},
+                        "window_title": {"type": "string"},
+                        "clear": {"type": "boolean", "default": False},
+                        "dry_run": {"type": "boolean", "default": False},
+                    },
+                    required=["app", "target", "text"],
+                ),
+                self._desktop_type_into,
+            ),
+            self._tool(
+                "desktop_assert",
+                "Assert that a named target is present, active, or contains text.",
+                _schema(
+                    {
+                        "app": {"type": "string"},
+                        "target": {"type": "string"},
+                        "assertion": {
+                            "type": "string",
+                            "enum": [
+                                "present",
+                                "not_present",
+                                "active",
+                                "not_active",
+                                "contains",
+                                "not_contains",
+                            ],
+                            "default": "present",
+                        },
+                        "expected_text": {"type": "string"},
+                        "image_path": {"type": "string"},
+                        "prefer_accessibility": {"type": "boolean", "default": True},
+                        "window_title": {"type": "string"},
+                    },
+                    required=["app", "target"],
+                ),
+                self._desktop_assert,
             ),
             self._tool(
                 "list_plugins",
@@ -725,7 +852,9 @@ class McpServer:
 
     def _capture_screen(self, arguments: dict[str, Any]) -> dict[str, Any]:
         result = self._require_runtime().capture_screen(
-            include_semantic_tree=bool(arguments.get("include_semantic_tree", False))
+            include_semantic_tree=bool(arguments.get("include_semantic_tree", False)),
+            region=_optional_rect(arguments, "region"),
+            window_id=_optional_string(arguments, "window_id"),
         )
         payload = _to_mcp_value(result)
         payload["image_base64"] = payload.pop("image")
@@ -736,6 +865,7 @@ class McpServer:
             stream_id=_optional_string(arguments, "stream_id") or "default",
             reset=bool(arguments.get("reset", False)),
             region=_optional_rect(arguments, "region"),
+            window_id=_optional_string(arguments, "window_id"),
             per_channel_threshold=_optional_int(arguments, "per_channel_threshold"),
             low_bandwidth=bool(arguments.get("low_bandwidth", True)),
         )
@@ -830,6 +960,85 @@ class McpServer:
 
     def _list_windows(self, _arguments: dict[str, Any]) -> list[dict[str, Any]]:
         return _to_mcp_value(self._require_runtime().list_windows())
+
+    def _desktop_focus(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return _to_mcp_value(
+            self._require_runtime().desktop_focus(
+                _required_str(arguments, "app"),
+                use_gnome_overview=bool(arguments.get("use_gnome_overview", True)),
+                launch_if_needed=bool(arguments.get("launch_if_needed", True)),
+                wait_after_focus_ms=int(arguments.get("wait_after_focus_ms", 1_000)),
+                overview_wait_ms=int(arguments.get("overview_wait_ms", 800)),
+                window_title=_optional_string(arguments, "window_title"),
+            )
+        )
+
+    def _desktop_locate(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return _to_mcp_value(
+            self._require_runtime().desktop_locate(
+                _required_str(arguments, "app"),
+                _required_str(arguments, "target"),
+                image_path=_optional_string(arguments, "image_path"),
+                prefer_accessibility=bool(arguments.get("prefer_accessibility", True)),
+                window_title=_optional_string(arguments, "window_title"),
+            )
+        )
+
+    def _desktop_click(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return _to_mcp_value(
+            self._require_runtime().desktop_click(
+                _required_str(arguments, "app"),
+                _required_str(arguments, "target"),
+                image_path=_optional_string(arguments, "image_path"),
+                prefer_accessibility=bool(arguments.get("prefer_accessibility", True)),
+                window_title=_optional_string(arguments, "window_title"),
+                button=_optional_string(arguments, "button") or "left",
+                dry_run=bool(arguments.get("dry_run", False)),
+            )
+        )
+
+    def _desktop_drag(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return _to_mcp_value(
+            self._require_runtime().desktop_drag(
+                _required_str(arguments, "app"),
+                _required_str(arguments, "target"),
+                image_path=_optional_string(arguments, "image_path"),
+                prefer_accessibility=bool(arguments.get("prefer_accessibility", True)),
+                window_title=_optional_string(arguments, "window_title"),
+                button=_optional_string(arguments, "button") or "left",
+                from_ratio=_optional_ratio_pair(arguments, "from_ratio") or (0.5, 0.5),
+                to_ratio=_optional_ratio_pair(arguments, "to_ratio") or (0.5, 0.5),
+                duration_ms=int(arguments.get("duration_ms", 250)),
+                dry_run=bool(arguments.get("dry_run", False)),
+            )
+        )
+
+    def _desktop_type_into(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return _to_mcp_value(
+            self._require_runtime().desktop_type_into(
+                _required_str(arguments, "app"),
+                _required_str(arguments, "target"),
+                _required_str(arguments, "text"),
+                image_path=_optional_string(arguments, "image_path"),
+                prefer_accessibility=bool(arguments.get("prefer_accessibility", True)),
+                window_title=_optional_string(arguments, "window_title"),
+                clear=bool(arguments.get("clear", False)),
+                dry_run=bool(arguments.get("dry_run", False)),
+            )
+        )
+
+    def _desktop_assert(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return _to_mcp_value(
+            self._require_runtime().desktop_assert(
+                _required_str(arguments, "app"),
+                _required_str(arguments, "target"),
+                assertion=_optional_string(arguments, "assertion") or "present",
+                expected_text=_optional_string(arguments, "expected_text"),
+                image_path=_optional_string(arguments, "image_path"),
+                prefer_accessibility=bool(arguments.get("prefer_accessibility", True)),
+                window_title=_optional_string(arguments, "window_title"),
+            )
+        )
 
     def _list_plugins(self, arguments: dict[str, Any]) -> dict[str, Any]:
         paths = arguments.get("paths")
@@ -1104,6 +1313,18 @@ def _optional_int(arguments: dict[str, Any], name: str) -> int | None:
 def _optional_float(arguments: dict[str, Any], name: str) -> float | None:
     value = arguments.get(name)
     return None if value is None else float(value)
+
+
+def _optional_ratio_pair(arguments: dict[str, Any], name: str) -> tuple[float, float] | None:
+    value = arguments.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"{name} must be a two-item ratio array")
+    ratio = (float(value[0]), float(value[1]))
+    if not all(0.0 <= part <= 1.0 for part in ratio):
+        raise ValueError(f"{name} values must be between 0.0 and 1.0")
+    return ratio
 
 
 def _optional_string(arguments: dict[str, Any], name: str) -> str | None:

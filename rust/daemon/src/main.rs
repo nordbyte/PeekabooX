@@ -16,6 +16,11 @@ use dbus::message::MatchRule;
 use dbus::{Message, MessageType};
 use peekaboox_accessibility::{AccessibilityTreeMetadata, ElementQuery};
 use peekaboox_core::{BackendKind, CaptureFrame, PixelFormat, Point, Rect, UiElement, WindowInfo};
+use peekaboox_desktop::{
+    AssertOptions as DesktopAssertOptions, ClickOptions as DesktopClickOptions, DesktopAssertion,
+    DesktopDragOptions, FocusOptions as DesktopFocusOptions, LocateOptions as DesktopLocateOptions,
+    TypeIntoOptions as DesktopTypeIntoOptions,
+};
 use peekaboox_input::{EMERGENCY_STOP_HOTKEY_LABEL, EmergencyHotkeyState, MouseButton};
 use peekaboox_ipc::proto::{
     self, capture_target,
@@ -23,11 +28,12 @@ use peekaboox_ipc::proto::{
 };
 use peekaboox_ipc::{
     API_VERSION, ActionResultDto, ApiRequest, ApiResponseEnvelope, ApiResult,
-    CaptureDeltaResultDto, CaptureResultDto, DmaBufImportTargetDto, DmaBufProbeResultDto,
-    ElementDto, ElementListResultDto, MouseButtonDto, OcrBlockDto, OcrResultDto,
-    PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
-    PluginToolExecutionResultDto, UiStateDto, VisualDiffDto, WindowDto, WindowListResultDto,
-    decode_request, default_socket_path, encode_response,
+    CaptureDeltaResultDto, CaptureResultDto, DesktopActionResultDto, DesktopAssertionDto,
+    DesktopLocateResultDto, DmaBufImportTargetDto, DmaBufProbeResultDto, ElementDto,
+    ElementListResultDto, MouseButtonDto, OcrBlockDto, OcrResultDto, PluginDiscoveryErrorDto,
+    PluginDto, PluginListResultDto, PluginToolDto, PluginToolExecutionResultDto, PointDto,
+    UiStateDto, VisualDiffDto, WindowDto, WindowListResultDto, decode_request, default_socket_path,
+    encode_response,
 };
 use peekaboox_vision::{
     IncrementalCaptureDelta, IncrementalCaptureOptions, OcrOptions, OcrResult, TesseractOcrBackend,
@@ -1348,9 +1354,15 @@ fn dispatch_request(
 ) -> Result<ApiResult, String> {
     match request {
         ApiRequest::Ping => Ok(ApiResult::Pong),
-        ApiRequest::Capture { output } => {
-            let metadata = peekaboox_capture::capture_screen_to_file(output)
-                .map_err(|error| error.to_string())?;
+        ApiRequest::Capture {
+            output,
+            region,
+            window_id,
+        } => {
+            let capture_region =
+                capture_region_from_request(region.map(Rect::from), window_id.as_deref())?;
+            let metadata =
+                capture_to_file(output, capture_region).map_err(|error| error.to_string())?;
             Ok(ApiResult::Capture(CaptureResultDto {
                 output_path: metadata.output_path.display().to_string(),
                 backend_name: metadata.backend_name,
@@ -1362,13 +1374,16 @@ fn dispatch_request(
             stream_id,
             reset,
             region,
+            window_id,
             per_channel_threshold,
             low_bandwidth,
         } => {
+            let capture_region =
+                capture_region_from_request(region.map(Rect::from), window_id.as_deref())?;
             let data = capture_delta_data(
                 stream_id.as_deref(),
                 reset,
-                region.map(Rect::from),
+                capture_region,
                 per_channel_threshold,
                 low_bandwidth,
                 incremental_capture_state,
@@ -1650,6 +1665,169 @@ fn dispatch_request(
                     .map_err(|error| error.to_string())?;
             Ok(ApiResult::DetectUiElements(ui_element_list_dto(&elements)))
         }
+        ApiRequest::DesktopFocus {
+            app,
+            use_gnome_overview,
+            launch_if_needed,
+            wait_after_focus_ms,
+            overview_wait_ms,
+            window_title,
+        } => {
+            ensure_input_allowed(config)?;
+            let result = peekaboox_desktop::focus_app(
+                &app,
+                &DesktopFocusOptions {
+                    use_gnome_overview,
+                    launch_if_needed,
+                    wait_after_focus_ms,
+                    overview_wait_ms,
+                    window_title,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(ApiResult::DesktopAction(desktop_action_dto(result)))
+        }
+        ApiRequest::DesktopLocate {
+            app,
+            target,
+            image_path,
+            prefer_accessibility,
+            window_title,
+        } => {
+            let result = peekaboox_desktop::locate_target(
+                &app,
+                &target,
+                &DesktopLocateOptions {
+                    image: image_path.map(PathBuf::from),
+                    prefer_accessibility,
+                    window_title,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(ApiResult::DesktopLocate(desktop_locate_dto(result)))
+        }
+        ApiRequest::DesktopClick {
+            app,
+            target,
+            image_path,
+            prefer_accessibility,
+            window_title,
+            button,
+            dry_run,
+        } => {
+            if !dry_run {
+                ensure_input_allowed(config)?;
+            }
+            let result = peekaboox_desktop::click_target(
+                &app,
+                &target,
+                &DesktopClickOptions {
+                    locate: DesktopLocateOptions {
+                        image: image_path.map(PathBuf::from),
+                        prefer_accessibility,
+                        window_title,
+                    },
+                    button: mouse_button(button),
+                    dry_run,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(ApiResult::DesktopAction(desktop_action_dto(result)))
+        }
+        ApiRequest::DesktopDrag {
+            app,
+            target,
+            image_path,
+            prefer_accessibility,
+            window_title,
+            button,
+            from_ratio_x,
+            from_ratio_y,
+            to_ratio_x,
+            to_ratio_y,
+            duration_ms,
+            dry_run,
+        } => {
+            if !dry_run {
+                ensure_input_allowed(config)?;
+            }
+            validate_ratio("from_ratio_x", from_ratio_x)?;
+            validate_ratio("from_ratio_y", from_ratio_y)?;
+            validate_ratio("to_ratio_x", to_ratio_x)?;
+            validate_ratio("to_ratio_y", to_ratio_y)?;
+            let result = peekaboox_desktop::drag_target(
+                &app,
+                &target,
+                &DesktopDragOptions {
+                    locate: DesktopLocateOptions {
+                        image: image_path.map(PathBuf::from),
+                        prefer_accessibility,
+                        window_title,
+                    },
+                    from_ratio: (from_ratio_x, from_ratio_y),
+                    to_ratio: (to_ratio_x, to_ratio_y),
+                    button: mouse_button(button),
+                    duration_ms,
+                    dry_run,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(ApiResult::DesktopAction(desktop_action_dto(result)))
+        }
+        ApiRequest::DesktopTypeInto {
+            app,
+            target,
+            text,
+            image_path,
+            prefer_accessibility,
+            window_title,
+            clear,
+            dry_run,
+        } => {
+            if !dry_run {
+                ensure_input_allowed(config)?;
+            }
+            let result = peekaboox_desktop::type_into_target(
+                &app,
+                &target,
+                &text,
+                &DesktopTypeIntoOptions {
+                    locate: DesktopLocateOptions {
+                        image: image_path.map(PathBuf::from),
+                        prefer_accessibility,
+                        window_title,
+                    },
+                    clear,
+                    dry_run,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(ApiResult::DesktopAction(desktop_action_dto(result)))
+        }
+        ApiRequest::DesktopAssert {
+            app,
+            target,
+            image_path,
+            prefer_accessibility,
+            window_title,
+            assertion,
+            expected_text,
+        } => {
+            let result = peekaboox_desktop::assert_target(
+                &app,
+                &target,
+                &DesktopAssertOptions {
+                    locate: DesktopLocateOptions {
+                        image: image_path.map(PathBuf::from),
+                        prefer_accessibility,
+                        window_title,
+                    },
+                    assertion: desktop_assertion(assertion, expected_text)?,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(ApiResult::DesktopAction(desktop_action_dto(result)))
+        }
     }
 }
 
@@ -1681,19 +1859,11 @@ impl PeekabooX for GrpcPeekabooXService {
             }),
         );
 
-        if let Err(status) = ensure_full_screen_capture_target(request.target) {
-            audit_write(
-                &self.audit,
-                "grpc.capture_screen",
-                Some(API_VERSION),
-                "error",
-                Some(status.message()),
-                json!({}),
-            );
-            return Err(status);
-        }
-
-        match capture_screen_response(request.include_semantic_tree, &self.accessibility_cache) {
+        match capture_screen_response(
+            request.target,
+            request.include_semantic_tree,
+            &self.accessibility_cache,
+        ) {
             Ok(response) => {
                 audit_write(
                     &self.audit,
@@ -2013,24 +2183,120 @@ impl PeekabooX for GrpcPeekabooXService {
         audit_grpc_result(&self.audit, "grpc.call_plugin_tool", &result, details);
         result.map(Response::new)
     }
+
+    async fn desktop_focus(
+        &self,
+        request: Request<proto::DesktopFocusRequest>,
+    ) -> Result<Response<proto::DesktopActionResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({
+            "app": request.app.as_str(),
+            "use_gnome_overview": request.use_gnome_overview.unwrap_or(true),
+            "launch_if_needed": request.launch_if_needed.unwrap_or(true),
+            "has_window_title": request.window_title.as_deref().is_some_and(|value| !value.trim().is_empty())
+        });
+        let result = grpc_desktop_focus(request, &self.config);
+        audit_grpc_result(&self.audit, "grpc.desktop_focus", &result, details);
+        result.map(Response::new)
+    }
+
+    async fn desktop_locate(
+        &self,
+        request: Request<proto::DesktopLocateRequest>,
+    ) -> Result<Response<proto::DesktopLocateResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({
+            "app": request.app.as_str(),
+            "target": request.target.as_str(),
+            "has_image_path": request.image_path.is_some(),
+            "prefer_accessibility": request.prefer_accessibility.unwrap_or(true),
+            "has_window_title": request.window_title.as_deref().is_some_and(|value| !value.trim().is_empty())
+        });
+        let result = grpc_desktop_locate(request);
+        audit_grpc_result(&self.audit, "grpc.desktop_locate", &result, details);
+        result.map(Response::new)
+    }
+
+    async fn desktop_click(
+        &self,
+        request: Request<proto::DesktopClickRequest>,
+    ) -> Result<Response<proto::DesktopActionResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({
+            "app": request.app.as_str(),
+            "target": request.target.as_str(),
+            "dry_run": request.dry_run,
+            "has_image_path": request.image_path.is_some(),
+            "prefer_accessibility": request.prefer_accessibility.unwrap_or(true)
+        });
+        let result = grpc_desktop_click(request, &self.config);
+        audit_grpc_result(&self.audit, "grpc.desktop_click", &result, details);
+        result.map(Response::new)
+    }
+
+    async fn desktop_drag(
+        &self,
+        request: Request<proto::DesktopDragRequest>,
+    ) -> Result<Response<proto::DesktopActionResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({
+            "app": request.app.as_str(),
+            "target": request.target.as_str(),
+            "dry_run": request.dry_run,
+            "duration_ms": request.duration_ms.unwrap_or(250)
+        });
+        let result = grpc_desktop_drag(request, &self.config);
+        audit_grpc_result(&self.audit, "grpc.desktop_drag", &result, details);
+        result.map(Response::new)
+    }
+
+    async fn desktop_type_into(
+        &self,
+        request: Request<proto::DesktopTypeIntoRequest>,
+    ) -> Result<Response<proto::DesktopActionResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({
+            "app": request.app.as_str(),
+            "target": request.target.as_str(),
+            "text_length": request.text.chars().count(),
+            "clear": request.clear,
+            "dry_run": request.dry_run
+        });
+        let result = grpc_desktop_type_into(request, &self.config);
+        audit_grpc_result(&self.audit, "grpc.desktop_type_into", &result, details);
+        result.map(Response::new)
+    }
+
+    async fn desktop_assert(
+        &self,
+        request: Request<proto::DesktopAssertRequest>,
+    ) -> Result<Response<proto::DesktopActionResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({
+            "app": request.app.as_str(),
+            "target": request.target.as_str(),
+            "assertion": request.assertion,
+            "has_expected_text": request.expected_text.as_deref().is_some_and(|value| !value.trim().is_empty())
+        });
+        let result = grpc_desktop_assert(request);
+        audit_grpc_result(&self.audit, "grpc.desktop_assert", &result, details);
+        result.map(Response::new)
+    }
 }
 
 fn capture_screen_response(
+    target: Option<proto::CaptureTarget>,
     include_semantic_tree: bool,
     accessibility_cache: &SharedAccessibilityCache,
 ) -> Result<proto::CaptureScreenResponse, String> {
-    let output = grpc_capture_temp_path();
-    let metadata =
-        peekaboox_capture::capture_screen_to_file(&output).map_err(|error| error.to_string())?;
-    let image = fs::read(&metadata.output_path)
-        .map_err(|error| format!("failed to read captured image bytes: {error}"))?;
-    if let Err(error) = fs::remove_file(&metadata.output_path) {
-        eprintln!(
-            "failed to remove temporary gRPC capture {}: {error}",
-            metadata.output_path.display()
-        );
-    }
-    let (width, height) = png_dimensions(&image).unwrap_or((0, 0));
+    let capture_region = capture_screen_region(target)?;
+    let CapturedFrame {
+        frame,
+        backend_name,
+        backend_kind,
+        captured_at_unix_ms,
+    } = capture_current_frame(capture_region)?;
+    let image = peekaboox_capture::encode_frame_png(&frame).map_err(|error| error.to_string())?;
     let semantic_tree = if include_semantic_tree {
         cached_accessibility_tree(accessibility_cache)?
             .metadata
@@ -2047,16 +2313,25 @@ fn capture_screen_response(
         mime_type: "image/png".to_owned(),
         semantic_tree,
         metadata: Some(proto::CaptureMetadata {
-            width,
-            height,
-            backend: format!(
-                "{}/{}",
-                metadata.backend_name,
-                backend_kind_name(metadata.backend_kind)
-            ),
-            captured_at_unix_ms: unix_time_ms_u64(),
+            width: frame.width,
+            height: frame.height,
+            backend: format!("{}/{}", backend_name, backend_kind_name(backend_kind)),
+            captured_at_unix_ms,
         }),
     })
+}
+
+fn capture_screen_region(target: Option<proto::CaptureTarget>) -> Result<Option<Rect>, String> {
+    match target.and_then(|target| target.target) {
+        None | Some(capture_target::Target::FullScreen(true)) => Ok(None),
+        Some(capture_target::Target::FullScreen(false)) => {
+            Err("capture_screen full_screen target must be true".to_owned())
+        }
+        Some(capture_target::Target::Region(region)) => Ok(Some(rect_from_proto(region))),
+        Some(capture_target::Target::WindowId(window_id)) => {
+            capture_region_from_request(None, Some(&window_id))
+        }
+    }
 }
 
 fn capture_delta_data(
@@ -2333,6 +2608,41 @@ fn capture_current_frame(region: Option<Rect>) -> Result<CapturedFrame, String> 
     })
 }
 
+fn capture_to_file(
+    output: impl AsRef<Path>,
+    region: Option<Rect>,
+) -> Result<peekaboox_capture::CaptureFileMetadata, peekaboox_core::PeekabooXError> {
+    match region {
+        Some(region) => peekaboox_capture::capture_region_to_file(region, output),
+        None => peekaboox_capture::capture_screen_to_file(output),
+    }
+}
+
+fn capture_region_from_request(
+    region: Option<Rect>,
+    window_id: Option<&str>,
+) -> Result<Option<Rect>, String> {
+    if region.is_some() && window_id.is_some_and(|value| !value.trim().is_empty()) {
+        return Err("provide either capture region or window_id, not both".to_owned());
+    }
+    if let Some(region) = region {
+        return Ok(Some(region));
+    }
+    let Some(window_id) = window_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let metadata = peekaboox_windows::list_windows().map_err(|error| error.to_string())?;
+    let window = metadata
+        .windows
+        .iter()
+        .find(|window| window.id == window_id)
+        .ok_or_else(|| format!("window not found: {window_id}"))?;
+    if window.bounds.width == 0 || window.bounds.height == 0 {
+        return Err(format!("window {window_id} has empty bounds"));
+    }
+    Ok(Some(window.bounds))
+}
+
 fn capture_delta_region(
     target: Option<proto::CaptureTarget>,
     legacy_region: Option<proto::Rect>,
@@ -2345,8 +2655,8 @@ fn capture_delta_region(
             Err("capture_delta full_screen target must be true".to_owned())
         }
         Some(capture_target::Target::Region(region)) => Ok(Some(rect_from_proto(region))),
-        Some(capture_target::Target::WindowId(_)) => {
-            Err("window capture is not wired in the current capture backend".to_owned())
+        Some(capture_target::Target::WindowId(window_id)) => {
+            capture_region_from_request(None, Some(&window_id))
         }
     }
 }
@@ -2806,6 +3116,148 @@ fn grpc_call_plugin_tool(
     Ok(proto_plugin_execution_response(result))
 }
 
+fn grpc_desktop_focus(
+    request: proto::DesktopFocusRequest,
+    config: &ServerConfig,
+) -> Result<proto::DesktopActionResponse, Status> {
+    ensure_input_allowed(config).map_err(Status::permission_denied)?;
+    let result = peekaboox_desktop::focus_app(
+        &request.app,
+        &DesktopFocusOptions {
+            use_gnome_overview: request.use_gnome_overview.unwrap_or(true),
+            launch_if_needed: request.launch_if_needed.unwrap_or(true),
+            wait_after_focus_ms: request.wait_after_focus_ms.unwrap_or(1_000),
+            overview_wait_ms: request.overview_wait_ms.unwrap_or(800),
+            window_title: request.window_title,
+        },
+    )
+    .map_err(|error| Status::failed_precondition(error.to_string()))?;
+    Ok(proto_desktop_action_response(result))
+}
+
+fn grpc_desktop_locate(
+    request: proto::DesktopLocateRequest,
+) -> Result<proto::DesktopLocateResponse, Status> {
+    let result = peekaboox_desktop::locate_target(
+        &request.app,
+        &request.target,
+        &DesktopLocateOptions {
+            image: request.image_path.map(PathBuf::from),
+            prefer_accessibility: request.prefer_accessibility.unwrap_or(true),
+            window_title: request.window_title,
+        },
+    )
+    .map_err(|error| Status::failed_precondition(error.to_string()))?;
+    Ok(proto_desktop_locate_response(result))
+}
+
+fn grpc_desktop_click(
+    request: proto::DesktopClickRequest,
+    config: &ServerConfig,
+) -> Result<proto::DesktopActionResponse, Status> {
+    if !request.dry_run {
+        ensure_input_allowed(config).map_err(Status::permission_denied)?;
+    }
+    let result = peekaboox_desktop::click_target(
+        &request.app,
+        &request.target,
+        &DesktopClickOptions {
+            locate: DesktopLocateOptions {
+                image: request.image_path.map(PathBuf::from),
+                prefer_accessibility: request.prefer_accessibility.unwrap_or(true),
+                window_title: request.window_title,
+            },
+            button: proto_mouse_button(request.button)?,
+            dry_run: request.dry_run,
+        },
+    )
+    .map_err(|error| Status::failed_precondition(error.to_string()))?;
+    Ok(proto_desktop_action_response(result))
+}
+
+fn grpc_desktop_drag(
+    request: proto::DesktopDragRequest,
+    config: &ServerConfig,
+) -> Result<proto::DesktopActionResponse, Status> {
+    if !request.dry_run {
+        ensure_input_allowed(config).map_err(Status::permission_denied)?;
+    }
+    let from_ratio = (
+        request.from_ratio_x.unwrap_or(0.5),
+        request.from_ratio_y.unwrap_or(0.5),
+    );
+    let to_ratio = (
+        request.to_ratio_x.unwrap_or(0.5),
+        request.to_ratio_y.unwrap_or(0.5),
+    );
+    validate_ratio_status("from_ratio_x", from_ratio.0)?;
+    validate_ratio_status("from_ratio_y", from_ratio.1)?;
+    validate_ratio_status("to_ratio_x", to_ratio.0)?;
+    validate_ratio_status("to_ratio_y", to_ratio.1)?;
+    let result = peekaboox_desktop::drag_target(
+        &request.app,
+        &request.target,
+        &DesktopDragOptions {
+            locate: DesktopLocateOptions {
+                image: request.image_path.map(PathBuf::from),
+                prefer_accessibility: request.prefer_accessibility.unwrap_or(true),
+                window_title: request.window_title,
+            },
+            from_ratio,
+            to_ratio,
+            button: proto_mouse_button(request.button)?,
+            duration_ms: request.duration_ms.unwrap_or(250),
+            dry_run: request.dry_run,
+        },
+    )
+    .map_err(|error| Status::failed_precondition(error.to_string()))?;
+    Ok(proto_desktop_action_response(result))
+}
+
+fn grpc_desktop_type_into(
+    request: proto::DesktopTypeIntoRequest,
+    config: &ServerConfig,
+) -> Result<proto::DesktopActionResponse, Status> {
+    if !request.dry_run {
+        ensure_input_allowed(config).map_err(Status::permission_denied)?;
+    }
+    let result = peekaboox_desktop::type_into_target(
+        &request.app,
+        &request.target,
+        &request.text,
+        &DesktopTypeIntoOptions {
+            locate: DesktopLocateOptions {
+                image: request.image_path.map(PathBuf::from),
+                prefer_accessibility: request.prefer_accessibility.unwrap_or(true),
+                window_title: request.window_title,
+            },
+            clear: request.clear,
+            dry_run: request.dry_run,
+        },
+    )
+    .map_err(|error| Status::failed_precondition(error.to_string()))?;
+    Ok(proto_desktop_action_response(result))
+}
+
+fn grpc_desktop_assert(
+    request: proto::DesktopAssertRequest,
+) -> Result<proto::DesktopActionResponse, Status> {
+    let result = peekaboox_desktop::assert_target(
+        &request.app,
+        &request.target,
+        &DesktopAssertOptions {
+            locate: DesktopLocateOptions {
+                image: request.image_path.map(PathBuf::from),
+                prefer_accessibility: request.prefer_accessibility.unwrap_or(true),
+                window_title: request.window_title,
+            },
+            assertion: proto_desktop_assertion(request.assertion, request.expected_text)?,
+        },
+    )
+    .map_err(|error| Status::failed_precondition(error.to_string()))?;
+    Ok(proto_desktop_action_response(result))
+}
+
 fn visual_compare_options(
     region: Option<Rect>,
     per_channel_threshold: u32,
@@ -2931,21 +3383,6 @@ fn ocr_status(error: peekaboox_core::PeekabooXError) -> Status {
     }
 }
 
-fn ensure_full_screen_capture_target(target: Option<proto::CaptureTarget>) -> Result<(), Status> {
-    match target.and_then(|target| target.target) {
-        None | Some(capture_target::Target::FullScreen(true)) => Ok(()),
-        Some(capture_target::Target::FullScreen(false)) => {
-            Err(Status::invalid_argument("full_screen must be true"))
-        }
-        Some(capture_target::Target::Region(_)) => Err(Status::unimplemented(
-            "region capture is not wired in the current capture backend",
-        )),
-        Some(capture_target::Target::WindowId(_)) => Err(Status::unimplemented(
-            "window capture is not wired in the current capture backend",
-        )),
-    }
-}
-
 fn capture_target_name(target: Option<&proto::CaptureTarget>) -> &'static str {
     match target.and_then(|target| target.target.as_ref()) {
         None => "full_screen_default",
@@ -2954,25 +3391,6 @@ fn capture_target_name(target: Option<&proto::CaptureTarget>) -> &'static str {
         Some(capture_target::Target::Region(_)) => "region",
         Some(capture_target::Target::WindowId(_)) => "window",
     }
-}
-
-fn grpc_capture_temp_path() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "peekaboox-grpc-capture-{}-{}.png",
-        std::process::id(),
-        unix_time_ms()
-    ))
-}
-
-fn png_dimensions(image: &[u8]) -> Option<(u32, u32)> {
-    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-    if image.len() < 24 || &image[0..8] != PNG_SIGNATURE || &image[12..16] != b"IHDR" {
-        return None;
-    }
-
-    let width = u32::from_be_bytes(image[16..20].try_into().ok()?);
-    let height = u32::from_be_bytes(image[20..24].try_into().ok()?);
-    Some((width, height))
 }
 
 fn proto_window_info(window: &WindowInfo) -> proto::WindowInfo {
@@ -3221,6 +3639,54 @@ fn proto_plugin_execution_response(
             .result
             .and_then(|value| serde_json::to_string(&value).ok()),
         error: result.error,
+    }
+}
+
+fn proto_desktop_action_response(
+    result: peekaboox_desktop::DesktopActionResult,
+) -> proto::DesktopActionResponse {
+    proto::DesktopActionResponse {
+        app: result.app,
+        action: result.action,
+        detail: result.detail,
+        backend_name: result.backend_name,
+    }
+}
+
+fn proto_desktop_locate_response(
+    result: peekaboox_desktop::ResolvedDesktopTarget,
+) -> proto::DesktopLocateResponse {
+    proto::DesktopLocateResponse {
+        app: result.app,
+        target: result.target,
+        point: Some(proto::Point {
+            x: result.point.x,
+            y: result.point.y,
+        }),
+        rect: result.rect.map(proto_rect),
+        source: result.source.label().to_owned(),
+    }
+}
+
+fn proto_desktop_assertion(
+    value: i32,
+    expected_text: Option<String>,
+) -> Result<DesktopAssertion, Status> {
+    match proto::DesktopAssertionKind::try_from(value) {
+        Ok(proto::DesktopAssertionKind::Unspecified) | Ok(proto::DesktopAssertionKind::Present) => {
+            Ok(DesktopAssertion::Present)
+        }
+        Ok(proto::DesktopAssertionKind::NotPresent) => Ok(DesktopAssertion::NotPresent),
+        Ok(proto::DesktopAssertionKind::Active) => Ok(DesktopAssertion::Active),
+        Ok(proto::DesktopAssertionKind::NotActive) => Ok(DesktopAssertion::NotActive),
+        Ok(proto::DesktopAssertionKind::Contains) => Ok(DesktopAssertion::Contains(
+            required_expected_text("contains", expected_text).map_err(Status::invalid_argument)?,
+        )),
+        Ok(proto::DesktopAssertionKind::NotContains) => Ok(DesktopAssertion::NotContains(
+            required_expected_text("not_contains", expected_text)
+                .map_err(Status::invalid_argument)?,
+        )),
+        Err(_) => Err(Status::invalid_argument("unknown desktop assertion")),
     }
 }
 
@@ -3475,6 +3941,69 @@ fn detected_input_backend_dto(backend: peekaboox_input::DetectedInputBackend) ->
     }
 }
 
+fn desktop_action_dto(result: peekaboox_desktop::DesktopActionResult) -> DesktopActionResultDto {
+    DesktopActionResultDto {
+        app: result.app,
+        action: result.action,
+        detail: result.detail,
+        backend_name: result.backend_name,
+    }
+}
+
+fn desktop_locate_dto(result: peekaboox_desktop::ResolvedDesktopTarget) -> DesktopLocateResultDto {
+    DesktopLocateResultDto {
+        app: result.app,
+        target: result.target,
+        point: PointDto {
+            x: result.point.x,
+            y: result.point.y,
+        },
+        rect: result.rect.map(Into::into),
+        source: result.source.label().to_owned(),
+    }
+}
+
+fn desktop_assertion(
+    assertion: DesktopAssertionDto,
+    expected_text: Option<String>,
+) -> Result<DesktopAssertion, String> {
+    match assertion {
+        DesktopAssertionDto::Present => Ok(DesktopAssertion::Present),
+        DesktopAssertionDto::NotPresent => Ok(DesktopAssertion::NotPresent),
+        DesktopAssertionDto::Active => Ok(DesktopAssertion::Active),
+        DesktopAssertionDto::NotActive => Ok(DesktopAssertion::NotActive),
+        DesktopAssertionDto::Contains => Ok(DesktopAssertion::Contains(required_expected_text(
+            "contains",
+            expected_text,
+        )?)),
+        DesktopAssertionDto::NotContains => Ok(DesktopAssertion::NotContains(
+            required_expected_text("not_contains", expected_text)?,
+        )),
+    }
+}
+
+fn required_expected_text(
+    assertion: &str,
+    expected_text: Option<String>,
+) -> Result<String, String> {
+    expected_text
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("desktop assertion {assertion} requires expected_text"))
+}
+
+fn validate_ratio(name: &str, value: f32) -> Result<(), String> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        Err(format!("{name} must be between 0.0 and 1.0"))
+    }
+}
+
+fn validate_ratio_status(name: &str, value: f32) -> Result<(), Status> {
+    validate_ratio(name, value).map_err(Status::invalid_argument)
+}
+
 fn validate_hotkey_keys(keys: &[String]) -> Result<(), Status> {
     if keys.is_empty() {
         return Err(Status::invalid_argument(
@@ -3655,23 +4184,39 @@ fn request_method(request: &ApiRequest) -> &'static str {
         ApiRequest::CompareImages { .. } => "compare_images",
         ApiRequest::DetectUiState { .. } => "detect_ui_state",
         ApiRequest::DetectUiElements { .. } => "detect_ui_elements",
+        ApiRequest::DesktopFocus { .. } => "desktop_focus",
+        ApiRequest::DesktopLocate { .. } => "desktop_locate",
+        ApiRequest::DesktopClick { .. } => "desktop_click",
+        ApiRequest::DesktopDrag { .. } => "desktop_drag",
+        ApiRequest::DesktopTypeInto { .. } => "desktop_type_into",
+        ApiRequest::DesktopAssert { .. } => "desktop_assert",
     }
 }
 
 fn audit_details(request: &ApiRequest) -> serde_json::Value {
     match request {
         ApiRequest::Ping => json!({}),
-        ApiRequest::Capture { output } => json!({ "output": output }),
+        ApiRequest::Capture {
+            output,
+            region,
+            window_id,
+        } => json!({
+            "output": output,
+            "has_region": region.is_some(),
+            "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty())
+        }),
         ApiRequest::CaptureDelta {
             stream_id,
             reset,
             region,
+            window_id,
             per_channel_threshold,
             low_bandwidth,
         } => json!({
             "stream_id": stream_id.as_deref().map(normalized_capture_stream_id).unwrap_or_else(|| normalized_capture_stream_id("")),
             "reset": reset,
             "has_region": region.is_some(),
+            "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "per_channel_threshold": per_channel_threshold,
             "low_bandwidth": low_bandwidth
         }),
@@ -3816,6 +4361,114 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
                 "merge_distance": merge_distance
             })
         }
+        ApiRequest::DesktopFocus {
+            app,
+            use_gnome_overview,
+            launch_if_needed,
+            wait_after_focus_ms,
+            overview_wait_ms,
+            window_title,
+        } => json!({
+            "app": app,
+            "use_gnome_overview": use_gnome_overview,
+            "launch_if_needed": launch_if_needed,
+            "wait_after_focus_ms": wait_after_focus_ms,
+            "overview_wait_ms": overview_wait_ms,
+            "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty())
+        }),
+        ApiRequest::DesktopLocate {
+            app,
+            target,
+            image_path,
+            prefer_accessibility,
+            window_title,
+        } => json!({
+            "app": app,
+            "target": target,
+            "has_image_path": image_path.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "prefer_accessibility": prefer_accessibility,
+            "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty())
+        }),
+        ApiRequest::DesktopClick {
+            app,
+            target,
+            image_path,
+            prefer_accessibility,
+            window_title,
+            button,
+            dry_run,
+        } => json!({
+            "app": app,
+            "target": target,
+            "has_image_path": image_path.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "prefer_accessibility": prefer_accessibility,
+            "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "button": format!("{button:?}").to_ascii_lowercase(),
+            "dry_run": dry_run
+        }),
+        ApiRequest::DesktopDrag {
+            app,
+            target,
+            image_path,
+            prefer_accessibility,
+            window_title,
+            button,
+            from_ratio_x,
+            from_ratio_y,
+            to_ratio_x,
+            to_ratio_y,
+            duration_ms,
+            dry_run,
+        } => json!({
+            "app": app,
+            "target": target,
+            "has_image_path": image_path.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "prefer_accessibility": prefer_accessibility,
+            "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "button": format!("{button:?}").to_ascii_lowercase(),
+            "from_ratio_x": from_ratio_x,
+            "from_ratio_y": from_ratio_y,
+            "to_ratio_x": to_ratio_x,
+            "to_ratio_y": to_ratio_y,
+            "duration_ms": duration_ms,
+            "dry_run": dry_run
+        }),
+        ApiRequest::DesktopTypeInto {
+            app,
+            target,
+            text,
+            image_path,
+            prefer_accessibility,
+            window_title,
+            clear,
+            dry_run,
+        } => json!({
+            "app": app,
+            "target": target,
+            "text_length": text.chars().count(),
+            "has_image_path": image_path.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "prefer_accessibility": prefer_accessibility,
+            "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "clear": clear,
+            "dry_run": dry_run
+        }),
+        ApiRequest::DesktopAssert {
+            app,
+            target,
+            image_path,
+            prefer_accessibility,
+            window_title,
+            assertion,
+            expected_text,
+        } => json!({
+            "app": app,
+            "target": target,
+            "has_image_path": image_path.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "prefer_accessibility": prefer_accessibility,
+            "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "assertion": format!("{assertion:?}").to_ascii_lowercase(),
+            "has_expected_text": expected_text.as_deref().is_some_and(|value| !value.trim().is_empty())
+        }),
     }
 }
 
@@ -4067,17 +4720,6 @@ mod tests {
         let error = ensure_input_allowed(&config).unwrap_err();
 
         assert!(error.contains("--allow-input"));
-    }
-
-    #[test]
-    fn png_dimensions_reads_ihdr() {
-        let mut image = vec![0_u8; 24];
-        image[0..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
-        image[12..16].copy_from_slice(b"IHDR");
-        image[16..20].copy_from_slice(&1920_u32.to_be_bytes());
-        image[20..24].copy_from_slice(&1080_u32.to_be_bytes());
-
-        assert_eq!(super::png_dimensions(&image), Some((1920, 1080)));
     }
 
     #[test]

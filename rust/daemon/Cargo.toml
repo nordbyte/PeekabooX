@@ -12,6 +12,7 @@ libc = "0.2"
 peekaboox-accessibility = { path = "../accessibility" }
 peekaboox-capture = { path = "../capture" }
 peekaboox-core = { path = "../core" }
+peekaboox-desktop = { path = "../desktop" }
 peekaboox-input = { path = "../input" }
 peekaboox-ipc = { path = "../ipc" }
 peekaboox-plugins = { path = "../plugins" }

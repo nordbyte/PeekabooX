@@ -59,13 +59,20 @@ pub enum ApiRequest {
     Ping,
     Capture {
         output: String,
+        #[serde(default)]
+        region: Option<RectDto>,
+        #[serde(default)]
+        window_id: Option<String>,
     },
     CaptureDelta {
         #[serde(default)]
         stream_id: Option<String>,
         #[serde(default)]
         reset: bool,
+        #[serde(default)]
         region: Option<RectDto>,
+        #[serde(default)]
+        window_id: Option<String>,
         #[serde(default)]
         per_channel_threshold: u8,
         #[serde(default = "default_low_bandwidth")]
@@ -167,6 +174,96 @@ pub enum ApiRequest {
         max_elements: u32,
         merge_distance: u32,
     },
+    DesktopFocus {
+        app: String,
+        #[serde(default = "default_true")]
+        use_gnome_overview: bool,
+        #[serde(default = "default_true")]
+        launch_if_needed: bool,
+        #[serde(default = "default_desktop_focus_wait_ms")]
+        wait_after_focus_ms: u64,
+        #[serde(default = "default_desktop_overview_wait_ms")]
+        overview_wait_ms: u64,
+        #[serde(default)]
+        window_title: Option<String>,
+    },
+    DesktopLocate {
+        app: String,
+        target: String,
+        #[serde(default)]
+        image_path: Option<String>,
+        #[serde(default = "default_true")]
+        prefer_accessibility: bool,
+        #[serde(default)]
+        window_title: Option<String>,
+    },
+    DesktopClick {
+        app: String,
+        target: String,
+        #[serde(default)]
+        image_path: Option<String>,
+        #[serde(default = "default_true")]
+        prefer_accessibility: bool,
+        #[serde(default)]
+        window_title: Option<String>,
+        #[serde(default)]
+        button: MouseButtonDto,
+        #[serde(default)]
+        dry_run: bool,
+    },
+    DesktopDrag {
+        app: String,
+        target: String,
+        #[serde(default)]
+        image_path: Option<String>,
+        #[serde(default = "default_true")]
+        prefer_accessibility: bool,
+        #[serde(default)]
+        window_title: Option<String>,
+        #[serde(default)]
+        button: MouseButtonDto,
+        #[serde(default = "default_desktop_drag_ratio")]
+        from_ratio_x: f32,
+        #[serde(default = "default_desktop_drag_ratio")]
+        from_ratio_y: f32,
+        #[serde(default = "default_desktop_drag_ratio")]
+        to_ratio_x: f32,
+        #[serde(default = "default_desktop_drag_ratio")]
+        to_ratio_y: f32,
+        #[serde(default = "default_desktop_drag_duration_ms")]
+        duration_ms: u64,
+        #[serde(default)]
+        dry_run: bool,
+    },
+    DesktopTypeInto {
+        app: String,
+        target: String,
+        text: String,
+        #[serde(default)]
+        image_path: Option<String>,
+        #[serde(default = "default_true")]
+        prefer_accessibility: bool,
+        #[serde(default)]
+        window_title: Option<String>,
+        #[serde(default)]
+        clear: bool,
+        #[serde(default)]
+        dry_run: bool,
+    },
+    DesktopAssert {
+        app: String,
+        target: String,
+        #[serde(default)]
+        image_path: Option<String>,
+        #[serde(default = "default_true")]
+        prefer_accessibility: bool,
+        #[serde(default)]
+        window_title: Option<String>,
+        #[serde(default)]
+        assertion: DesktopAssertionDto,
+        #[serde(default)]
+        expected_text: Option<String>,
+    },
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +273,18 @@ pub enum MouseButtonDto {
     Left,
     Middle,
     Right,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopAssertionDto {
+    #[default]
+    Present,
+    NotPresent,
+    Active,
+    NotActive,
+    Contains,
+    NotContains,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -231,6 +340,8 @@ pub enum ApiResult {
     VisualDiff(VisualDiffDto),
     UiState(UiStateDto),
     DetectUiElements(ElementListResultDto),
+    DesktopAction(DesktopActionResultDto),
+    DesktopLocate(DesktopLocateResultDto),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -340,6 +451,29 @@ pub struct PluginToolExecutionResultDto {
 pub struct ActionResultDto {
     pub backend_name: String,
     pub backend_kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopActionResultDto {
+    pub app: String,
+    pub action: String,
+    pub detail: String,
+    pub backend_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopLocateResultDto {
+    pub app: String,
+    pub target: String,
+    pub point: PointDto,
+    pub rect: Option<RectDto>,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PointDto {
+    pub x: i32,
+    pub y: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -509,8 +643,28 @@ fn default_low_bandwidth() -> bool {
     true
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_drag_duration_ms() -> u32 {
     250
+}
+
+fn default_desktop_drag_duration_ms() -> u64 {
+    250
+}
+
+fn default_desktop_drag_ratio() -> f32 {
+    0.5
+}
+
+fn default_desktop_focus_wait_ms() -> u64 {
+    1_000
+}
+
+fn default_desktop_overview_wait_ms() -> u64 {
+    800
 }
 
 fn default_plugin_timeout_ms() -> u64 {
@@ -525,9 +679,9 @@ fn default_plugin_max_output_bytes() -> usize {
 mod tests {
     use super::{
         API_VERSION, ApiRequest, ApiRequestEnvelope, ApiResponse, ApiResponseEnvelope, ApiResult,
-        DmaBufImportTargetDto, DmaBufProbeResultDto, MouseButtonDto, PluginDiscoveryErrorDto,
-        PluginDto, PluginListResultDto, PluginToolDto, PluginToolExecutionResultDto,
-        decode_request, default_socket_path, encode_response,
+        DesktopAssertionDto, DmaBufImportTargetDto, DmaBufProbeResultDto, MouseButtonDto,
+        PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
+        PluginToolExecutionResultDto, decode_request, default_socket_path, encode_response,
     };
 
     #[test]
@@ -631,6 +785,7 @@ mod tests {
                 width: 100,
                 height: 40,
             }),
+            window_id: None,
             per_channel_threshold: 2,
             low_bandwidth: true,
         });
@@ -650,8 +805,99 @@ mod tests {
                 stream_id: None,
                 reset: false,
                 region: None,
+                window_id: None,
                 per_channel_threshold: 0,
                 low_bandwidth: true,
+            })
+        );
+    }
+
+    #[test]
+    fn capture_request_round_trips_region_and_window_target_fields() {
+        let request = ApiRequestEnvelope::new(ApiRequest::Capture {
+            output: "screen.png".to_owned(),
+            region: Some(super::RectDto {
+                x: 10,
+                y: 20,
+                width: 100,
+                height: 40,
+            }),
+            window_id: None,
+        });
+        let payload = serde_json::to_string(&request).unwrap();
+
+        assert!(payload.contains(r#""method":"capture""#));
+        assert!(payload.contains(r#""region""#));
+        assert_eq!(decode_request(&payload).unwrap(), request);
+
+        let window_request = ApiRequestEnvelope::new(ApiRequest::Capture {
+            output: "window.png".to_owned(),
+            region: None,
+            window_id: Some("window-1".to_owned()),
+        });
+        let payload = serde_json::to_string(&window_request).unwrap();
+
+        assert!(payload.contains(r#""window_id":"window-1""#));
+        assert_eq!(decode_request(&payload).unwrap(), window_request);
+    }
+
+    #[test]
+    fn desktop_request_round_trips_as_json() {
+        let request = ApiRequestEnvelope::new(ApiRequest::DesktopTypeInto {
+            app: "telegram".to_owned(),
+            target: "search-input".to_owned(),
+            text: "PeekabooX".to_owned(),
+            image_path: None,
+            prefer_accessibility: true,
+            window_title: Some("Telegram".to_owned()),
+            clear: true,
+            dry_run: true,
+        });
+        let payload = serde_json::to_string(&request).unwrap();
+
+        assert!(payload.contains(r#""method":"desktop_type_into""#));
+        assert_eq!(decode_request(&payload).unwrap(), request);
+    }
+
+    #[test]
+    fn desktop_assert_defaults_to_present() {
+        let payload = r#"{"version":"peekaboox.v1","request":{"method":"desktop_assert","app":"telegram","target":"saved-messages"}}"#;
+        let request = decode_request(payload).unwrap();
+
+        assert_eq!(
+            request,
+            ApiRequestEnvelope::new(ApiRequest::DesktopAssert {
+                app: "telegram".to_owned(),
+                target: "saved-messages".to_owned(),
+                image_path: None,
+                prefer_accessibility: true,
+                window_title: None,
+                assertion: DesktopAssertionDto::Present,
+                expected_text: None,
+            })
+        );
+    }
+
+    #[test]
+    fn desktop_drag_defaults_ratios_button_duration_and_dry_run() {
+        let payload = r#"{"version":"peekaboox.v1","request":{"method":"desktop_drag","app":"paint","target":"canvas"}}"#;
+        let request = decode_request(payload).unwrap();
+
+        assert_eq!(
+            request,
+            ApiRequestEnvelope::new(ApiRequest::DesktopDrag {
+                app: "paint".to_owned(),
+                target: "canvas".to_owned(),
+                image_path: None,
+                prefer_accessibility: true,
+                window_title: None,
+                button: MouseButtonDto::Left,
+                from_ratio_x: 0.5,
+                from_ratio_y: 0.5,
+                to_ratio_x: 0.5,
+                to_ratio_y: 0.5,
+                duration_ms: 250,
+                dry_run: false,
             })
         );
     }

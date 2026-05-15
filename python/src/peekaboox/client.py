@@ -137,6 +137,24 @@ class ActionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DesktopActionResult:
+    app: str
+    action: str
+    detail: str
+    backend_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopLocateResult:
+    app: str
+    target: str
+    x: int
+    y: int
+    rect: Rect | None
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
 class DesktopState:
     active_window: WindowInfo | None
     windows: tuple[WindowInfo, ...]
@@ -238,9 +256,14 @@ class PeekabooXClient:
             if close is not None:
                 close()
 
-    def capture_screen(self, include_semantic_tree: bool = False) -> CaptureScreenResult:
+    def capture_screen(
+        self,
+        include_semantic_tree: bool = False,
+        region: Rect | None = None,
+        window_id: str | None = None,
+    ) -> CaptureScreenResult:
         request = self.messages.CaptureScreenRequest(
-            target=self.messages.CaptureTarget(full_screen=True),
+            target=_capture_target(self.messages, region=region, window_id=window_id),
             include_semantic_tree=include_semantic_tree,
         )
         response = self._call("CaptureScreen", request)
@@ -257,18 +280,15 @@ class PeekabooXClient:
         stream_id: str = "default",
         reset: bool = False,
         region: Rect | None = None,
+        window_id: str | None = None,
         per_channel_threshold: int | None = None,
         low_bandwidth: bool = True,
     ) -> CaptureDeltaResult:
         request_kwargs: dict[str, Any] = {
             "stream_id": stream_id,
             "reset": reset,
-            "target": self.messages.CaptureTarget(full_screen=True),
+            "target": _capture_target(self.messages, region=region, window_id=window_id),
         }
-        if region is not None:
-            request_kwargs["target"] = self.messages.CaptureTarget(
-                region=_rect_to_proto(self.messages, region)
-            )
         if per_channel_threshold is not None:
             request_kwargs["per_channel_threshold"] = per_channel_threshold
         if _message_accepts_field(self.messages.CaptureDeltaRequest, "low_bandwidth"):
@@ -544,6 +564,174 @@ class PeekabooXClient:
             elements=tuple(_ui_element_from_proto(element) for element in response.elements),
         )
 
+    def desktop_focus(
+        self,
+        app: str,
+        *,
+        use_gnome_overview: bool = True,
+        launch_if_needed: bool = True,
+        wait_after_focus_ms: int = 1_000,
+        overview_wait_ms: int = 800,
+        window_title: str | None = None,
+    ) -> DesktopActionResult:
+        request_kwargs: dict[str, Any] = {
+            "app": app,
+            "use_gnome_overview": use_gnome_overview,
+            "launch_if_needed": launch_if_needed,
+            "wait_after_focus_ms": wait_after_focus_ms,
+            "overview_wait_ms": overview_wait_ms,
+        }
+        if window_title is not None:
+            request_kwargs["window_title"] = window_title
+        return _desktop_action_from_proto(
+            self._call("DesktopFocus", self.messages.DesktopFocusRequest(**request_kwargs))
+        )
+
+    def desktop_locate(
+        self,
+        app: str,
+        target: str,
+        *,
+        image_path: str | PathLike[str] | None = None,
+        prefer_accessibility: bool = True,
+        window_title: str | None = None,
+    ) -> DesktopLocateResult:
+        request_kwargs: dict[str, Any] = {
+            "app": app,
+            "target": target,
+            "prefer_accessibility": prefer_accessibility,
+        }
+        if image_path is not None:
+            request_kwargs["image_path"] = str(image_path)
+        if window_title is not None:
+            request_kwargs["window_title"] = window_title
+        return _desktop_locate_from_proto(
+            self._call("DesktopLocate", self.messages.DesktopLocateRequest(**request_kwargs))
+        )
+
+    def desktop_click(
+        self,
+        app: str,
+        target: str,
+        *,
+        image_path: str | PathLike[str] | None = None,
+        prefer_accessibility: bool = True,
+        window_title: str | None = None,
+        button: str = "left",
+        dry_run: bool = False,
+    ) -> DesktopActionResult:
+        request_kwargs: dict[str, Any] = {
+            "app": app,
+            "target": target,
+            "prefer_accessibility": prefer_accessibility,
+            "button": _mouse_button_to_proto(self.messages, button),
+            "dry_run": dry_run,
+        }
+        if image_path is not None:
+            request_kwargs["image_path"] = str(image_path)
+        if window_title is not None:
+            request_kwargs["window_title"] = window_title
+        return _desktop_action_from_proto(
+            self._call("DesktopClick", self.messages.DesktopClickRequest(**request_kwargs))
+        )
+
+    def desktop_drag(
+        self,
+        app: str,
+        target: str,
+        *,
+        image_path: str | PathLike[str] | None = None,
+        prefer_accessibility: bool = True,
+        window_title: str | None = None,
+        button: str = "left",
+        from_ratio: tuple[float, float] = (0.5, 0.5),
+        to_ratio: tuple[float, float] = (0.5, 0.5),
+        duration_ms: int = 250,
+        dry_run: bool = False,
+    ) -> DesktopActionResult:
+        _validate_ratio_pair("from_ratio", from_ratio)
+        _validate_ratio_pair("to_ratio", to_ratio)
+        if duration_ms < 0:
+            raise ValueError("duration_ms must be non-negative")
+        request_kwargs: dict[str, Any] = {
+            "app": app,
+            "target": target,
+            "prefer_accessibility": prefer_accessibility,
+            "button": _mouse_button_to_proto(self.messages, button),
+            "from_ratio_x": from_ratio[0],
+            "from_ratio_y": from_ratio[1],
+            "to_ratio_x": to_ratio[0],
+            "to_ratio_y": to_ratio[1],
+            "duration_ms": duration_ms,
+            "dry_run": dry_run,
+        }
+        if image_path is not None:
+            request_kwargs["image_path"] = str(image_path)
+        if window_title is not None:
+            request_kwargs["window_title"] = window_title
+        return _desktop_action_from_proto(
+            self._call("DesktopDrag", self.messages.DesktopDragRequest(**request_kwargs))
+        )
+
+    def desktop_type_into(
+        self,
+        app: str,
+        target: str,
+        text: str,
+        *,
+        image_path: str | PathLike[str] | None = None,
+        prefer_accessibility: bool = True,
+        window_title: str | None = None,
+        clear: bool = False,
+        dry_run: bool = False,
+    ) -> DesktopActionResult:
+        request_kwargs: dict[str, Any] = {
+            "app": app,
+            "target": target,
+            "text": text,
+            "prefer_accessibility": prefer_accessibility,
+            "clear": clear,
+            "dry_run": dry_run,
+        }
+        if image_path is not None:
+            request_kwargs["image_path"] = str(image_path)
+        if window_title is not None:
+            request_kwargs["window_title"] = window_title
+        return _desktop_action_from_proto(
+            self._call("DesktopTypeInto", self.messages.DesktopTypeIntoRequest(**request_kwargs))
+        )
+
+    def desktop_assert(
+        self,
+        app: str,
+        target: str,
+        *,
+        assertion: str = "present",
+        expected_text: str | None = None,
+        image_path: str | PathLike[str] | None = None,
+        prefer_accessibility: bool = True,
+        window_title: str | None = None,
+    ) -> DesktopActionResult:
+        request_kwargs: dict[str, Any] = {
+            "app": app,
+            "target": target,
+            "prefer_accessibility": prefer_accessibility,
+            "assertion": _desktop_assertion_to_proto(
+                self.messages,
+                assertion,
+                expected_text=expected_text,
+            ),
+        }
+        if expected_text is not None:
+            request_kwargs["expected_text"] = expected_text
+        if image_path is not None:
+            request_kwargs["image_path"] = str(image_path)
+        if window_title is not None:
+            request_kwargs["window_title"] = window_title
+        return _desktop_action_from_proto(
+            self._call("DesktopAssert", self.messages.DesktopAssertRequest(**request_kwargs))
+        )
+
     def probe_dmabuf(self, import_target: str = "compute") -> DmaBufProbeResult:
         request = self.messages.ProbeDmaBufRequest(
             import_target=_dmabuf_import_target_to_proto(self.messages, import_target),
@@ -603,6 +791,19 @@ def _load_grpc_modules() -> tuple[ModuleType, ModuleType, ModuleType]:
             "PeekabooXClient requires grpcio and protobuf; install the Python package with its runtime dependencies"
         ) from error
     return grpc_module, messages, services
+
+
+def _capture_target(messages: Any, region: Rect | None = None, window_id: str | None = None) -> Any:
+    if region is not None and window_id is not None and window_id.strip():
+        raise ValueError("provide either region or window_id, not both")
+    if region is not None:
+        return messages.CaptureTarget(region=_rect_to_proto(messages, region))
+    if window_id is not None:
+        window_id = window_id.strip()
+        if not window_id:
+            raise ValueError("window_id must not be empty")
+        return messages.CaptureTarget(window_id=window_id)
+    return messages.CaptureTarget(full_screen=True)
 
 
 def _window_from_proto(window: Any) -> WindowInfo:
@@ -805,6 +1006,28 @@ def _plugin_execution_from_proto(response: Any) -> PluginToolExecutionResult:
     )
 
 
+def _desktop_action_from_proto(response: Any) -> DesktopActionResult:
+    return DesktopActionResult(
+        app=response.app,
+        action=response.action,
+        detail=response.detail,
+        backend_name=response.backend_name,
+    )
+
+
+def _desktop_locate_from_proto(response: Any) -> DesktopLocateResult:
+    point = _message_field(response, "point")
+    rect = _message_field(response, "rect")
+    return DesktopLocateResult(
+        app=response.app,
+        target=response.target,
+        x=point.x if point is not None else 0,
+        y=point.y if point is not None else 0,
+        rect=_rect_from_proto(rect) if rect is not None else None,
+        source=response.source,
+    )
+
+
 def _rect_from_proto(rect: Any | None) -> Rect:
     if rect is None:
         return Rect(x=0, y=0, width=0, height=0)
@@ -833,6 +1056,53 @@ def _mouse_button_to_proto(messages: Any, button: str) -> int:
     if enum is not None and hasattr(enum, "Value"):
         return int(enum.Value(name))
     return {"MOUSE_BUTTON_LEFT": 1, "MOUSE_BUTTON_MIDDLE": 2, "MOUSE_BUTTON_RIGHT": 3}[name]
+
+
+def _desktop_assertion_to_proto(
+    messages: Any,
+    assertion: str,
+    *,
+    expected_text: str | None = None,
+) -> int:
+    normalized = assertion.strip().casefold().replace("-", "_")
+    names = {
+        "present": "DESKTOP_ASSERTION_KIND_PRESENT",
+        "not_present": "DESKTOP_ASSERTION_KIND_NOT_PRESENT",
+        "active": "DESKTOP_ASSERTION_KIND_ACTIVE",
+        "not_active": "DESKTOP_ASSERTION_KIND_NOT_ACTIVE",
+        "contains": "DESKTOP_ASSERTION_KIND_CONTAINS",
+        "not_contains": "DESKTOP_ASSERTION_KIND_NOT_CONTAINS",
+    }
+    try:
+        name = names[normalized]
+    except KeyError as error:
+        raise ValueError(
+            "assertion must be present, not_present, active, not_active, contains, or not_contains"
+        ) from error
+    if normalized in {"contains", "not_contains"} and not (expected_text or "").strip():
+        raise ValueError(f"assertion {normalized} requires expected_text")
+
+    if hasattr(messages, name):
+        return int(getattr(messages, name))
+    enum = getattr(messages, "DesktopAssertionKind", None)
+    if enum is not None and hasattr(enum, "Value"):
+        return int(enum.Value(name))
+    return {
+        "DESKTOP_ASSERTION_KIND_PRESENT": 1,
+        "DESKTOP_ASSERTION_KIND_NOT_PRESENT": 2,
+        "DESKTOP_ASSERTION_KIND_ACTIVE": 3,
+        "DESKTOP_ASSERTION_KIND_NOT_ACTIVE": 4,
+        "DESKTOP_ASSERTION_KIND_CONTAINS": 5,
+        "DESKTOP_ASSERTION_KIND_NOT_CONTAINS": 6,
+    }[name]
+
+
+def _validate_ratio_pair(name: str, value: tuple[float, float]) -> None:
+    if len(value) != 2:
+        raise ValueError(f"{name} must contain exactly two values")
+    for index, part in enumerate(value):
+        if not 0.0 <= float(part) <= 1.0:
+            raise ValueError(f"{name}[{index}] must be between 0.0 and 1.0")
 
 
 def _dmabuf_import_target_to_proto(messages: Any, import_target: str) -> int:

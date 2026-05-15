@@ -851,6 +851,7 @@ dependencies = [
  "peekaboox-accessibility",
  "peekaboox-capture",
  "peekaboox-core",
+ "peekaboox-desktop",
  "peekaboox-input",
  "peekaboox-ipc",
  "peekaboox-plugins",

@@ -31,9 +31,11 @@ PEEKABOOX_ALLOW_INPUT=1 peekabooxd run
 ```
 
 This applies to daemon-routed clicks, pointer movement, drags, hotkeys,
-`type_text`, `paste_text`, and gRPC input requests including semantic
-selectors. Direct local CLI execution remains available for development, but
-agent-facing integrations should route through the daemon policy.
+`type_text`, `paste_text`, desktop helper actions that can move focus or inject
+input (`desktop_focus`, `desktop_click`, `desktop_drag`, `desktop_type_into`),
+and gRPC input requests including semantic selectors. Direct local CLI
+execution remains available for development, but agent-facing integrations
+should route through the daemon policy.
 
 ## Audit Logs
 
