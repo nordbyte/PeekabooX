@@ -146,8 +146,42 @@ pub enum ApiRequest {
         vision_fallback: bool,
     },
     Ocr {
+        #[serde(default)]
+        image_path: Option<String>,
+        #[serde(default)]
         region: Option<RectDto>,
+        #[serde(default)]
+        app: Option<String>,
+        #[serde(default)]
+        window_title: Option<String>,
+        #[serde(default)]
+        window_id: Option<String>,
+        #[serde(default)]
         language: Option<String>,
+        #[serde(default)]
+        page_segmentation_mode: Option<u8>,
+        #[serde(default)]
+        engine_mode: Option<u8>,
+        #[serde(default)]
+        dpi: Option<u32>,
+        #[serde(default)]
+        min_confidence: Option<f32>,
+        #[serde(default)]
+        whitelist: Option<String>,
+        #[serde(default)]
+        config: Vec<String>,
+        #[serde(default)]
+        scale: Option<f32>,
+        #[serde(default)]
+        grayscale: bool,
+        #[serde(default)]
+        threshold: Option<u8>,
+        #[serde(default)]
+        invert: bool,
+        #[serde(default)]
+        contrast: Option<f32>,
+        #[serde(default)]
+        deskew: bool,
     },
     CompareImages {
         expected_path: String,
@@ -541,6 +575,7 @@ pub struct OcrResultDto {
     pub backend_name: String,
     pub text: String,
     pub blocks: Vec<OcrBlockDto>,
+    pub words: Vec<OcrBlockDto>,
     pub warnings: Vec<String>,
 }
 
@@ -785,13 +820,29 @@ mod tests {
     #[test]
     fn ocr_request_round_trips_as_json() {
         let request = ApiRequestEnvelope::new(ApiRequest::Ocr {
+            image_path: Some("tests/fixtures/ocr/sample.png".to_owned()),
             region: Some(super::RectDto {
                 x: 10,
                 y: 20,
                 width: 100,
                 height: 40,
             }),
+            app: Some("text-editor".to_owned()),
+            window_title: Some("Invoice".to_owned()),
+            window_id: Some("window-1".to_owned()),
             language: Some("eng".to_owned()),
+            page_segmentation_mode: Some(6),
+            engine_mode: Some(1),
+            dpi: Some(300),
+            min_confidence: Some(0.5),
+            whitelist: Some("ABC123".to_owned()),
+            config: vec!["preserve_interword_spaces=1".to_owned()],
+            scale: Some(2.0),
+            grayscale: true,
+            threshold: Some(180),
+            invert: true,
+            contrast: Some(10.0),
+            deskew: true,
         });
         let payload = serde_json::to_string(&request).unwrap();
 

@@ -782,6 +782,37 @@ class McpServer:
                     {
                         "region": RECT_SCHEMA,
                         "language": {"type": "string"},
+                        "image_path": {"type": "string"},
+                        "window_id": {"type": "string"},
+                        "window_title": {"type": "string"},
+                        "app": {"type": "string"},
+                        "page_segmentation_mode": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 13,
+                        },
+                        "engine_mode": {"type": "integer", "minimum": 0, "maximum": 3},
+                        "dpi": {"type": "integer", "minimum": 1},
+                        "min_confidence": {
+                            "type": "number",
+                            "minimum": 0.0,
+                            "maximum": 1.0,
+                        },
+                        "whitelist": {"type": "string"},
+                        "config": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "scale": {"type": "number", "minimum": 0.1, "maximum": 8.0},
+                        "grayscale": {"type": "boolean", "default": False},
+                        "threshold": {"type": "integer", "minimum": 0, "maximum": 255},
+                        "invert": {"type": "boolean", "default": False},
+                        "contrast": {
+                            "type": "number",
+                            "minimum": -255.0,
+                            "maximum": 255.0,
+                        },
+                        "deskew": {"type": "boolean", "default": False},
                     }
                 ),
                 self._ocr_screen,
@@ -1229,10 +1260,31 @@ class McpServer:
         }
 
     def _ocr_screen(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        config = arguments.get("config") or []
+        if not isinstance(config, list) or not all(isinstance(item, str) for item in config):
+            raise ValueError("config must be a list of key=value strings")
         return _to_mcp_value(
             self._require_runtime().ocr_screen(
                 region=_optional_rect(arguments, "region"),
-                language=arguments.get("language"),
+                language=_optional_string(arguments, "language"),
+                image_path=_optional_string(arguments, "image_path"),
+                window_id=_optional_string(arguments, "window_id"),
+                window_title=_optional_string(arguments, "window_title"),
+                app=_optional_string(arguments, "app"),
+                page_segmentation_mode=_optional_int(
+                    arguments, "page_segmentation_mode"
+                ),
+                engine_mode=_optional_int(arguments, "engine_mode"),
+                dpi=_optional_int(arguments, "dpi"),
+                min_confidence=_optional_float(arguments, "min_confidence"),
+                whitelist=_optional_string(arguments, "whitelist"),
+                config=config,
+                scale=_optional_float(arguments, "scale"),
+                grayscale=_optional_bool(arguments, "grayscale"),
+                threshold=_optional_int(arguments, "threshold"),
+                invert=_optional_bool(arguments, "invert"),
+                contrast=_optional_float(arguments, "contrast"),
+                deskew=_optional_bool(arguments, "deskew"),
             )
         )
 
@@ -1333,6 +1385,15 @@ def _optional_int(arguments: dict[str, Any], name: str) -> int | None:
 def _optional_float(arguments: dict[str, Any], name: str) -> float | None:
     value = arguments.get(name)
     return None if value is None else float(value)
+
+
+def _optional_bool(arguments: dict[str, Any], name: str) -> bool:
+    value = arguments.get(name)
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean")
+    return value
 
 
 def _optional_ratio_pair(arguments: dict[str, Any], name: str) -> tuple[float, float] | None:

@@ -92,6 +92,7 @@ class OcrResult:
     backend_name: str
     text: str
     blocks: tuple[OcrBlock, ...]
+    words: tuple[OcrBlock, ...]
     warnings: tuple[str, ...]
 
 
@@ -302,17 +303,66 @@ class PeekabooXClient:
         self,
         region: Rect | None = None,
         language: str | None = None,
+        image_path: str | PathLike[str] | None = None,
+        window_id: str | None = None,
+        window_title: str | None = None,
+        app: str | None = None,
+        page_segmentation_mode: int | None = None,
+        engine_mode: int | None = None,
+        dpi: int | None = None,
+        min_confidence: float | None = None,
+        whitelist: str | None = None,
+        config: Sequence[str] = (),
+        scale: float | None = None,
+        grayscale: bool = False,
+        threshold: int | None = None,
+        invert: bool = False,
+        contrast: float | None = None,
+        deskew: bool = False,
     ) -> OcrResult:
         request_kwargs: dict[str, Any] = {}
         if region is not None:
             request_kwargs["region"] = _rect_to_proto(self.messages, region)
         if language is not None:
             request_kwargs["language"] = language
+        optional_values = {
+            "image_path": str(image_path) if image_path is not None else None,
+            "window_id": window_id,
+            "window_title": window_title,
+            "app": app,
+            "page_segmentation_mode": page_segmentation_mode,
+            "engine_mode": engine_mode,
+            "dpi": dpi,
+            "min_confidence": min_confidence,
+            "whitelist": whitelist,
+            "scale": scale,
+            "threshold": threshold,
+            "contrast": contrast,
+        }
+        for field_name, value in optional_values.items():
+            if value is not None and _message_accepts_field(
+                self.messages.OcrScreenRequest, field_name
+            ):
+                request_kwargs[field_name] = value
+        if config and _message_accepts_field(self.messages.OcrScreenRequest, "config"):
+            request_kwargs["config"] = list(config)
+        for field_name, value in {
+            "grayscale": grayscale,
+            "invert": invert,
+            "deskew": deskew,
+        }.items():
+            if value and _message_accepts_field(self.messages.OcrScreenRequest, field_name):
+                request_kwargs[field_name] = value
         response = self._call("OcrScreen", self.messages.OcrScreenRequest(**request_kwargs))
         return _ocr_result_from_proto(response)
 
-    def ocr_region(self, region: Rect, language: str | None = None) -> OcrResult:
-        return self.ocr_screen(region=region, language=language)
+    def ocr_region(
+        self,
+        region: Rect,
+        language: str | None = None,
+        **kwargs: Any,
+    ) -> OcrResult:
+        return self.ocr_screen(region=region, language=language, **kwargs)
 
     def compare_images(
         self,
@@ -863,6 +913,10 @@ def _ocr_result_from_proto(response: Any) -> OcrResult:
         backend_name=response.backend_name,
         text=response.text,
         blocks=tuple(_ocr_block_from_proto(block) for block in response.blocks),
+        words=tuple(
+            _ocr_block_from_proto(word)
+            for word in getattr(response, "words", ())
+        ),
         warnings=tuple(response.warnings),
     )
 

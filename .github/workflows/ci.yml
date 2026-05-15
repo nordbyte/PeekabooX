@@ -42,13 +42,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config tesseract-ocr
       - run: bash -n packaging/install-rust.sh
       - run: python packaging/release_manifest.py --check
       - run: python packaging/debian/build_deb.py --check
       - run: python -m pip wheel --no-deps -w target/python-wheel ./python
       - run: cargo build --release -p peekaboox-cli -p peekabooxd
       - run: PEEKABOOX_BIN=target/release/peekaboox bash examples/cli/vision-smoke.sh
+      - run: PEEKABOOX_BIN=target/release/peekaboox bash examples/cli/ocr-smoke.sh
       - run: python packaging/debian/build_deb.py --skip-cargo-build
       - run: python packaging/smoke_install.py --skip-wheel --skip-cargo-install --deb "target/dist/peekaboox_*.deb"
       - run: python packaging/smoke_install.py --skip-wheel --skip-deb --cargo-root target/install-smoke/cargo

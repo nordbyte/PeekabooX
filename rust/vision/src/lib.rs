@@ -3,7 +3,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use image::{DynamicImage, ImageReader};
+use image::{DynamicImage, ImageReader, Rgba, RgbaImage, imageops};
 use peekaboox_core::{CaptureFrame, PeekabooXError, PixelFormat, Rect, Result, UiElement};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +17,7 @@ pub struct OcrResult {
     pub backend_name: String,
     pub text: String,
     pub blocks: Vec<OcrText>,
+    pub words: Vec<OcrText>,
     pub warnings: Vec<String>,
 }
 
@@ -162,9 +163,31 @@ impl Default for UiElementDetectionOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OcrConfig {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OcrPreprocessingOptions {
+    pub scale: Option<f32>,
+    pub grayscale: bool,
+    pub threshold: Option<u8>,
+    pub invert: bool,
+    pub contrast: Option<f32>,
+    pub deskew: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct OcrOptions {
     pub language: Option<String>,
     pub page_segmentation_mode: Option<u8>,
+    pub engine_mode: Option<u8>,
+    pub dpi: Option<u32>,
+    pub min_confidence: f32,
+    pub whitelist: Option<String>,
+    pub config: Vec<OcrConfig>,
+    pub preprocessing: OcrPreprocessingOptions,
 }
 
 impl Default for OcrOptions {
@@ -172,6 +195,12 @@ impl Default for OcrOptions {
         Self {
             language: std::env::var("PEEKABOOX_OCR_LANGUAGE").ok(),
             page_segmentation_mode: Some(6),
+            engine_mode: None,
+            dpi: None,
+            min_confidence: 0.0,
+            whitelist: None,
+            config: Vec::new(),
+            preprocessing: OcrPreprocessingOptions::default(),
         }
     }
 }
@@ -185,7 +214,7 @@ pub trait VisionBackend {
     fn detect_ui_elements(&self, frame: &CaptureFrame) -> Result<Vec<UiElement>>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TesseractOcrBackend {
     command: String,
     options: OcrOptions,
@@ -223,6 +252,7 @@ impl TesseractOcrBackend {
 
 impl OcrBackend for TesseractOcrBackend {
     fn recognize_image(&self, image_path: &Path, region: Option<Rect>) -> Result<OcrResult> {
+        validate_ocr_options(&self.options)?;
         if !self.is_available() {
             return Err(PeekabooXError::new(format!(
                 "OCR backend {} is not available; install tesseract-ocr",
@@ -230,17 +260,27 @@ impl OcrBackend for TesseractOcrBackend {
             )));
         }
 
-        let output = Command::new(&self.command)
-            .args(tesseract_args(image_path, &self.options))
+        let prepared = prepare_ocr_image(image_path, region, &self.options)?;
+        let output = match Command::new(&self.command)
+            .args(tesseract_args(&prepared.path, &self.options))
             .output()
-            .map_err(|error| {
-                PeekabooXError::new(format!(
+        {
+            Ok(output) => output,
+            Err(error) => {
+                if prepared.temporary {
+                    remove_temp_file(&prepared.path);
+                }
+                return Err(PeekabooXError::new(format!(
                     "failed to execute OCR backend {}: {error}",
                     self.command
-                ))
-            })?;
+                )));
+            }
+        };
 
         if !output.status.success() {
+            if prepared.temporary {
+                remove_temp_file(&prepared.path);
+            }
             return Err(PeekabooXError::new(format!(
                 "OCR backend {} failed with status {}; stderr: {}",
                 self.command,
@@ -249,12 +289,27 @@ impl OcrBackend for TesseractOcrBackend {
             )));
         }
 
-        let tsv = String::from_utf8(output.stdout).map_err(|error| {
-            PeekabooXError::new(format!(
-                "OCR backend returned non-UTF-8 TSV output: {error}"
-            ))
-        })?;
-        tesseract_result_from_tsv(&tsv, region)
+        let tsv = match String::from_utf8(output.stdout) {
+            Ok(tsv) => tsv,
+            Err(error) => {
+                if prepared.temporary {
+                    remove_temp_file(&prepared.path);
+                }
+                return Err(PeekabooXError::new(format!(
+                    "OCR backend returned non-UTF-8 TSV output: {error}"
+                )));
+            }
+        };
+        let result = tesseract_result_from_tsv_with_transform(
+            &tsv,
+            &prepared.transform,
+            &self.options,
+            prepared.warnings,
+        );
+        if prepared.temporary {
+            remove_temp_file(&prepared.path);
+        }
+        result
     }
 }
 
@@ -312,6 +367,14 @@ pub fn ocr_region(region: Rect) -> Result<OcrResult> {
 
 pub fn ocr_image_file(path: impl AsRef<Path>, region: Option<Rect>) -> Result<OcrResult> {
     TesseractOcrBackend::default().recognize_image(path.as_ref(), region)
+}
+
+pub fn ocr_image_file_with_backend(
+    backend: &impl OcrBackend,
+    path: impl AsRef<Path>,
+    region: Option<Rect>,
+) -> Result<OcrResult> {
+    backend.recognize_image(path.as_ref(), region)
 }
 
 pub fn load_image_file(path: impl AsRef<Path>) -> Result<CaptureFrame> {
@@ -671,12 +734,56 @@ pub fn tesseract_args(image_path: &Path, options: &OcrOptions) -> Vec<String> {
         args.push(page_segmentation_mode.to_string());
     }
 
+    if let Some(engine_mode) = options.engine_mode {
+        args.push("--oem".to_owned());
+        args.push(engine_mode.to_string());
+    }
+
+    if let Some(dpi) = options.dpi {
+        args.push("--dpi".to_owned());
+        args.push(dpi.to_string());
+    }
+
+    if let Some(whitelist) = options.whitelist.as_deref()
+        && !whitelist.trim().is_empty()
+    {
+        args.push("-c".to_owned());
+        args.push(format!("tessedit_char_whitelist={whitelist}"));
+    }
+
+    for config in &options.config {
+        let key = config.key.trim();
+        if !key.is_empty() {
+            args.push("-c".to_owned());
+            args.push(format!("{key}={}", config.value));
+        }
+    }
+
     args.push("tsv".to_owned());
     args
 }
 
+#[cfg(test)]
 fn tesseract_result_from_tsv(tsv: &str, region: Option<Rect>) -> Result<OcrResult> {
-    let words = parse_tesseract_words(tsv, region)?;
+    let words = parse_tesseract_words(tsv, region, 0.0)?;
+    ocr_result_from_words(words, Vec::new())
+}
+
+fn tesseract_result_from_tsv_with_transform(
+    tsv: &str,
+    transform: &OcrCoordinateTransform,
+    options: &OcrOptions,
+    warnings: Vec<String>,
+) -> Result<OcrResult> {
+    let mut words = parse_tesseract_words(tsv, None, options.min_confidence)?;
+    for word in &mut words {
+        word.bounds = transform.map_rect(word.bounds);
+    }
+    ocr_result_from_words(words, warnings)
+}
+
+fn ocr_result_from_words(words: Vec<TesseractWord>, warnings: Vec<String>) -> Result<OcrResult> {
+    let word_blocks = words.iter().map(ocr_text_from_word).collect::<Vec<_>>();
     let blocks = group_words_into_lines(words);
     let text = blocks
         .iter()
@@ -688,7 +795,8 @@ fn tesseract_result_from_tsv(tsv: &str, region: Option<Rect>) -> Result<OcrResul
         backend_name: "tesseract".to_owned(),
         text,
         blocks,
-        warnings: Vec::new(),
+        words: word_blocks,
+        warnings,
     })
 }
 
@@ -708,7 +816,11 @@ struct LineKey {
     line_num: i32,
 }
 
-fn parse_tesseract_words(tsv: &str, region: Option<Rect>) -> Result<Vec<TesseractWord>> {
+fn parse_tesseract_words(
+    tsv: &str,
+    region: Option<Rect>,
+    min_confidence: f32,
+) -> Result<Vec<TesseractWord>> {
     let mut lines = tsv.lines();
     let Some(header) = lines.next() else {
         return Ok(Vec::new());
@@ -754,6 +866,10 @@ fn parse_tesseract_words(tsv: &str, region: Option<Rect>) -> Result<Vec<Tesserac
         if confidence < 0.0 {
             continue;
         }
+        let confidence = confidence / 100.0;
+        if confidence < min_confidence {
+            continue;
+        }
 
         let bounds = Rect::new(
             parse_i32_field(&fields, left_index)?,
@@ -774,11 +890,28 @@ fn parse_tesseract_words(tsv: &str, region: Option<Rect>) -> Result<Vec<Tesserac
             },
             text: text.to_owned(),
             bounds,
-            confidence: confidence / 100.0,
+            confidence,
         });
     }
 
     Ok(words)
+}
+
+fn ocr_text_from_word(word: &TesseractWord) -> OcrText {
+    OcrText {
+        text: word.text.clone(),
+        element: UiElement {
+            id: format!(
+                "ocr-word:{}:{}:{}:{}",
+                word.bounds.x, word.bounds.y, word.bounds.width, word.bounds.height
+            ),
+            role: "word".to_owned(),
+            label: Some(word.text.clone()),
+            bounds: word.bounds,
+            confidence: word.confidence,
+            states: Vec::new(),
+        },
+    }
 }
 
 fn group_words_into_lines(words: Vec<TesseractWord>) -> Vec<OcrText> {
@@ -872,6 +1005,386 @@ fn rect_union(left: Rect, right: Rect) -> Rect {
         u32::try_from(x2 - i64::from(x1)).unwrap_or(u32::MAX),
         u32::try_from(y2 - i64::from(y1)).unwrap_or(u32::MAX),
     )
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PreparedOcrImage {
+    path: PathBuf,
+    temporary: bool,
+    transform: OcrCoordinateTransform,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OcrCoordinateTransform {
+    origin_x: f32,
+    origin_y: f32,
+    scale: f32,
+    rotation_degrees: f32,
+    processed_width: u32,
+    processed_height: u32,
+}
+
+impl OcrCoordinateTransform {
+    fn identity() -> Self {
+        Self {
+            origin_x: 0.0,
+            origin_y: 0.0,
+            scale: 1.0,
+            rotation_degrees: 0.0,
+            processed_width: 0,
+            processed_height: 0,
+        }
+    }
+
+    fn map_rect(self, rect: Rect) -> Rect {
+        let scale = if self.scale > 0.0 { self.scale } else { 1.0 };
+        let mut corners = [
+            (rect.x as f32, rect.y as f32),
+            (rect.x as f32 + rect.width as f32, rect.y as f32),
+            (rect.x as f32, rect.y as f32 + rect.height as f32),
+            (
+                rect.x as f32 + rect.width as f32,
+                rect.y as f32 + rect.height as f32,
+            ),
+        ];
+
+        if self.rotation_degrees.abs() > f32::EPSILON
+            && self.processed_width > 0
+            && self.processed_height > 0
+        {
+            let radians = (-self.rotation_degrees).to_radians();
+            let cos = radians.cos();
+            let sin = radians.sin();
+            let center_x = (self.processed_width.saturating_sub(1)) as f32 / 2.0;
+            let center_y = (self.processed_height.saturating_sub(1)) as f32 / 2.0;
+            for corner in &mut corners {
+                let dx = corner.0 - center_x;
+                let dy = corner.1 - center_y;
+                *corner = (
+                    center_x + dx * cos - dy * sin,
+                    center_y + dx * sin + dy * cos,
+                );
+            }
+        }
+
+        let min_x = corners
+            .iter()
+            .map(|corner| corner.0)
+            .fold(f32::INFINITY, f32::min);
+        let min_y = corners
+            .iter()
+            .map(|corner| corner.1)
+            .fold(f32::INFINITY, f32::min);
+        let max_x = corners
+            .iter()
+            .map(|corner| corner.0)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let max_y = corners
+            .iter()
+            .map(|corner| corner.1)
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        let x = self.origin_x + min_x / scale;
+        let y = self.origin_y + min_y / scale;
+        let width = ((max_x - min_x) / scale).max(1.0).ceil() as u32;
+        let height = ((max_y - min_y) / scale).max(1.0).ceil() as u32;
+
+        Rect::new(x.round() as i32, y.round() as i32, width, height)
+    }
+}
+
+fn validate_ocr_options(options: &OcrOptions) -> Result<()> {
+    if let Some(psm) = options.page_segmentation_mode
+        && psm > 13
+    {
+        return Err(PeekabooXError::new(
+            "OCR page segmentation mode must be between 0 and 13",
+        ));
+    }
+    if let Some(oem) = options.engine_mode
+        && oem > 3
+    {
+        return Err(PeekabooXError::new(
+            "OCR engine mode must be between 0 and 3",
+        ));
+    }
+    if matches!(options.dpi, Some(0)) {
+        return Err(PeekabooXError::new("OCR DPI must be greater than zero"));
+    }
+    if !options.min_confidence.is_finite() || !(0.0..=1.0).contains(&options.min_confidence) {
+        return Err(PeekabooXError::new(
+            "OCR minimum confidence must be between 0.0 and 1.0",
+        ));
+    }
+    if let Some(scale) = options.preprocessing.scale
+        && (!scale.is_finite() || !(0.1..=8.0).contains(&scale))
+    {
+        return Err(PeekabooXError::new(
+            "OCR preprocessing scale must be between 0.1 and 8.0",
+        ));
+    }
+    if let Some(contrast) = options.preprocessing.contrast
+        && (!contrast.is_finite() || !(-255.0..=255.0).contains(&contrast))
+    {
+        return Err(PeekabooXError::new(
+            "OCR preprocessing contrast must be between -255.0 and 255.0",
+        ));
+    }
+    for config in &options.config {
+        let key = config.key.trim();
+        if key.is_empty() || key.contains('=') || key.split_whitespace().count() > 1 {
+            return Err(PeekabooXError::new(
+                "OCR config keys must be non-empty names without whitespace or '='",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn prepare_ocr_image(
+    image_path: &Path,
+    region: Option<Rect>,
+    options: &OcrOptions,
+) -> Result<PreparedOcrImage> {
+    if region.is_none() && !requires_ocr_image_preparation(options) {
+        return Ok(PreparedOcrImage {
+            path: image_path.to_path_buf(),
+            temporary: false,
+            transform: OcrCoordinateTransform::identity(),
+            warnings: Vec::new(),
+        });
+    }
+
+    let mut image = ImageReader::open(image_path)
+        .map_err(|error| {
+            PeekabooXError::new(format!(
+                "failed to open OCR image {}: {error}",
+                image_path.display()
+            ))
+        })?
+        .decode()
+        .map_err(|error| {
+            PeekabooXError::new(format!(
+                "failed to decode OCR image {}: {error}",
+                image_path.display()
+            ))
+        })?;
+    let mut transform = OcrCoordinateTransform::identity();
+    let mut warnings = Vec::new();
+
+    if let Some(region) = region {
+        let crop = image_region(&image, region, "OCR region")?;
+        image = image.crop_imm(crop.x as u32, crop.y as u32, crop.width, crop.height);
+        transform.origin_x = crop.x as f32;
+        transform.origin_y = crop.y as f32;
+    }
+
+    apply_ocr_preprocessing(&mut image, &mut transform, &mut warnings, options)?;
+
+    let path = ocr_preprocessed_temp_path();
+    image.save(&path).map_err(|error| {
+        PeekabooXError::new(format!(
+            "failed to save OCR temporary image {}: {error}",
+            path.display()
+        ))
+    })?;
+
+    Ok(PreparedOcrImage {
+        path,
+        temporary: true,
+        transform,
+        warnings,
+    })
+}
+
+fn requires_ocr_image_preparation(options: &OcrOptions) -> bool {
+    let preprocessing = &options.preprocessing;
+    preprocessing.scale.is_some()
+        || preprocessing.grayscale
+        || preprocessing.threshold.is_some()
+        || preprocessing.invert
+        || preprocessing.contrast.is_some()
+        || preprocessing.deskew
+}
+
+fn image_region(image: &DynamicImage, region: Rect, name: &str) -> Result<Rect> {
+    if region.width == 0 || region.height == 0 {
+        return Err(PeekabooXError::new(format!("{name} must be non-empty")));
+    }
+    if region.x < 0 || region.y < 0 {
+        return Err(PeekabooXError::new(format!(
+            "{name} must be inside image bounds"
+        )));
+    }
+    let right = i64::from(region.x) + i64::from(region.width);
+    let bottom = i64::from(region.y) + i64::from(region.height);
+    if right > i64::from(image.width()) || bottom > i64::from(image.height()) {
+        return Err(PeekabooXError::new(format!("{name} exceeds image bounds")));
+    }
+
+    Ok(region)
+}
+
+fn apply_ocr_preprocessing(
+    image: &mut DynamicImage,
+    transform: &mut OcrCoordinateTransform,
+    warnings: &mut Vec<String>,
+    options: &OcrOptions,
+) -> Result<()> {
+    let preprocessing = &options.preprocessing;
+
+    if let Some(scale) = preprocessing.scale {
+        let width = ((image.width() as f32) * scale).round().max(1.0) as u32;
+        let height = ((image.height() as f32) * scale).round().max(1.0) as u32;
+        let resized = imageops::resize(
+            &image.to_rgba8(),
+            width,
+            height,
+            imageops::FilterType::CatmullRom,
+        );
+        *image = DynamicImage::ImageRgba8(resized);
+        transform.scale *= scale;
+    }
+
+    if preprocessing.grayscale || preprocessing.threshold.is_some() || preprocessing.deskew {
+        *image = image.grayscale();
+    }
+
+    if let Some(contrast) = preprocessing.contrast {
+        *image = image.adjust_contrast(contrast);
+    }
+
+    if preprocessing.deskew {
+        let rgba = image.to_rgba8();
+        match estimate_deskew_correction_degrees(&rgba) {
+            Some(correction) if correction.abs() >= 0.25 => {
+                let rotated = rotate_rgba_nearest(&rgba, correction);
+                *image = DynamicImage::ImageRgba8(rotated);
+                transform.rotation_degrees += correction;
+                warnings.push(format!(
+                    "OCR deskew correction applied: {correction:.1} degrees"
+                ));
+            }
+            Some(_) => warnings.push("OCR deskew skipped: image already appears level".to_owned()),
+            None => warnings.push("OCR deskew skipped: no dark text pixels found".to_owned()),
+        }
+    }
+
+    if let Some(threshold) = preprocessing.threshold {
+        *image = DynamicImage::ImageRgba8(threshold_rgba(&image.to_rgba8(), threshold));
+    }
+
+    if preprocessing.invert {
+        image.invert();
+    }
+
+    transform.processed_width = image.width();
+    transform.processed_height = image.height();
+    Ok(())
+}
+
+fn threshold_rgba(image: &RgbaImage, threshold: u8) -> RgbaImage {
+    let mut output = image.clone();
+    for pixel in output.pixels_mut() {
+        let [r, g, b, a] = pixel.0;
+        let luma =
+            (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)).round() as u8;
+        let value = if luma >= threshold { 255 } else { 0 };
+        *pixel = Rgba([value, value, value, a]);
+    }
+    output
+}
+
+fn estimate_deskew_correction_degrees(image: &RgbaImage) -> Option<f32> {
+    let dark_pixels = dark_pixel_coordinates(image);
+    if dark_pixels.len() < 8 {
+        return None;
+    }
+
+    let mut best_degrees = 0.0;
+    let mut best_score = f64::NEG_INFINITY;
+    for step in -14..=14 {
+        let degrees = step as f32 * 0.5;
+        let score = horizontal_projection_score(&dark_pixels, image.height(), degrees);
+        if score > best_score {
+            best_score = score;
+            best_degrees = degrees;
+        }
+    }
+
+    Some(best_degrees)
+}
+
+fn dark_pixel_coordinates(image: &RgbaImage) -> Vec<(f32, f32)> {
+    let mut pixels = Vec::new();
+    for (x, y, pixel) in image.enumerate_pixels() {
+        let [r, g, b, a] = pixel.0;
+        if a < 16 {
+            continue;
+        }
+        let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
+        if luma < 200.0 {
+            pixels.push((x as f32, y as f32));
+        }
+    }
+    pixels
+}
+
+fn horizontal_projection_score(pixels: &[(f32, f32)], height: u32, degrees: f32) -> f64 {
+    let radians = degrees.to_radians();
+    let cos = radians.cos();
+    let sin = radians.sin();
+    let center_y = (height.saturating_sub(1)) as f32 / 2.0;
+    let mut buckets = vec![0_u32; height.max(1) as usize];
+    for (x, y) in pixels {
+        let projected_y = center_y + (*x * sin + (*y - center_y) * cos);
+        let bucket = projected_y.round() as i32;
+        if (0..height as i32).contains(&bucket) {
+            buckets[bucket as usize] += 1;
+        }
+    }
+
+    buckets
+        .into_iter()
+        .map(|count| {
+            let count = f64::from(count);
+            count * count
+        })
+        .sum()
+}
+
+fn rotate_rgba_nearest(source: &RgbaImage, degrees: f32) -> RgbaImage {
+    let radians = degrees.to_radians();
+    let cos = radians.cos();
+    let sin = radians.sin();
+    let width = source.width();
+    let height = source.height();
+    let center_x = (width.saturating_sub(1)) as f32 / 2.0;
+    let center_y = (height.saturating_sub(1)) as f32 / 2.0;
+    let mut output = RgbaImage::from_pixel(width, height, Rgba([255, 255, 255, 255]));
+
+    for y in 0..height {
+        for x in 0..width {
+            let dx = x as f32 - center_x;
+            let dy = y as f32 - center_y;
+            let source_x = center_x + dx * cos + dy * sin;
+            let source_y = center_y - dx * sin + dy * cos;
+            if source_x >= 0.0
+                && source_y >= 0.0
+                && source_x < width as f32
+                && source_y < height as f32
+            {
+                let source_x = (source_x.round() as u32).min(width.saturating_sub(1));
+                let source_y = (source_y.round() as u32).min(height.saturating_sub(1));
+                let pixel = source.get_pixel(source_x, source_y);
+                output.put_pixel(x, y, *pixel);
+            }
+        }
+    }
+
+    output
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1414,6 +1927,14 @@ fn capture_temp_path() -> PathBuf {
     ))
 }
 
+fn ocr_preprocessed_temp_path() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "peekaboox-ocr-preprocessed-{}-{}.png",
+        std::process::id(),
+        monotonic_ms()
+    ))
+}
+
 fn remove_temp_file(path: &Path) {
     if let Err(error) = std::fs::remove_file(path)
         && error.kind() != std::io::ErrorKind::NotFound
@@ -1465,6 +1986,7 @@ mod tests {
             &OcrOptions {
                 language: Some("eng".to_owned()),
                 page_segmentation_mode: Some(11),
+                ..OcrOptions::default()
             },
         );
 
@@ -1969,6 +2491,7 @@ mod tests {
             OcrOptions {
                 language: None,
                 page_segmentation_mode: None,
+                ..OcrOptions::default()
             },
         );
         let error = backend

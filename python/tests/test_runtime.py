@@ -196,27 +196,28 @@ class FakeClient:
         self,
         region: Rect | None = None,
         language: str | None = None,
+        **kwargs,
     ) -> OcrResult:
+        block = OcrBlock(
+            text="Submit",
+            element=UiElement(
+                id="ocr:1:2:3:4",
+                role="text",
+                label="Submit",
+                bounds=region or Rect(x=1, y=2, width=3, height=4),
+                confidence=1.0,
+            ),
+        )
         return OcrResult(
             backend_name="fake",
             text="Submit",
-            blocks=(
-                OcrBlock(
-                    text="Submit",
-                    element=UiElement(
-                        id="ocr:1:2:3:4",
-                        role="text",
-                        label="Submit",
-                        bounds=region or Rect(x=1, y=2, width=3, height=4),
-                        confidence=1.0,
-                    ),
-                ),
-            ),
+            blocks=(block,),
+            words=(block,),
             warnings=(),
         )
 
-    def ocr_region(self, region: Rect, language: str | None = None) -> OcrResult:
-        return self.ocr_screen(region=region, language=language)
+    def ocr_region(self, region: Rect, language: str | None = None, **kwargs) -> OcrResult:
+        return self.ocr_screen(region=region, language=language, **kwargs)
 
     def compare_images(
         self,
@@ -2867,18 +2868,60 @@ class RuntimeTests(unittest.TestCase):
                             ),
                         )
                     ],
+                    words=[
+                        peekaboox_pb2.OcrBlock(
+                            text="Submit",
+                            element=peekaboox_pb2.UiElement(
+                                id="ocr-word:10:20:90:30",
+                                role="word",
+                                label="Submit",
+                                bounds=peekaboox_pb2.Rect(x=10, y=20, width=90, height=30),
+                                confidence=0.95,
+                            ),
+                        )
+                    ],
                     warnings=["low contrast"],
                 )
 
         stub = Stub()
         client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
 
-        result = client.ocr_region(Rect(x=10, y=20, width=90, height=30), language="eng")
+        result = client.ocr_region(
+            Rect(x=10, y=20, width=90, height=30),
+            language="eng",
+            image_path="sample.png",
+            page_segmentation_mode=6,
+            engine_mode=1,
+            dpi=300,
+            min_confidence=0.5,
+            whitelist="Submit",
+            config=("preserve_interword_spaces=1",),
+            scale=2.0,
+            grayscale=True,
+            threshold=180,
+            invert=True,
+            contrast=10.0,
+            deskew=True,
+        )
 
         self.assertEqual(stub.request.region.x, 10)
         self.assertEqual(stub.request.language, "eng")
+        self.assertEqual(stub.request.image_path, "sample.png")
+        self.assertEqual(stub.request.page_segmentation_mode, 6)
+        self.assertEqual(stub.request.engine_mode, 1)
+        self.assertEqual(stub.request.dpi, 300)
+        self.assertAlmostEqual(stub.request.min_confidence, 0.5)
+        self.assertEqual(stub.request.whitelist, "Submit")
+        self.assertEqual(tuple(stub.request.config), ("preserve_interword_spaces=1",))
+        self.assertAlmostEqual(stub.request.scale, 2.0)
+        self.assertTrue(stub.request.grayscale)
+        self.assertEqual(stub.request.threshold, 180)
+        self.assertTrue(stub.request.invert)
+        self.assertAlmostEqual(stub.request.contrast, 10.0)
+        self.assertTrue(stub.request.deskew)
         self.assertEqual(result.backend_name, "tesseract")
         self.assertEqual(result.blocks[0].element.label, "Submit")
+        self.assertEqual(result.words[0].element.role, "word")
         self.assertEqual(result.warnings, ("low contrast",))
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")

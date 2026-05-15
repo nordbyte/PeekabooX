@@ -611,13 +611,16 @@ class AgentRuntime:
         self,
         region: Rect | None = None,
         language: str | None = None,
+        **kwargs: object,
     ) -> OcrResult:
         self._require_capability(Capability.VISION, "ocr_screen")
-        return self._require_client().ocr_screen(region, language)
+        return self._require_client().ocr_screen(region=region, language=language, **kwargs)
 
-    def ocr_region(self, region: Rect, language: str | None = None) -> OcrResult:
+    def ocr_region(
+        self, region: Rect, language: str | None = None, **kwargs: object
+    ) -> OcrResult:
         self._require_capability(Capability.VISION, "ocr_region")
-        return self._require_client().ocr_region(region, language)
+        return self._require_client().ocr_region(region, language, **kwargs)
 
     def compare_images(
         self,

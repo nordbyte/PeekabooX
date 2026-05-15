@@ -594,18 +594,25 @@ cargo run -q -p peekaboox-cli -- --daemon vision-elements screenshot.png
 
 ## Rust Vision OCR
 
-`peekaboox-vision` exposes the first Phase 3 OCR surface:
+`peekaboox-vision` exposes the current OCR surface:
 
 - `OcrBackend` for provider implementations
 - `TesseractOcrBackend` using the `tesseract` CLI and TSV output
 - `ocr_screen()` for full-screen OCR
 - `ocr_region(Rect)` for region-filtered OCR
 - `ocr_image_file(path, region)` for OCR over an existing image file
-- daemon/gRPC, Python, and CLI bindings for full-screen or region OCR
+- daemon/gRPC, Python, MCP, and CLI bindings for full-screen, region,
+  image-file, and window-scoped OCR
+- Tesseract controls for language, page segmentation mode, engine mode, DPI,
+  minimum confidence, character whitelist, and repeated `key=value` config
+  entries
+- preprocessing controls for scale, grayscale, threshold, invert, contrast,
+  and deskew
 
-OCR text is returned as line blocks with a `UiElement` carrying text role,
-label, bounds, confidence, and empty states. Region OCR keeps coordinates in
-the captured screen coordinate space.
+OCR text is returned as line blocks and word blocks with `UiElement` metadata
+carrying role, label, bounds, confidence, and empty states. Region OCR crops
+before Tesseract runs, then maps coordinates back to the screen or source image
+coordinate space.
 
 ## Rust Vision Comparison
 

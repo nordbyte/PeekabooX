@@ -36,9 +36,9 @@ use peekaboox_ipc::{
     encode_response,
 };
 use peekaboox_vision::{
-    IncrementalCaptureDelta, IncrementalCaptureOptions, OcrOptions, OcrResult, TesseractOcrBackend,
-    UiElementDetectionOptions, UiStateKind, UiStateOptions, UiStateResult, VisualCompareOptions,
-    VisualDiffResult,
+    IncrementalCaptureDelta, IncrementalCaptureOptions, OcrConfig, OcrOptions,
+    OcrPreprocessingOptions, OcrResult, TesseractOcrBackend, UiElementDetectionOptions,
+    UiStateKind, UiStateOptions, UiStateResult, VisualCompareOptions, VisualDiffResult,
 };
 use serde_json::json;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
@@ -1596,9 +1596,50 @@ fn dispatch_request(
             )?;
             Ok(ApiResult::FindElements(element_lookup_dto(&result)))
         }
-        ApiRequest::Ocr { region, language } => {
-            let result =
-                run_ocr(region.map(Rect::from), language).map_err(|error| error.to_string())?;
+        ApiRequest::Ocr {
+            image_path,
+            region,
+            app,
+            window_title,
+            window_id,
+            language,
+            page_segmentation_mode,
+            engine_mode,
+            dpi,
+            min_confidence,
+            whitelist,
+            config,
+            scale,
+            grayscale,
+            threshold,
+            invert,
+            contrast,
+            deskew,
+        } => {
+            let result = run_ocr(OcrRunRequest {
+                image_path,
+                region: region.map(Rect::from),
+                app,
+                window_title,
+                window_id,
+                options: ocr_options(OcrOptionInput {
+                    language,
+                    page_segmentation_mode,
+                    engine_mode,
+                    dpi,
+                    min_confidence,
+                    whitelist,
+                    config,
+                    scale,
+                    grayscale,
+                    threshold,
+                    invert,
+                    contrast,
+                    deskew,
+                })
+                .map_err(|error| error.to_string())?,
+            })
+            .map_err(|error| error.to_string())?;
             Ok(ApiResult::Ocr(ocr_result_dto(&result)))
         }
         ApiRequest::CompareImages {
@@ -2101,7 +2142,17 @@ impl PeekabooX for GrpcPeekabooXService {
         let request = request.into_inner();
         let details = json!({
             "has_region": request.region.is_some(),
-            "has_language": request.language.as_deref().is_some_and(|language| !language.trim().is_empty())
+            "has_language": request.language.as_deref().is_some_and(|language| !language.trim().is_empty()),
+            "has_image_path": request.image_path.as_deref().is_some_and(|path| !path.trim().is_empty()),
+            "has_window_id": request.window_id.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_window_title": request.window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_app": request.app.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_preprocessing": request.scale.is_some()
+                || request.grayscale.unwrap_or(false)
+                || request.threshold.is_some()
+                || request.invert.unwrap_or(false)
+                || request.contrast.is_some()
+                || request.deskew.unwrap_or(false)
         });
         let result = grpc_ocr_screen(request);
         audit_grpc_result(&self.audit, "grpc.ocr_screen", &result, details);
@@ -2996,8 +3047,36 @@ fn grpc_desktop_state(
 }
 
 fn grpc_ocr_screen(request: proto::OcrScreenRequest) -> Result<proto::OcrResponse, Status> {
-    let region = request.region.map(rect_from_proto);
-    let result = run_ocr(region, request.language).map_err(ocr_status)?;
+    let result = run_ocr(OcrRunRequest {
+        image_path: request.image_path,
+        region: request.region.map(rect_from_proto),
+        app: request.app,
+        window_title: request.window_title,
+        window_id: request.window_id,
+        options: ocr_options(OcrOptionInput {
+            language: request.language,
+            page_segmentation_mode: request
+                .page_segmentation_mode
+                .map(|value| u8::try_from(value).unwrap_or(u8::MAX)),
+            engine_mode: request
+                .engine_mode
+                .map(|value| u8::try_from(value).unwrap_or(u8::MAX)),
+            dpi: request.dpi,
+            min_confidence: request.min_confidence,
+            whitelist: request.whitelist,
+            config: request.config,
+            scale: request.scale,
+            grayscale: request.grayscale.unwrap_or(false),
+            threshold: request
+                .threshold
+                .map(|value| u8::try_from(value).unwrap_or(u8::MAX)),
+            invert: request.invert.unwrap_or(false),
+            contrast: request.contrast,
+            deskew: request.deskew.unwrap_or(false),
+        })
+        .map_err(ocr_status)?,
+    })
+    .map_err(ocr_status)?;
 
     Ok(proto_ocr_response(&result))
 }
@@ -3386,16 +3465,65 @@ fn ui_element_detection_options(
     Ok(options)
 }
 
-fn run_ocr(
+#[derive(Debug, Clone, PartialEq)]
+struct OcrRunRequest {
+    image_path: Option<String>,
     region: Option<Rect>,
+    app: Option<String>,
+    window_title: Option<String>,
+    window_id: Option<String>,
+    options: OcrOptions,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct OcrOptionInput {
     language: Option<String>,
+    page_segmentation_mode: Option<u8>,
+    engine_mode: Option<u8>,
+    dpi: Option<u32>,
+    min_confidence: Option<f32>,
+    whitelist: Option<String>,
+    config: Vec<String>,
+    scale: Option<f32>,
+    grayscale: bool,
+    threshold: Option<u8>,
+    invert: bool,
+    contrast: Option<f32>,
+    deskew: bool,
+}
+
+fn run_ocr(
+    request: OcrRunRequest,
 ) -> std::result::Result<OcrResult, peekaboox_core::PeekabooXError> {
-    let backend = TesseractOcrBackend::new("tesseract", ocr_options(language));
+    let backend = TesseractOcrBackend::new("tesseract", request.options);
     if !backend.is_available() {
         return Err(peekaboox_core::PeekabooXError::new(
             "OCR backend tesseract is not available; install tesseract-ocr",
         ));
     }
+
+    if let Some(image_path) = request
+        .image_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        return peekaboox_vision::ocr_image_file_with_backend(&backend, image_path, request.region);
+    }
+
+    let region = match (
+        request.window_id.as_deref(),
+        request.window_title.as_deref(),
+        request.app.as_deref(),
+    ) {
+        (None, None, None) => request.region,
+        _ => Some(resolve_ocr_window_region(
+            request.region,
+            request.window_id.as_deref(),
+            request.window_title.as_deref(),
+            request.app.as_deref(),
+        )?),
+    };
 
     match region {
         Some(region) => peekaboox_vision::ocr_region_with_backend(&backend, region),
@@ -3403,15 +3531,142 @@ fn run_ocr(
     }
 }
 
-fn ocr_options(language: Option<String>) -> OcrOptions {
+fn ocr_options(
+    input: OcrOptionInput,
+) -> std::result::Result<OcrOptions, peekaboox_core::PeekabooXError> {
     let mut options = OcrOptions::default();
-    if let Some(language) = language
+    if let Some(language) = input
+        .language
         .map(|language| language.trim().to_owned())
         .filter(|language| !language.is_empty())
     {
         options.language = Some(language);
     }
-    options
+    if let Some(psm) = input.page_segmentation_mode {
+        options.page_segmentation_mode = Some(psm);
+    }
+    if let Some(oem) = input.engine_mode {
+        options.engine_mode = Some(oem);
+    }
+    if let Some(dpi) = input.dpi {
+        options.dpi = Some(dpi);
+    }
+    if let Some(min_confidence) = input.min_confidence {
+        options.min_confidence = min_confidence;
+    }
+    if let Some(whitelist) = input
+        .whitelist
+        .map(|whitelist| whitelist.trim().to_owned())
+        .filter(|whitelist| !whitelist.is_empty())
+    {
+        options.whitelist = Some(whitelist);
+    }
+    options.config = input
+        .config
+        .into_iter()
+        .map(|entry| parse_ocr_config(&entry))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    options.preprocessing = OcrPreprocessingOptions {
+        scale: input.scale,
+        grayscale: input.grayscale,
+        threshold: input.threshold,
+        invert: input.invert,
+        contrast: input.contrast,
+        deskew: input.deskew,
+    };
+    Ok(options)
+}
+
+fn parse_ocr_config(entry: &str) -> std::result::Result<OcrConfig, peekaboox_core::PeekabooXError> {
+    let Some((key, value)) = entry.split_once('=') else {
+        return Err(peekaboox_core::PeekabooXError::new(
+            "OCR config entries must be key=value",
+        ));
+    };
+    let key = key.trim();
+    if key.is_empty() || key.contains(char::is_whitespace) {
+        return Err(peekaboox_core::PeekabooXError::new(
+            "OCR config keys must be non-empty and contain no whitespace",
+        ));
+    }
+    Ok(OcrConfig {
+        key: key.to_owned(),
+        value: value.to_owned(),
+    })
+}
+
+fn resolve_ocr_window_region(
+    region: Option<Rect>,
+    window_id: Option<&str>,
+    window_title: Option<&str>,
+    app: Option<&str>,
+) -> std::result::Result<Rect, peekaboox_core::PeekabooXError> {
+    let metadata = peekaboox_windows::list_windows()?;
+    let window_id = window_id.map(str::trim).filter(|value| !value.is_empty());
+    let title = window_title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+    let app = app
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+    let mut matches = metadata
+        .windows
+        .into_iter()
+        .filter(|window| {
+            window_id.is_none_or(|id| window.id == id)
+                && title
+                    .as_deref()
+                    .is_none_or(|title| window.title.to_ascii_lowercase().contains(title))
+                && app.as_deref().is_none_or(|app| {
+                    window
+                        .app_id
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_ascii_lowercase()
+                        .contains(app)
+                        || window.title.to_ascii_lowercase().contains(app)
+                })
+        })
+        .collect::<Vec<_>>();
+
+    if matches.is_empty() {
+        return Err(peekaboox_core::PeekabooXError::new(
+            "no window matched OCR window filters",
+        ));
+    }
+    matches.sort_by_key(|window| !window.focused);
+    let window = matches.remove(0);
+    if window.bounds.width == 0 || window.bounds.height == 0 {
+        return Err(peekaboox_core::PeekabooXError::new(format!(
+            "window {} has empty bounds",
+            window.id
+        )));
+    }
+
+    match region {
+        Some(region) => offset_ocr_region(window.bounds, region),
+        None => Ok(window.bounds),
+    }
+}
+
+fn offset_ocr_region(
+    origin: Rect,
+    region: Rect,
+) -> std::result::Result<Rect, peekaboox_core::PeekabooXError> {
+    let x = i64::from(origin.x) + i64::from(region.x);
+    let y = i64::from(origin.y) + i64::from(region.y);
+    Ok(Rect::new(
+        i32::try_from(x).map_err(|_| {
+            peekaboox_core::PeekabooXError::new("OCR region x coordinate overflows i32")
+        })?,
+        i32::try_from(y).map_err(|_| {
+            peekaboox_core::PeekabooXError::new("OCR region y coordinate overflows i32")
+        })?,
+        region.width,
+        region.height,
+    ))
 }
 
 fn ocr_status(error: peekaboox_core::PeekabooXError) -> Status {
@@ -3488,6 +3743,7 @@ fn proto_ocr_response(result: &OcrResult) -> proto::OcrResponse {
         text: result.text.clone(),
         blocks: result.blocks.iter().map(proto_ocr_block).collect(),
         warnings: result.warnings.clone(),
+        words: result.words.iter().map(proto_ocr_block).collect(),
     }
 }
 
@@ -3508,6 +3764,14 @@ fn ocr_result_dto(result: &OcrResult) -> OcrResultDto {
             .map(|block| OcrBlockDto {
                 text: block.text.clone(),
                 element: ElementDto::from(&block.element),
+            })
+            .collect(),
+        words: result
+            .words
+            .iter()
+            .map(|word| OcrBlockDto {
+                text: word.text.clone(),
+                element: ElementDto::from(&word.element),
             })
             .collect(),
         warnings: result.warnings.clone(),
@@ -4345,10 +4609,34 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
                 "vision_fallback": vision_fallback
             })
         }
-        ApiRequest::Ocr { region, language } => {
+        ApiRequest::Ocr {
+            image_path,
+            region,
+            app,
+            window_title,
+            window_id,
+            language,
+            scale,
+            grayscale,
+            threshold,
+            invert,
+            contrast,
+            deskew,
+            ..
+        } => {
             json!({
+                "has_image_path": image_path.as_deref().is_some_and(|path| !path.trim().is_empty()),
                 "has_region": region.is_some(),
-                "has_language": language.as_deref().is_some_and(|language| !language.trim().is_empty())
+                "has_app": app.as_deref().is_some_and(|value| !value.trim().is_empty()),
+                "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+                "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty()),
+                "has_language": language.as_deref().is_some_and(|language| !language.trim().is_empty()),
+                "has_preprocessing": scale.is_some()
+                    || *grayscale
+                    || threshold.is_some()
+                    || *invert
+                    || contrast.is_some()
+                    || *deskew
             })
         }
         ApiRequest::CompareImages {
@@ -5307,6 +5595,17 @@ mod tests {
                 element: UiElement {
                     id: "ocr:10:20:100:40".to_owned(),
                     role: "text".to_owned(),
+                    label: Some("Submit".to_owned()),
+                    bounds: Rect::new(10, 20, 100, 40),
+                    confidence: 0.95,
+                    states: Vec::new(),
+                },
+            }],
+            words: vec![peekaboox_vision::OcrText {
+                text: "Submit".to_owned(),
+                element: UiElement {
+                    id: "ocr-word:10:20:100:40".to_owned(),
+                    role: "word".to_owned(),
                     label: Some("Submit".to_owned()),
                     bounds: Rect::new(10, 20, 100, 40),
                     confidence: 0.95,

@@ -154,6 +154,22 @@ message DesktopState {
 message OcrScreenRequest {
   optional Rect region = 1;
   optional string language = 2;
+  optional string image_path = 3;
+  optional string window_id = 4;
+  optional string window_title = 5;
+  optional string app = 6;
+  optional uint32 page_segmentation_mode = 7;
+  optional uint32 engine_mode = 8;
+  optional uint32 dpi = 9;
+  optional float min_confidence = 10;
+  optional string whitelist = 11;
+  repeated string config = 12;
+  optional float scale = 13;
+  optional bool grayscale = 14;
+  optional uint32 threshold = 15;
+  optional bool invert = 16;
+  optional float contrast = 17;
+  optional bool deskew = 18;
 }
 
 message OcrResponse {
@@ -161,6 +177,7 @@ message OcrResponse {
   string text = 2;
   repeated OcrBlock blocks = 3;
   repeated string warnings = 4;
+  repeated OcrBlock words = 5;
 }
 
 message OcrBlock {

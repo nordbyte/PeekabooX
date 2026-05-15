@@ -9,6 +9,7 @@ local smoke tests and CI:
 
 ```bash
 bash examples/cli/vision-smoke.sh
+bash examples/cli/ocr-smoke.sh
 PYTHONPATH=python/src python3 examples/python/runtime_smoke.py
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_list_tools.sh
 cargo run -q -p peekaboox-cli -- doctor --json
@@ -17,6 +18,10 @@ cargo run -q -p peekaboox-cli -- doctor --json
 `examples/cli/vision-smoke.sh` uses the deterministic image fixtures under
 `tests/fixtures/vision`. Set `PEEKABOOX_BIN=/path/to/peekaboox` to test an
 installed or packaged binary instead of the local Cargo fallback.
+
+`examples/cli/ocr-smoke.sh` uses `tests/fixtures/ocr/ocr_sample.png` to test
+Tesseract-backed OCR over an image file, region OCR, JSON block metadata, and
+word-level output. It skips cleanly when `tesseract` is not installed.
 
 ## Live desktop examples
 

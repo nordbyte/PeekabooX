@@ -3,9 +3,9 @@
 
 PeekabooX brings screen capture, semantic desktop inspection, safe input automation, workflow execution, plugins, and MCP-ready agent runtime APIs to Linux.
 
-Version 1.0.1 adds exact window scoping, desktop action verification, a doctor
-command, a desktop profile registry, structured JSON output, runnable examples,
-and release-grade packaging.
+Current main includes exact window scoping, desktop action verification, a
+doctor command, a desktop profile registry, advanced OCR controls, structured
+JSON output, runnable examples, and release-grade packaging.
 
 ## What you get
 
@@ -113,7 +113,7 @@ Shell-native completion generation is not part of the current CLI surface.
 | [capture-dmabuf](docs/cli.md#capture-backends-and-dma-buf) | `--import egl`, `--import egl-texture` | Probe optional PipeWire DMA-BUF import paths |
 | [windows](docs/cli.md#windows-and-elements) | `--json` | List visible desktop windows |
 | [elements](docs/cli.md#windows-and-elements) | `--selector`, `--role`, `--state`, `--vision-fallback` | Query semantic UI elements |
-| [ocr](docs/cli.md#vision-tools) | `--region`, `--language`, `--json` | Run Tesseract-backed OCR |
+| [ocr](docs/cli.md#vision-tools) | `--image`, `--region`, `--window-id`, `--language`, `--psm`, `--json`, `--words` | Run Tesseract-backed OCR |
 | [compare](docs/cli.md#vision-tools) | `--threshold`, `--max-changed-ratio`, `--json` | Compare images or regions |
 | [state](docs/cli.md#vision-tools) | `--image`, `--json` | Classify screen samples as stable, loading, or changing |
 | [vision-elements](docs/cli.md#vision-tools) | `--min-width`, `--max-elements`, `--json` | Detect UI-like regions from pixels |

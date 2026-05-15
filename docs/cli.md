@@ -174,12 +174,22 @@ Supported selectors are documented in [docs/api.md](api.md).
 
 OCR expects the `tesseract` executable on `PATH`. Set
 `PEEKABOOX_OCR_LANGUAGE=eng` or another installed language code to override the
-default language:
+default language. OCR can run against the live screen, a screen region, a
+window target, or an existing image file. Region OCR crops before invoking
+Tesseract and maps returned bounds back to the source coordinate space:
 
 ```bash
 peekaboox ocr --region 10,20,400,120 --language eng
+peekaboox ocr --image tests/fixtures/ocr/ocr_sample.png --psm 6 --json
+peekaboox ocr --window-id window-1 --words
 peekaboox --daemon ocr
 ```
+
+Tesseract tuning and preprocessing are exposed through `--psm <0-13>`,
+`--oem <0-3>`, `--dpi <n>`, `--min-confidence <0..1>`,
+`--whitelist <chars>`, repeated `--config key=value`, `--scale`,
+`--grayscale`, `--threshold <0-255>`, `--invert`, `--contrast`, and
+`--deskew`.
 
 Visual comparison primitives support region diffing and action verification:
 
