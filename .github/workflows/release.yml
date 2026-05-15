@@ -51,11 +51,32 @@ jobs:
       - run: python packaging/release_manifest.py --expected-version "$RELEASE_VERSION"
       - name: Write release notes
         run: |
-          {
-            echo "PeekabooX ${RELEASE_VERSION}"
-            echo
-            echo "See CHANGELOG.md and release-manifest.json for the complete artifact manifest."
-          } > target/dist/release-notes.md
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          version = os.environ["RELEASE_VERSION"]
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8").splitlines()
+          header_prefix = f"## {version} - "
+          lines = []
+          capture = False
+          for line in changelog:
+              if line.startswith(header_prefix):
+                  capture = True
+                  lines.append(line)
+                  continue
+              if capture and line.startswith("## "):
+                  break
+              if capture:
+                  lines.append(line)
+          if not lines:
+              raise SystemExit(f"missing changelog entry for {version}")
+          Path("target/dist/release-notes.md").write_text(
+              "\n".join(lines).strip() + "\n\n"
+              "See release-manifest.json for the complete artifact manifest.\n",
+              encoding="utf-8",
+          )
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: peekaboox-${{ env.RELEASE_VERSION }}-release-artifacts
