@@ -525,7 +525,7 @@ fn atspi_ui_element(
         .ok()
         .map(|label| label.trim().to_owned())
         .filter(|label| !label.is_empty());
-    let bounds = atspi_extents(connection, object_ref)
+    let bounds = atspi_extents_if_component(connection, object_ref)
         .ok()
         .and_then(rect_from_extents)
         .unwrap_or_else(|| Rect::new(0, 0, 0, 0));
@@ -616,6 +616,30 @@ fn atspi_extents(connection: &Connection, object_ref: &AtSpiRef) -> Result<(i32,
         .map_err(|error| PeekabooXError::new(format!("AT-SPI extents lookup failed: {error}")))?;
 
     Ok((x, y, width, height))
+}
+
+fn atspi_extents_if_component(
+    connection: &Connection,
+    object_ref: &AtSpiRef,
+) -> Result<(i32, i32, i32, i32)> {
+    if atspi_has_component_interface(connection, object_ref).unwrap_or(true) {
+        atspi_extents(connection, object_ref)
+    } else {
+        Err(PeekabooXError::new(
+            "AT-SPI object does not expose Component",
+        ))
+    }
+}
+
+fn atspi_has_component_interface(connection: &Connection, object_ref: &AtSpiRef) -> Result<bool> {
+    let proxy = connection.with_proxy(object_ref.0.as_str(), object_ref.1.clone(), ATSPI_TIMEOUT);
+    let (interfaces,): (Vec<String>,) = proxy
+        .method_call("org.a11y.atspi.Accessible", "GetInterfaces", ())
+        .map_err(|error| {
+            PeekabooXError::new(format!("AT-SPI interfaces lookup failed: {error}"))
+        })?;
+
+    Ok(interfaces_include_component(&interfaces))
 }
 
 fn atspi_state_set(connection: &Connection, object_ref: &AtSpiRef) -> Result<Vec<u32>> {
@@ -970,11 +994,17 @@ fn contains_case_insensitive(value: &str, needle: &str) -> bool {
         .contains(&needle.to_ascii_lowercase())
 }
 
+fn interfaces_include_component(interfaces: &[String]) -> bool {
+    interfaces
+        .iter()
+        .any(|interface| interface == "org.a11y.atspi.Component" || interface == "Component")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ElementQuery, atspi_state_names, contains_case_insensitive, element_center,
-        rect_from_extents, resolve_click_target_from_elements,
+        interfaces_include_component, rect_from_extents, resolve_click_target_from_elements,
     };
     use peekaboox_core::{Point, Rect, UiElement};
 
@@ -1099,6 +1129,19 @@ mod tests {
             rect_from_extents((1, 2, 30, 40)),
             Some(Rect::new(1, 2, 30, 40))
         );
+    }
+
+    #[test]
+    fn detects_component_interface_by_full_or_short_name() {
+        assert!(interfaces_include_component(&[
+            "org.a11y.atspi.Accessible".to_owned(),
+            "org.a11y.atspi.Component".to_owned(),
+        ]));
+        assert!(interfaces_include_component(&["Component".to_owned()]));
+        assert!(!interfaces_include_component(&[
+            "org.a11y.atspi.Accessible".to_owned(),
+            "org.a11y.atspi.Text".to_owned(),
+        ]));
     }
 
     #[test]

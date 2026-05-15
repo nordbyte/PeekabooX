@@ -337,7 +337,7 @@ fn atspi_window_info(
         return None;
     }
 
-    let (x, y, width, height) = atspi_extents(connection, object_ref).ok()?;
+    let (x, y, width, height) = atspi_extents_if_component(connection, object_ref).ok()?;
     if width <= 0 || height <= 0 {
         return None;
     }
@@ -418,6 +418,34 @@ fn atspi_extents(connection: &Connection, object_ref: &AtSpiRef) -> Result<(i32,
     Ok((x, y, width, height))
 }
 
+fn atspi_extents_if_component(
+    connection: &Connection,
+    object_ref: &AtSpiRef,
+) -> Result<(i32, i32, i32, i32)> {
+    if atspi_has_component_interface(connection, object_ref).unwrap_or(true) {
+        atspi_extents(connection, object_ref)
+    } else {
+        Err(PeekabooXError::new(
+            "AT-SPI object does not expose Component",
+        ))
+    }
+}
+
+fn atspi_has_component_interface(connection: &Connection, object_ref: &AtSpiRef) -> Result<bool> {
+    let proxy = connection.with_proxy(
+        object_ref.0.as_str(),
+        object_ref.1.clone(),
+        Duration::from_secs(2),
+    );
+    let (interfaces,): (Vec<String>,) = proxy
+        .method_call("org.a11y.atspi.Accessible", "GetInterfaces", ())
+        .map_err(|error| {
+            PeekabooXError::new(format!("AT-SPI interfaces lookup failed: {error}"))
+        })?;
+
+    Ok(interfaces_include_component(&interfaces))
+}
+
 fn atspi_state_set(connection: &Connection, object_ref: &AtSpiRef) -> Result<Vec<u32>> {
     let proxy = connection.with_proxy(
         object_ref.0.as_str(),
@@ -444,6 +472,12 @@ fn is_window_like_atspi_role(role: &str) -> bool {
         role,
         "frame" | "window" | "dialog" | "application" | "alert"
     )
+}
+
+fn interfaces_include_component(interfaces: &[String]) -> bool {
+    interfaces
+        .iter()
+        .any(|interface| interface == "org.a11y.atspi.Component" || interface == "Component")
 }
 
 fn window_from_gnome_properties(id: u64, properties: &PropMap) -> Option<WindowInfo> {
