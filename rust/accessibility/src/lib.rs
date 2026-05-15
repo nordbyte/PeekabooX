@@ -924,7 +924,7 @@ fn is_window_role(role: &str) -> bool {
     let role = role.to_ascii_lowercase();
     matches!(
         role.as_str(),
-        "frame" | "window" | "dialog" | "alert" | "file chooser" | "page tab list"
+        "frame" | "window" | "dialog" | "alert" | "file chooser" | "page tab list" | "application"
     )
 }
 
@@ -1003,8 +1003,9 @@ fn interfaces_include_component(interfaces: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ElementQuery, atspi_state_names, contains_case_insensitive, element_center,
-        interfaces_include_component, rect_from_extents, resolve_click_target_from_elements,
+        AtSpiElementContext, ElementQuery, atspi_state_names, contains_case_insensitive,
+        context_for_children, element_center, interfaces_include_component, is_window_role,
+        rect_from_extents, resolve_click_target_from_elements,
     };
     use peekaboox_core::{Point, Rect, UiElement};
 
@@ -1142,6 +1143,23 @@ mod tests {
             "org.a11y.atspi.Accessible".to_owned(),
             "org.a11y.atspi.Text".to_owned(),
         ]));
+    }
+
+    #[test]
+    fn application_role_scopes_window_children() {
+        assert!(is_window_role("application"));
+
+        let element = test_element(
+            "window-1",
+            "application",
+            Some("Calculator"),
+            Rect::new(0, 0, 360, 503),
+        );
+        let context = context_for_children(&AtSpiElementContext::default(), &element);
+
+        assert_eq!(context.window_id.as_deref(), Some("window-1"));
+        assert_eq!(context.window_title.as_deref(), Some("Calculator"));
+        assert_eq!(context.parent_id.as_deref(), Some("window-1"));
     }
 
     #[test]
