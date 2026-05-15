@@ -10,12 +10,14 @@ DIGIT_JSON="$OUT_DIR/calculator-digit-buttons-$RUN_ID.json"
 BUTTON_JSON="$OUT_DIR/calculator-button-7-$RUN_ID.json"
 CONTAINS_JSON="$OUT_DIR/calculator-contains-button-7-$RUN_ID.json"
 VISION_JSON="$OUT_DIR/calculator-vision-fallback-$RUN_ID.json"
+CLICK_DRY_RUN_TXT="$OUT_DIR/calculator-click-button-7-dry-run-$RUN_ID.txt"
 CALCULATOR_LOG="$OUT_DIR/calculator-$RUN_ID.log"
 STRICT="${PEEKABOOX_STRICT:-0}"
 APP_SCOPE="${PEEKABOOX_ELEMENTS_CALCULATOR_APP_SCOPE:-gnome-calculator}"
 WINDOW_TITLE="${PEEKABOOX_ELEMENTS_CALCULATOR_WINDOW_TITLE:-Calculator}"
 LAUNCH_DELAY="${PEEKABOOX_ELEMENTS_CALCULATOR_LAUNCH_DELAY:-2}"
 ELEMENT_LIMIT="${PEEKABOOX_ELEMENTS_CALCULATOR_LIMIT:-120}"
+BUTTON_7_SELECTOR="role-exact=button,label-exact=7,app=${APP_SCOPE},window-title=${WINDOW_TITLE},min-width=20,min-height=20"
 calculator_pid=""
 failures=0
 
@@ -143,6 +145,14 @@ print(f"button {label!r} found")
 PY
 }
 
+require_dry_run_click_output() {
+  if ! grep -Eq "would click .*button.*7.*via dry-run" "$1"; then
+    echo "dry-run output did not describe the expected semantic click" >&2
+    return 1
+  fi
+  cat "$1"
+}
+
 extract_center_point() {
   python3 - "$BUTTON_JSON" <<'PY'
 import json
@@ -192,6 +202,12 @@ write_button_json() {
     --json >"$BUTTON_JSON"
 }
 
+write_click_dry_run() {
+  run_peekaboox click \
+    --selector "$BUTTON_7_SELECTOR" \
+    --dry-run >"$CLICK_DRY_RUN_TXT"
+}
+
 write_contains_json() {
   local point="$1"
   run_peekaboox elements \
@@ -214,7 +230,7 @@ write_vision_json() {
 
 mkdir -p "$OUT_DIR"
 
-for path in "$WINDOWS_JSON" "$SCOPED_JSON" "$DIGIT_JSON" "$BUTTON_JSON" "$CONTAINS_JSON" "$VISION_JSON" "$CALCULATOR_LOG"; do
+for path in "$WINDOWS_JSON" "$SCOPED_JSON" "$DIGIT_JSON" "$BUTTON_JSON" "$CONTAINS_JSON" "$VISION_JSON" "$CLICK_DRY_RUN_TXT" "$CALCULATOR_LOG"; do
   if [[ -e "$path" ]]; then
     echo "error: refusing to overwrite existing file: $path" >&2
     exit 1
@@ -229,6 +245,7 @@ echo "PeekabooX real elements example output: $OUT_DIR"
 echo "Calculator command: $calculator_app"
 echo "Element app scope: $APP_SCOPE"
 echo "Window title scope: $WINDOW_TITLE"
+echo "Button 7 selector: $BUTTON_7_SELECTOR"
 
 launch_calculator_app "$calculator_app"
 sleep "$LAUNCH_DELAY"
@@ -249,6 +266,10 @@ fi
 run_step "exact button lookup" write_button_json
 if [[ -s "$BUTTON_JSON" ]]; then
   run_step "validate exact button lookup" require_exact_button_label "$BUTTON_JSON" "7"
+  run_step "semantic click dry-run from exact selector" write_click_dry_run
+  if [[ -s "$CLICK_DRY_RUN_TXT" ]]; then
+    run_step "validate semantic click dry-run output" require_dry_run_click_output "$CLICK_DRY_RUN_TXT"
+  fi
   if point="$(extract_center_point)"; then
     run_step "contains selector from button center point" write_contains_json "$point"
     if [[ -s "$CONTAINS_JSON" ]]; then

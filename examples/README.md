@@ -70,10 +70,11 @@ skips cleanly when Python GTK bindings are unavailable.
 `examples/desktop/elements_calculator.sh` opens GNOME Calculator as a real
 desktop application, scopes `peekaboox elements` to `--app gnome-calculator`
 and `--window-title Calculator`, finds the digit buttons with exact and regex
-selectors, reuses the returned `center` point with `--contains`, and exercises
-window-scoped `--vision-fallback`. It writes JSON outputs under
-`target/examples/elements-calculator` and skips cleanly when GNOME Calculator is
-not installed.
+selectors, derives a safe `peekaboox click --selector ... --dry-run` from the
+exact button selector, reuses the returned `center` point with `--contains`,
+and exercises window-scoped `--vision-fallback`. It writes JSON and dry-run
+outputs under `target/examples/elements-calculator` and skips cleanly when
+GNOME Calculator is not installed.
 
 `examples/desktop/text_editor_save_dialog.sh` launches GNOME Text Editor on a
 unique draft file, locates the document target while passing
