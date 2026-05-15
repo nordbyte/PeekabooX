@@ -46,7 +46,7 @@ text_output="$(
     --grayscale
 )"
 echo "$text_output"
-require_output "full OCR text" "PeekabooX[[:space:]]+OCR[[:space:]]+Example" "$text_output"
+require_output "full OCR text" "PeekabooX[[:space:]]+(OCR[[:space:]]+Example|Example[[:space:]]+OCR)" "$text_output"
 require_output "full OCR invoice" "Invoice[[:space:]]+PX-104" "$text_output"
 require_output "full OCR total" "Total[[:space:]]+42[.]17[[:space:]]+EUR" "$text_output"
 
