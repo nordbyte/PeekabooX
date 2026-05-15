@@ -11,6 +11,7 @@ local smoke tests and CI:
 bash examples/cli/vision-smoke.sh
 PYTHONPATH=python/src python3 examples/python/runtime_smoke.py
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_list_tools.sh
+cargo run -q -p peekaboox-cli -- doctor --json
 ```
 
 `examples/cli/vision-smoke.sh` uses the deterministic image fixtures under
@@ -59,7 +60,10 @@ search field, the Saved Messages result, the message input, and the send button
 with `peekaboox desktop ... --target ...`, and sends `PeekabooX Example` to
 that chat. Telegram must already be logged in. The example no longer depends
 on hard-coded coordinates or Python Pillow; its Telegram layout resolver lives
-in the `peekaboox-desktop` Rust crate. Override `PEEKABOOX_TELEGRAM_MESSAGE`,
+in the `peekaboox-desktop` Rust crate. The same helper commands can be scoped
+with `--window-id <id>` when multiple matching app windows are visible, and
+mutating helper actions support `--verify` for post-action checks. Override
+`PEEKABOOX_TELEGRAM_MESSAGE`,
 `PEEKABOOX_TELEGRAM_SEARCH_QUERY`, `PEEKABOOX_TELEGRAM_FOCUS_WAIT_MS`, or
 `PEEKABOOX_TELEGRAM_OVERVIEW_WAIT_MS` for slower desktops. Set
 `PEEKABOOX_TELEGRAM_ASSERT_HEADER=1` to additionally verify the `Saved

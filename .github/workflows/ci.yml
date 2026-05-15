@@ -22,6 +22,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: python -m pip install -e "python[dev]"
       - run: python -m compileall python/src
       - run: PYTHONPATH=python/src python -m unittest discover -s python/tests -p "test_*.py"
       - run: PYTHONPATH=python/src python examples/python/runtime_smoke.py

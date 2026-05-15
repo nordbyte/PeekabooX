@@ -186,6 +186,10 @@ pub enum ApiRequest {
         overview_wait_ms: u64,
         #[serde(default)]
         window_title: Option<String>,
+        #[serde(default)]
+        window_id: Option<String>,
+        #[serde(default)]
+        verify: bool,
     },
     DesktopLocate {
         app: String,
@@ -196,6 +200,8 @@ pub enum ApiRequest {
         prefer_accessibility: bool,
         #[serde(default)]
         window_title: Option<String>,
+        #[serde(default)]
+        window_id: Option<String>,
     },
     DesktopClick {
         app: String,
@@ -210,6 +216,10 @@ pub enum ApiRequest {
         button: MouseButtonDto,
         #[serde(default)]
         dry_run: bool,
+        #[serde(default)]
+        window_id: Option<String>,
+        #[serde(default)]
+        verify: bool,
     },
     DesktopDrag {
         app: String,
@@ -234,6 +244,10 @@ pub enum ApiRequest {
         duration_ms: u64,
         #[serde(default)]
         dry_run: bool,
+        #[serde(default)]
+        window_id: Option<String>,
+        #[serde(default)]
+        verify: bool,
     },
     DesktopTypeInto {
         app: String,
@@ -249,6 +263,10 @@ pub enum ApiRequest {
         clear: bool,
         #[serde(default)]
         dry_run: bool,
+        #[serde(default)]
+        window_id: Option<String>,
+        #[serde(default)]
+        verify: bool,
     },
     DesktopAssert {
         app: String,
@@ -263,6 +281,8 @@ pub enum ApiRequest {
         assertion: DesktopAssertionDto,
         #[serde(default)]
         expected_text: Option<String>,
+        #[serde(default)]
+        window_id: Option<String>,
     },
 }
 
@@ -459,6 +479,10 @@ pub struct DesktopActionResultDto {
     pub action: String,
     pub detail: String,
     pub backend_name: String,
+    #[serde(default)]
+    pub verified: bool,
+    #[serde(default)]
+    pub verification_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -852,10 +876,13 @@ mod tests {
             window_title: Some("Telegram".to_owned()),
             clear: true,
             dry_run: true,
+            window_id: Some("window-1".to_owned()),
+            verify: true,
         });
         let payload = serde_json::to_string(&request).unwrap();
 
         assert!(payload.contains(r#""method":"desktop_type_into""#));
+        assert!(payload.contains(r#""window_id":"window-1""#));
         assert_eq!(decode_request(&payload).unwrap(), request);
     }
 
@@ -874,6 +901,7 @@ mod tests {
                 window_title: None,
                 assertion: DesktopAssertionDto::Present,
                 expected_text: None,
+                window_id: None,
             })
         );
     }
@@ -898,6 +926,8 @@ mod tests {
                 to_ratio_y: 0.5,
                 duration_ms: 250,
                 dry_run: false,
+                window_id: None,
+                verify: false,
             })
         );
     }

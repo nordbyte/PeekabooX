@@ -324,6 +324,8 @@ message DesktopFocusRequest {
   optional uint64 wait_after_focus_ms = 4;
   optional uint64 overview_wait_ms = 5;
   optional string window_title = 6;
+  optional string window_id = 7;
+  bool verify = 8;
 }
 
 message DesktopLocateRequest {
@@ -332,6 +334,7 @@ message DesktopLocateRequest {
   optional string image_path = 3;
   optional bool prefer_accessibility = 4;
   optional string window_title = 5;
+  optional string window_id = 6;
 }
 
 message DesktopClickRequest {
@@ -342,6 +345,8 @@ message DesktopClickRequest {
   optional string window_title = 5;
   optional MouseButton button = 6;
   bool dry_run = 7;
+  optional string window_id = 8;
+  bool verify = 9;
 }
 
 message DesktopDragRequest {
@@ -357,6 +362,8 @@ message DesktopDragRequest {
   optional float to_ratio_y = 10;
   optional uint64 duration_ms = 11;
   bool dry_run = 12;
+  optional string window_id = 13;
+  bool verify = 14;
 }
 
 message DesktopTypeIntoRequest {
@@ -368,6 +375,8 @@ message DesktopTypeIntoRequest {
   optional string window_title = 6;
   bool clear = 7;
   bool dry_run = 8;
+  optional string window_id = 9;
+  bool verify = 10;
 }
 
 enum DesktopAssertionKind {
@@ -388,6 +397,7 @@ message DesktopAssertRequest {
   optional string window_title = 5;
   DesktopAssertionKind assertion = 6;
   optional string expected_text = 7;
+  optional string window_id = 8;
 }
 
 message DesktopActionResponse {
@@ -395,6 +405,8 @@ message DesktopActionResponse {
   string action = 2;
   string detail = 3;
   string backend_name = 4;
+  bool verified = 5;
+  optional string verification_detail = 6;
 }
 
 message DesktopLocateResponse {

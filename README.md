@@ -15,6 +15,7 @@ The `v1.0.0` foundation release provides:
 cargo check --workspace
 python3 -m compileall python/src
 PYTHONPATH=python/src python3 benchmarks/perf_baseline.py --iterations 30
+cargo run -q -p peekaboox-cli -- doctor --json
 ```
 
 Build local install artifacts:
@@ -92,13 +93,14 @@ layout detection, and guards around state-sensitive targets:
 
 ```bash
 cargo run -q -p peekaboox-cli -- desktop profiles
+cargo run -q -p peekaboox-cli -- desktop profiles --json
 cargo run -q -p peekaboox-cli -- desktop focus --app telegram
 cargo run -q -p peekaboox-cli -- desktop locate --app telegram --target search-input
 cargo run -q -p peekaboox-cli -- desktop type-into --app telegram --target search-input --clear "Saved Messages"
 cargo run -q -p peekaboox-cli -- desktop assert --app telegram --target send-button --not-active
 cargo run -q -p peekaboox-cli -- desktop drag --app drawing --target canvas --from-ratio 0.2,0.3 --to-ratio 0.8,0.3
 cargo run -q -p peekaboox-cli -- desktop type-into --app text-editor --target document --window-title notes.txt --clear "PeekabooX"
-cargo run -q -p peekaboox-cli -- --daemon desktop click --app telegram --target search-input --dry-run
+cargo run -q -p peekaboox-cli -- --daemon desktop click --app telegram --target search-input --dry-run --verify --json
 ```
 
 The built-in profiles include `telegram`, `paint`, `drawing`, `pinta`,
@@ -106,24 +108,35 @@ The built-in profiles include `telegram`, `paint`, `drawing`, `pinta`,
 existing window focus where window enumeration is available, GNOME Overview or
 application launch fallback, then app-specific visual layout targets such as
 Telegram's `search-input` and `message-input`, Paint's `canvas`, or Text
-Editor's `document`. Pass `--window-title <text>` to `desktop focus`, `locate`,
-`click`, `drag`, `type-into`, or `assert` when an action must target one
-specific window instead of the currently focused matching app.
+Editor's `document`. Pass `--window-id <id>` or `--window-title <text>` to
+`desktop focus`, `locate`, `click`, `drag`, `type-into`, or `assert` when an
+action must target one specific window instead of the currently focused
+matching app. Mutating desktop helper actions accept `--verify` to run a
+postcondition check after the action. `desktop profiles --json` exposes the
+built-in app/target registry for scripts and plugin authors.
 The same desktop-helper surface is exposed through daemon JSON IPC, gRPC,
 `PeekabooXClient`, `AgentRuntime`, and MCP tools (`desktop_focus`,
 `desktop_locate`, `desktop_click`, `desktop_drag`, `desktop_type_into`, and
-`desktop_assert`) so agents can use named app targets instead of brittle screen
-coordinates.
+`desktop_assert`) so agents can use named app targets, `window_id` scoping, and
+optional post-action verification instead of brittle screen coordinates.
 
 List visible desktop windows:
 
 ```bash
 cargo run -q -p peekaboox-cli -- windows
+cargo run -q -p peekaboox-cli -- windows --json
 ```
 
 The current window enumeration implementation tries GNOME Shell Introspect on
 GNOME, falls back to AT-SPI for Wayland-accessible applications, and uses
 `xdotool` for X11/XWayland windows.
+
+Check the current environment before running live automation:
+
+```bash
+cargo run -q -p peekaboox-cli -- doctor
+cargo run -q -p peekaboox-cli -- doctor --json
+```
 
 Run the local daemon API and send CLI commands through it:
 

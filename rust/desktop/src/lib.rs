@@ -140,6 +140,8 @@ pub struct DesktopActionResult {
     pub action: String,
     pub detail: String,
     pub backend_name: String,
+    pub verified: bool,
+    pub verification_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +151,8 @@ pub struct FocusOptions {
     pub wait_after_focus_ms: u64,
     pub overview_wait_ms: u64,
     pub window_title: Option<String>,
+    pub window_id: Option<String>,
+    pub verify: bool,
 }
 
 impl Default for FocusOptions {
@@ -159,6 +163,8 @@ impl Default for FocusOptions {
             wait_after_focus_ms: DEFAULT_FOCUS_WAIT_MS,
             overview_wait_ms: DEFAULT_OVERVIEW_WAIT_MS,
             window_title: None,
+            window_id: None,
+            verify: false,
         }
     }
 }
@@ -168,6 +174,7 @@ pub struct LocateOptions {
     pub image: Option<PathBuf>,
     pub prefer_accessibility: bool,
     pub window_title: Option<String>,
+    pub window_id: Option<String>,
 }
 
 impl Default for LocateOptions {
@@ -176,6 +183,7 @@ impl Default for LocateOptions {
             image: None,
             prefer_accessibility: true,
             window_title: None,
+            window_id: None,
         }
     }
 }
@@ -185,6 +193,7 @@ pub struct ClickOptions {
     pub locate: LocateOptions,
     pub button: MouseButton,
     pub dry_run: bool,
+    pub verify: bool,
 }
 
 impl Default for ClickOptions {
@@ -193,6 +202,7 @@ impl Default for ClickOptions {
             locate: LocateOptions::default(),
             button: MouseButton::Left,
             dry_run: false,
+            verify: false,
         }
     }
 }
@@ -205,6 +215,7 @@ pub struct DesktopDragOptions {
     pub button: MouseButton,
     pub duration_ms: u64,
     pub dry_run: bool,
+    pub verify: bool,
 }
 
 impl Default for DesktopDragOptions {
@@ -216,6 +227,7 @@ impl Default for DesktopDragOptions {
             button: MouseButton::Left,
             duration_ms: 250,
             dry_run: false,
+            verify: false,
         }
     }
 }
@@ -225,6 +237,7 @@ pub struct TypeIntoOptions {
     pub locate: LocateOptions,
     pub clear: bool,
     pub dry_run: bool,
+    pub verify: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,24 +256,87 @@ pub struct AssertOptions {
     pub assertion: DesktopAssertion,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopProfileInfo {
+    pub id: String,
+    pub aliases: Vec<String>,
+    pub search_name: String,
+    pub desktop_ids: Vec<String>,
+    pub commands: Vec<String>,
+    pub targets: Vec<String>,
+}
+
 pub fn supported_apps() -> &'static [&'static str] {
     SUPPORTED_APPS
 }
 
+pub fn desktop_profiles() -> Vec<DesktopProfileInfo> {
+    [
+        &TELEGRAM_PROFILE,
+        &PAINT_PROFILE,
+        &DRAWING_PROFILE,
+        &PINTA_PROFILE,
+        &KOLOURPAINT_PROFILE,
+        &TEXT_EDITOR_PROFILE,
+    ]
+    .into_iter()
+    .map(profile_info)
+    .collect()
+}
+
+pub fn desktop_profile(app: &str) -> Result<DesktopProfileInfo> {
+    resolve_profile(app).map(profile_info)
+}
+
+fn profile_info(profile: &AppProfile) -> DesktopProfileInfo {
+    DesktopProfileInfo {
+        id: profile.id.to_owned(),
+        aliases: profile
+            .aliases
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
+        search_name: profile.search_name.to_owned(),
+        desktop_ids: profile
+            .desktop_ids
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
+        commands: profile
+            .commands
+            .iter()
+            .map(|command| command.program.to_owned())
+            .collect(),
+        targets: profile
+            .supported_targets()
+            .iter()
+            .map(|target| (*target).to_owned())
+            .collect(),
+    }
+}
+
 pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResult> {
     let profile = resolve_profile(app)?;
-    let title_hint = normalized_title_hint(options.window_title.as_deref());
+    let window_scope = normalized_window_scope(
+        options.window_title.as_deref(),
+        options.window_id.as_deref(),
+    );
 
     if let Ok(metadata) = peekaboox_windows::list_windows()
-        && let Some(window) = preferred_profile_window(profile, &metadata.windows, title_hint)
+        && let Some(window) = preferred_profile_window(profile, &metadata.windows, window_scope)
     {
         if window.focused {
             sleep_after_focus(options);
-            return Ok(DesktopActionResult {
+            let result = DesktopActionResult {
                 app: profile.id.to_owned(),
                 action: "focus".to_owned(),
                 detail: "already focused".to_owned(),
                 backend_name: metadata.backend_name,
+                verified: false,
+                verification_detail: None,
+            };
+            return maybe_verify_action(result, options.verify, || {
+                verify_focused_window(profile, window_scope)
             });
         }
 
@@ -271,49 +347,70 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
             );
             let metadata = peekaboox_input::click(center, MouseButton::Left)?;
             sleep_after_focus(options);
-            return Ok(DesktopActionResult {
+            let result = DesktopActionResult {
                 app: profile.id.to_owned(),
                 action: "focus".to_owned(),
                 detail: format!("clicked existing window at {},{}", center.x, center.y),
                 backend_name: metadata.backend_name,
+                verified: false,
+                verification_detail: None,
+            };
+            return maybe_verify_action(result, options.verify, || {
+                verify_focused_window(profile, window_scope)
             });
         }
     }
 
-    if let Some(title_hint) = title_hint {
+    if window_scope.has_constraints() {
         return Err(PeekabooXError::new(format!(
-            "could not find visible app {app:?} window with title containing {title_hint:?}"
+            "could not find visible app {app:?} window matching {}",
+            window_scope.description()
         )));
     }
 
     if options.use_gnome_overview && focus_from_gnome_overview(profile, options).is_ok() {
         sleep_after_focus(options);
-        return Ok(DesktopActionResult {
+        let result = DesktopActionResult {
             app: profile.id.to_owned(),
             action: "focus".to_owned(),
             detail: "focused via GNOME overview".to_owned(),
             backend_name: "gnome-overview".to_owned(),
+            verified: false,
+            verification_detail: None,
+        };
+        return maybe_verify_action(result, options.verify, || {
+            verify_focused_window(profile, window_scope)
         });
     }
 
     if options.launch_if_needed {
         if let Some(desktop_id) = launch_desktop_entry(profile) {
             sleep_after_focus(options);
-            return Ok(DesktopActionResult {
+            let result = DesktopActionResult {
                 app: profile.id.to_owned(),
                 action: "focus".to_owned(),
                 detail: format!("launched desktop entry {desktop_id}"),
                 backend_name: "gtk-launch".to_owned(),
+                verified: false,
+                verification_detail: None,
+            };
+            return maybe_verify_action(result, options.verify, || {
+                verify_focused_window(profile, window_scope)
             });
         }
 
         if let Some(command) = launch_command(profile) {
             sleep_after_focus(options);
-            return Ok(DesktopActionResult {
+            let result = DesktopActionResult {
                 app: profile.id.to_owned(),
                 action: "focus".to_owned(),
                 detail: format!("launched {}", command.program),
                 backend_name: "command".to_owned(),
+                verified: false,
+                verification_detail: None,
+            };
+            return maybe_verify_action(result, options.verify, || {
+                verify_focused_window(profile, window_scope)
             });
         }
     }
@@ -330,10 +427,13 @@ pub fn locate_target(
     options: &LocateOptions,
 ) -> Result<ResolvedDesktopTarget> {
     let profile = resolve_profile(app)?;
-    let title_hint = normalized_title_hint(options.window_title.as_deref());
+    let window_scope = normalized_window_scope(
+        options.window_title.as_deref(),
+        options.window_id.as_deref(),
+    );
     if options.prefer_accessibility
         && options.image.is_none()
-        && title_hint.is_none()
+        && !window_scope.has_constraints()
         && let Some(selector) = profile.accessibility_selector(target)
         && let Ok(resolved) = peekaboox_accessibility::resolve_click_target(selector)
     {
@@ -347,7 +447,7 @@ pub fn locate_target(
     }
 
     let frame = load_or_capture_frame(options.image.as_deref())?;
-    profile.resolve_visual_target(target, &frame, title_hint)
+    profile.resolve_visual_target(target, &frame, window_scope)
 }
 
 pub fn click_target(
@@ -368,11 +468,13 @@ pub fn click_target(
                 resolved.source.label()
             ),
             backend_name: "dry-run".to_owned(),
+            verified: false,
+            verification_detail: None,
         });
     }
 
     let metadata = peekaboox_input::click(resolved.point, options.button)?;
-    Ok(DesktopActionResult {
+    let result = DesktopActionResult {
         app: resolved.app,
         action: "click".to_owned(),
         detail: format!(
@@ -383,6 +485,19 @@ pub fn click_target(
             resolved.source.label()
         ),
         backend_name: metadata.backend_name,
+        verified: false,
+        verification_detail: None,
+    };
+    maybe_verify_action(result, options.verify, || {
+        locate_target(app, target, &options.locate).map(|verified| {
+            format!(
+                "target {} present at {},{} via {}",
+                verified.target,
+                verified.point.x,
+                verified.point.y,
+                verified.source.label()
+            )
+        })
     })
 }
 
@@ -414,11 +529,13 @@ pub fn drag_target(
                 resolved.source.label()
             ),
             backend_name: "dry-run".to_owned(),
+            verified: false,
+            verification_detail: None,
         });
     }
 
     let metadata = peekaboox_input::drag(from, to, options.button, options.duration_ms)?;
-    Ok(DesktopActionResult {
+    let result = DesktopActionResult {
         app: resolved.app,
         action: "drag".to_owned(),
         detail: format!(
@@ -431,6 +548,19 @@ pub fn drag_target(
             resolved.source.label()
         ),
         backend_name: metadata.backend_name,
+        verified: false,
+        verification_detail: None,
+    };
+    maybe_verify_action(result, options.verify, || {
+        locate_target(app, target, &options.locate).map(|verified| {
+            format!(
+                "target {} present at {},{} via {}",
+                verified.target,
+                verified.point.x,
+                verified.point.y,
+                verified.source.label()
+            )
+        })
     })
 }
 
@@ -454,6 +584,8 @@ pub fn type_into_target(
                 resolved.source.label()
             ),
             backend_name: "dry-run".to_owned(),
+            verified: false,
+            verification_detail: None,
         });
     }
 
@@ -464,11 +596,38 @@ pub fn type_into_target(
     }
     let metadata = peekaboox_input::type_text(text.to_owned())?;
 
-    Ok(DesktopActionResult {
+    let result = DesktopActionResult {
         app: resolved.app,
         action: "type-into".to_owned(),
         detail: format!("typed into {}", resolved.target),
         backend_name: metadata.backend_name,
+        verified: false,
+        verification_detail: None,
+    };
+    maybe_verify_action(result, options.verify, || {
+        if text.trim().is_empty() {
+            return locate_target(app, target, &options.locate)
+                .map(|_| "target still present after typing".to_owned());
+        }
+        if target_text_contains(
+            profile,
+            target,
+            text,
+            options.locate.image.as_deref(),
+            normalized_window_scope(
+                options.locate.window_title.as_deref(),
+                options.locate.window_id.as_deref(),
+            ),
+        )? {
+            Ok(format!(
+                "target contains typed text ({}) characters",
+                text.chars().count()
+            ))
+        } else {
+            Err(PeekabooXError::new(format!(
+                "target {target:?} does not contain the typed text after input"
+            )))
+        }
     })
 }
 
@@ -493,6 +652,10 @@ pub fn assert_target(
             if !profile.target_active(
                 target,
                 &load_or_capture_frame(options.locate.image.as_deref())?,
+                normalized_window_scope(
+                    options.locate.window_title.as_deref(),
+                    options.locate.window_id.as_deref(),
+                ),
             )? {
                 return Err(PeekabooXError::new(format!(
                     "target {target:?} is not active"
@@ -503,6 +666,10 @@ pub fn assert_target(
             if profile.target_active(
                 target,
                 &load_or_capture_frame(options.locate.image.as_deref())?,
+                normalized_window_scope(
+                    options.locate.window_title.as_deref(),
+                    options.locate.window_id.as_deref(),
+                ),
             )? {
                 return Err(PeekabooXError::new(format!(
                     "target {target:?} is active but expected inactive"
@@ -515,7 +682,10 @@ pub fn assert_target(
                 target,
                 expected,
                 options.locate.image.as_deref(),
-                normalized_title_hint(options.locate.window_title.as_deref()),
+                normalized_window_scope(
+                    options.locate.window_title.as_deref(),
+                    options.locate.window_id.as_deref(),
+                ),
             )? {
                 return Err(PeekabooXError::new(format!(
                     "target {target:?} does not contain {expected:?}"
@@ -528,7 +698,10 @@ pub fn assert_target(
                 target,
                 expected,
                 options.locate.image.as_deref(),
-                normalized_title_hint(options.locate.window_title.as_deref()),
+                normalized_window_scope(
+                    options.locate.window_title.as_deref(),
+                    options.locate.window_id.as_deref(),
+                ),
             )? {
                 return Err(PeekabooXError::new(format!(
                     "target {target:?} contains {expected:?} but expected it not to"
@@ -542,6 +715,8 @@ pub fn assert_target(
         action: "assert".to_owned(),
         detail: format!("asserted {} {:?}", target, options.assertion),
         backend_name: "desktop-guard".to_owned(),
+        verified: true,
+        verification_detail: Some("assertion passed".to_owned()),
     })
 }
 
@@ -551,10 +726,40 @@ fn sleep_after_focus(options: &FocusOptions) {
     }
 }
 
+fn maybe_verify_action(
+    mut result: DesktopActionResult,
+    verify: bool,
+    verifier: impl FnOnce() -> Result<String>,
+) -> Result<DesktopActionResult> {
+    if verify {
+        result.verification_detail = Some(verifier()?);
+        result.verified = true;
+    }
+    Ok(result)
+}
+
+fn verify_focused_window(profile: &AppProfile, scope: WindowScope<'_>) -> Result<String> {
+    let metadata = peekaboox_windows::list_windows()?;
+    let window = preferred_profile_window(profile, &metadata.windows, scope).ok_or_else(|| {
+        PeekabooXError::new(format!(
+            "could not verify focused {}; no window matched {}",
+            profile.id,
+            scope.description()
+        ))
+    })?;
+    if !window.focused {
+        return Err(PeekabooXError::new(format!(
+            "could not verify focused {}; matched window {} is not focused",
+            profile.id, window.id
+        )));
+    }
+    Ok(format!("window {} is focused", window.id))
+}
+
 fn preferred_profile_window<'a>(
     profile: &AppProfile,
     windows: &'a [peekaboox_core::WindowInfo],
-    title_hint: Option<&str>,
+    scope: WindowScope<'_>,
 ) -> Option<&'a peekaboox_core::WindowInfo> {
     windows
         .iter()
@@ -562,7 +767,12 @@ fn preferred_profile_window<'a>(
             profile.matches_window(window)
                 && window.bounds.width > 0
                 && window.bounds.height > 0
-                && title_hint.is_none_or(|hint| contains_case_insensitive(&window.title, hint))
+                && scope
+                    .window_id
+                    .is_none_or(|id| window.id.eq_ignore_ascii_case(id))
+                && scope
+                    .title_hint
+                    .is_none_or(|hint| contains_case_insensitive(&window.title, hint))
         })
         .max_by_key(|window| {
             let area = u64::from(window.bounds.width) * u64::from(window.bounds.height);
@@ -571,13 +781,46 @@ fn preferred_profile_window<'a>(
         })
 }
 
-fn profile_window_rect(profile: &AppProfile, title_hint: Option<&str>) -> Option<Rect> {
+fn profile_window_rect(profile: &AppProfile, scope: WindowScope<'_>) -> Option<Rect> {
     let metadata = peekaboox_windows::list_windows().ok()?;
-    preferred_profile_window(profile, &metadata.windows, title_hint).map(|window| window.bounds)
+    preferred_profile_window(profile, &metadata.windows, scope).map(|window| window.bounds)
 }
 
 fn normalized_title_hint(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn normalized_window_scope<'a>(
+    title_hint: Option<&'a str>,
+    window_id: Option<&'a str>,
+) -> WindowScope<'a> {
+    WindowScope {
+        title_hint: normalized_title_hint(title_hint),
+        window_id: normalized_title_hint(window_id),
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct WindowScope<'a> {
+    title_hint: Option<&'a str>,
+    window_id: Option<&'a str>,
+}
+
+impl WindowScope<'_> {
+    fn has_constraints(self) -> bool {
+        self.title_hint.is_some() || self.window_id.is_some()
+    }
+
+    fn description(self) -> String {
+        match (self.window_id, self.title_hint) {
+            (Some(window_id), Some(title_hint)) => {
+                format!("window_id={window_id:?} and title containing {title_hint:?}")
+            }
+            (Some(window_id), None) => format!("window_id={window_id:?}"),
+            (None, Some(title_hint)) => format!("title containing {title_hint:?}"),
+            (None, None) => "the selected app profile".to_owned(),
+        }
+    }
 }
 
 fn focus_from_gnome_overview(profile: &AppProfile, options: &FocusOptions) -> Result<()> {
@@ -694,11 +937,11 @@ fn target_text_contains(
     target: &str,
     expected: &str,
     image: Option<&Path>,
-    window_title: Option<&str>,
+    window_scope: WindowScope<'_>,
 ) -> Result<bool> {
     let frame = load_or_capture_frame(image)?;
     let rect = profile
-        .resolve_visual_target(target, &frame, window_title)?
+        .resolve_visual_target(target, &frame, window_scope)?
         .rect;
 
     if accessibility_contains(expected, rect).unwrap_or(false) {
@@ -821,24 +1064,29 @@ impl AppProfile {
         self,
         target: &str,
         frame: &CaptureFrame,
-        window_title: Option<&str>,
+        window_scope: WindowScope<'_>,
     ) -> Result<ResolvedDesktopTarget> {
+        let scoped = scoped_visual_frame(&self, frame, window_scope)?;
         let visual = match (self.kind, target) {
-            (ProfileKind::Telegram, "overview-icon") => locate_overview_icon(frame)?,
-            (ProfileKind::Telegram, "search-input") => locate_search_input(frame)?,
-            (ProfileKind::Telegram, "search-clear") => locate_search_clear(frame)?,
-            (ProfileKind::Telegram, "search-result") => locate_search_result(frame)?,
-            (ProfileKind::Telegram, "message-input") => locate_message_input(frame)?,
-            (ProfileKind::Telegram, "send-button") => locate_send_button(frame)?,
-            (ProfileKind::Telegram, "header") => locate_header(frame)?,
-            (ProfileKind::Paint, "canvas") => locate_paint_canvas(frame)?,
-            (ProfileKind::Paint, "save-button") => locate_paint_save_button(frame)?,
-            (ProfileKind::TextEditor, "document") => {
-                locate_text_editor_document(self, frame, window_title)?
-            }
-            (ProfileKind::TextEditor, "save-button") => {
-                locate_text_editor_save_button(self, frame, window_title)?
-            }
+            (ProfileKind::Telegram, "overview-icon") => locate_overview_icon(&scoped.frame)?,
+            (ProfileKind::Telegram, "search-input") => locate_search_input(&scoped.frame)?,
+            (ProfileKind::Telegram, "search-clear") => locate_search_clear(&scoped.frame)?,
+            (ProfileKind::Telegram, "search-result") => locate_search_result(&scoped.frame)?,
+            (ProfileKind::Telegram, "message-input") => locate_message_input(&scoped.frame)?,
+            (ProfileKind::Telegram, "send-button") => locate_send_button(&scoped.frame)?,
+            (ProfileKind::Telegram, "header") => locate_header(&scoped.frame)?,
+            (ProfileKind::Paint, "canvas") => locate_paint_canvas(&scoped.frame)?,
+            (ProfileKind::Paint, "save-button") => locate_paint_save_button(&scoped.frame)?,
+            (ProfileKind::TextEditor, "document") => locate_text_editor_document(
+                self,
+                &scoped.frame,
+                (!window_scope.has_constraints()).then_some(window_scope),
+            )?,
+            (ProfileKind::TextEditor, "save-button") => locate_text_editor_save_button(
+                self,
+                &scoped.frame,
+                (!window_scope.has_constraints()).then_some(window_scope),
+            )?,
             _ => {
                 let supported_targets = match self.kind {
                     ProfileKind::Telegram => telegram_supported_targets(),
@@ -852,6 +1100,7 @@ impl AppProfile {
                 )));
             }
         };
+        let visual = scoped.translate(visual);
 
         Ok(ResolvedDesktopTarget {
             app: self.id.to_owned(),
@@ -862,12 +1111,26 @@ impl AppProfile {
         })
     }
 
-    fn target_active(self, target: &str, frame: &CaptureFrame) -> Result<bool> {
+    fn target_active(
+        self,
+        target: &str,
+        frame: &CaptureFrame,
+        window_scope: WindowScope<'_>,
+    ) -> Result<bool> {
+        let scoped = scoped_visual_frame(&self, frame, window_scope)?;
         match (self.kind, target) {
-            (ProfileKind::Telegram, "send-button") => Ok(draft_send_button_active(frame)?),
+            (ProfileKind::Telegram, "send-button") => Ok(draft_send_button_active(&scoped.frame)?),
             _ => Err(PeekabooXError::new(format!(
                 "target {target:?} does not expose an active-state guard"
             ))),
+        }
+    }
+
+    fn supported_targets(self) -> &'static [&'static str] {
+        match self.kind {
+            ProfileKind::Telegram => telegram_supported_targets(),
+            ProfileKind::Paint => paint_supported_targets(),
+            ProfileKind::TextEditor => text_editor_supported_targets(),
         }
     }
 }
@@ -963,6 +1226,111 @@ impl VisualTarget {
             rect: Some(rect),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScopedFrame {
+    frame: CaptureFrame,
+    offset: Point,
+}
+
+impl ScopedFrame {
+    fn translate(&self, target: VisualTarget) -> VisualTarget {
+        VisualTarget {
+            point: Point::new(
+                target.point.x + self.offset.x,
+                target.point.y + self.offset.y,
+            ),
+            rect: target.rect.map(|rect| translate_rect(rect, self.offset)),
+        }
+    }
+}
+
+fn scoped_visual_frame(
+    profile: &AppProfile,
+    frame: &CaptureFrame,
+    scope: WindowScope<'_>,
+) -> Result<ScopedFrame> {
+    if !scope.has_constraints() {
+        return Ok(ScopedFrame {
+            frame: frame.clone(),
+            offset: Point::new(0, 0),
+        });
+    }
+
+    let rect = profile_window_rect(profile, scope).ok_or_else(|| {
+        PeekabooXError::new(format!(
+            "could not locate visible {} window matching {}",
+            profile.id,
+            scope.description()
+        ))
+    })?;
+    Ok(ScopedFrame {
+        frame: crop_frame(frame, rect)?,
+        offset: Point::new(max(0, rect.x), max(0, rect.y)),
+    })
+}
+
+fn crop_frame(frame: &CaptureFrame, rect: Rect) -> Result<CaptureFrame> {
+    let bytes_per_pixel = bytes_per_pixel(frame.format);
+    let frame_width = i32::try_from(frame.width).unwrap_or(i32::MAX);
+    let frame_height = i32::try_from(frame.height).unwrap_or(i32::MAX);
+    let left = rect.x.clamp(0, frame_width);
+    let top = rect.y.clamp(0, frame_height);
+    let right = (rect.x + i32::try_from(rect.width).unwrap_or(i32::MAX)).clamp(0, frame_width);
+    let bottom = (rect.y + i32::try_from(rect.height).unwrap_or(i32::MAX)).clamp(0, frame_height);
+    if right <= left || bottom <= top {
+        return Err(PeekabooXError::new(format!(
+            "window crop is outside captured frame: {},{},{}x{}",
+            rect.x, rect.y, rect.width, rect.height
+        )));
+    }
+
+    let width = u32::try_from(right - left).unwrap_or(0);
+    let height = u32::try_from(bottom - top).unwrap_or(0);
+    let stride = width.saturating_mul(u32::try_from(bytes_per_pixel).unwrap_or(4));
+    let mut data = Vec::with_capacity(usize::try_from(stride.saturating_mul(height)).unwrap_or(0));
+    for row in top..bottom {
+        let start = usize::try_from(row)
+            .unwrap_or(0)
+            .saturating_mul(usize::try_from(frame.stride).unwrap_or(0))
+            .saturating_add(
+                usize::try_from(left)
+                    .unwrap_or(0)
+                    .saturating_mul(bytes_per_pixel),
+            );
+        let end = start.saturating_add(usize::try_from(stride).unwrap_or(0));
+        let Some(slice) = frame.data.get(start..end) else {
+            return Err(PeekabooXError::new(
+                "window crop exceeds captured frame buffer",
+            ));
+        };
+        data.extend_from_slice(slice);
+    }
+
+    Ok(CaptureFrame {
+        width,
+        height,
+        stride,
+        format: frame.format,
+        data,
+    })
+}
+
+fn bytes_per_pixel(format: PixelFormat) -> usize {
+    match format {
+        PixelFormat::Rgb8 => 3,
+        PixelFormat::Rgba8 | PixelFormat::Bgra8 => 4,
+    }
+}
+
+fn translate_rect(rect: Rect, offset: Point) -> Rect {
+    Rect::new(
+        rect.x + offset.x,
+        rect.y + offset.y,
+        rect.width,
+        rect.height,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1224,15 +1592,17 @@ fn locate_paint_save_button(frame: &CaptureFrame) -> Result<VisualTarget> {
 fn locate_text_editor_document(
     profile: AppProfile,
     frame: &CaptureFrame,
-    window_title: Option<&str>,
+    window_scope: Option<WindowScope<'_>>,
 ) -> Result<VisualTarget> {
-    let rect = match profile_window_rect(&profile, window_title) {
+    let rect = match window_scope.and_then(|scope| profile_window_rect(&profile, scope)) {
         Some(window) => text_editor_document_rect(window),
-        None if window_title.is_some() => {
+        None if window_scope.is_some_and(WindowScope::has_constraints) => {
             return Err(PeekabooXError::new(format!(
-                "could not locate visible {} window with title containing {:?}",
+                "could not locate visible {} window matching {}",
                 profile.id,
-                window_title.unwrap_or_default()
+                window_scope
+                    .map(WindowScope::description)
+                    .unwrap_or_default()
             )));
         }
         None => {
@@ -1254,15 +1624,17 @@ fn locate_text_editor_document(
 fn locate_text_editor_save_button(
     profile: AppProfile,
     frame: &CaptureFrame,
-    window_title: Option<&str>,
+    window_scope: Option<WindowScope<'_>>,
 ) -> Result<VisualTarget> {
-    let rect = match profile_window_rect(&profile, window_title) {
+    let rect = match window_scope.and_then(|scope| profile_window_rect(&profile, scope)) {
         Some(window) => window,
-        None if window_title.is_some() => {
+        None if window_scope.is_some_and(WindowScope::has_constraints) => {
             return Err(PeekabooXError::new(format!(
-                "could not locate visible {} window with title containing {:?}",
+                "could not locate visible {} window matching {}",
                 profile.id,
-                window_title.unwrap_or_default()
+                window_scope
+                    .map(WindowScope::description)
+                    .unwrap_or_default()
             )));
         }
         None => {
@@ -1700,11 +2072,51 @@ mod tests {
             },
         ];
 
-        let selected =
-            preferred_profile_window(&TEXT_EDITOR_PROFILE, &windows, Some("peekaboox-draft"))
-                .unwrap();
+        let selected = preferred_profile_window(
+            &TEXT_EDITOR_PROFILE,
+            &windows,
+            WindowScope {
+                title_hint: Some("peekaboox-draft"),
+                window_id: None,
+            },
+        )
+        .unwrap();
 
         assert_eq!(selected.id, "draft");
+    }
+
+    #[test]
+    fn preferred_profile_window_respects_window_id() {
+        let windows = vec![
+            peekaboox_core::WindowInfo {
+                id: "first".to_owned(),
+                title: "Text Editor".to_owned(),
+                app_id: Some("gnome-text-editor".to_owned()),
+                bounds: Rect::new(0, 0, 900, 700),
+                focused: true,
+                state: peekaboox_core::WindowState::Normal,
+            },
+            peekaboox_core::WindowInfo {
+                id: "second".to_owned(),
+                title: "Text Editor".to_owned(),
+                app_id: Some("gnome-text-editor".to_owned()),
+                bounds: Rect::new(200, 120, 700, 520),
+                focused: false,
+                state: peekaboox_core::WindowState::Normal,
+            },
+        ];
+
+        let selected = preferred_profile_window(
+            &TEXT_EDITOR_PROFILE,
+            &windows,
+            WindowScope {
+                title_hint: None,
+                window_id: Some("second"),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(selected.id, "second");
     }
 
     fn synthetic_telegram_frame(active_send: bool) -> CaptureFrame {

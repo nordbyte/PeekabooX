@@ -142,6 +142,8 @@ class DesktopActionResult:
     action: str
     detail: str
     backend_name: str
+    verified: bool = False
+    verification_detail: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -573,6 +575,8 @@ class PeekabooXClient:
         wait_after_focus_ms: int = 1_000,
         overview_wait_ms: int = 800,
         window_title: str | None = None,
+        window_id: str | None = None,
+        verify: bool = False,
     ) -> DesktopActionResult:
         request_kwargs: dict[str, Any] = {
             "app": app,
@@ -580,9 +584,12 @@ class PeekabooXClient:
             "launch_if_needed": launch_if_needed,
             "wait_after_focus_ms": wait_after_focus_ms,
             "overview_wait_ms": overview_wait_ms,
+            "verify": verify,
         }
         if window_title is not None:
             request_kwargs["window_title"] = window_title
+        if window_id is not None:
+            request_kwargs["window_id"] = window_id
         return _desktop_action_from_proto(
             self._call("DesktopFocus", self.messages.DesktopFocusRequest(**request_kwargs))
         )
@@ -595,6 +602,7 @@ class PeekabooXClient:
         image_path: str | PathLike[str] | None = None,
         prefer_accessibility: bool = True,
         window_title: str | None = None,
+        window_id: str | None = None,
     ) -> DesktopLocateResult:
         request_kwargs: dict[str, Any] = {
             "app": app,
@@ -605,6 +613,8 @@ class PeekabooXClient:
             request_kwargs["image_path"] = str(image_path)
         if window_title is not None:
             request_kwargs["window_title"] = window_title
+        if window_id is not None:
+            request_kwargs["window_id"] = window_id
         return _desktop_locate_from_proto(
             self._call("DesktopLocate", self.messages.DesktopLocateRequest(**request_kwargs))
         )
@@ -617,8 +627,10 @@ class PeekabooXClient:
         image_path: str | PathLike[str] | None = None,
         prefer_accessibility: bool = True,
         window_title: str | None = None,
+        window_id: str | None = None,
         button: str = "left",
         dry_run: bool = False,
+        verify: bool = False,
     ) -> DesktopActionResult:
         request_kwargs: dict[str, Any] = {
             "app": app,
@@ -626,11 +638,14 @@ class PeekabooXClient:
             "prefer_accessibility": prefer_accessibility,
             "button": _mouse_button_to_proto(self.messages, button),
             "dry_run": dry_run,
+            "verify": verify,
         }
         if image_path is not None:
             request_kwargs["image_path"] = str(image_path)
         if window_title is not None:
             request_kwargs["window_title"] = window_title
+        if window_id is not None:
+            request_kwargs["window_id"] = window_id
         return _desktop_action_from_proto(
             self._call("DesktopClick", self.messages.DesktopClickRequest(**request_kwargs))
         )
@@ -643,11 +658,13 @@ class PeekabooXClient:
         image_path: str | PathLike[str] | None = None,
         prefer_accessibility: bool = True,
         window_title: str | None = None,
+        window_id: str | None = None,
         button: str = "left",
         from_ratio: tuple[float, float] = (0.5, 0.5),
         to_ratio: tuple[float, float] = (0.5, 0.5),
         duration_ms: int = 250,
         dry_run: bool = False,
+        verify: bool = False,
     ) -> DesktopActionResult:
         _validate_ratio_pair("from_ratio", from_ratio)
         _validate_ratio_pair("to_ratio", to_ratio)
@@ -664,11 +681,14 @@ class PeekabooXClient:
             "to_ratio_y": to_ratio[1],
             "duration_ms": duration_ms,
             "dry_run": dry_run,
+            "verify": verify,
         }
         if image_path is not None:
             request_kwargs["image_path"] = str(image_path)
         if window_title is not None:
             request_kwargs["window_title"] = window_title
+        if window_id is not None:
+            request_kwargs["window_id"] = window_id
         return _desktop_action_from_proto(
             self._call("DesktopDrag", self.messages.DesktopDragRequest(**request_kwargs))
         )
@@ -682,8 +702,10 @@ class PeekabooXClient:
         image_path: str | PathLike[str] | None = None,
         prefer_accessibility: bool = True,
         window_title: str | None = None,
+        window_id: str | None = None,
         clear: bool = False,
         dry_run: bool = False,
+        verify: bool = False,
     ) -> DesktopActionResult:
         request_kwargs: dict[str, Any] = {
             "app": app,
@@ -692,11 +714,14 @@ class PeekabooXClient:
             "prefer_accessibility": prefer_accessibility,
             "clear": clear,
             "dry_run": dry_run,
+            "verify": verify,
         }
         if image_path is not None:
             request_kwargs["image_path"] = str(image_path)
         if window_title is not None:
             request_kwargs["window_title"] = window_title
+        if window_id is not None:
+            request_kwargs["window_id"] = window_id
         return _desktop_action_from_proto(
             self._call("DesktopTypeInto", self.messages.DesktopTypeIntoRequest(**request_kwargs))
         )
@@ -711,6 +736,7 @@ class PeekabooXClient:
         image_path: str | PathLike[str] | None = None,
         prefer_accessibility: bool = True,
         window_title: str | None = None,
+        window_id: str | None = None,
     ) -> DesktopActionResult:
         request_kwargs: dict[str, Any] = {
             "app": app,
@@ -728,6 +754,8 @@ class PeekabooXClient:
             request_kwargs["image_path"] = str(image_path)
         if window_title is not None:
             request_kwargs["window_title"] = window_title
+        if window_id is not None:
+            request_kwargs["window_id"] = window_id
         return _desktop_action_from_proto(
             self._call("DesktopAssert", self.messages.DesktopAssertRequest(**request_kwargs))
         )
@@ -1012,6 +1040,8 @@ def _desktop_action_from_proto(response: Any) -> DesktopActionResult:
         action=response.action,
         detail=response.detail,
         backend_name=response.backend_name,
+        verified=getattr(response, "verified", False),
+        verification_detail=_optional_scalar(response, "verification_detail"),
     )
 
 

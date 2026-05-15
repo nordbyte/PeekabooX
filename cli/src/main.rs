@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+mod doctor;
+
 use peekaboox_accessibility::{AccessibilityTreeMetadata, ElementQuery};
 use peekaboox_core::{BackendKind, Point, Rect, UiElement};
 use peekaboox_desktop::{
@@ -10,8 +12,8 @@ use peekaboox_input::MouseButton;
 use peekaboox_ipc::{
     ActionResultDto, ApiRequest, ApiResponse, ApiResult, CaptureDeltaResultDto,
     DesktopActionResultDto, DesktopAssertionDto, DesktopLocateResultDto, DmaBufImportTargetDto,
-    DmaBufProbeResultDto, ElementDto, ElementListResultDto, MouseButtonDto, OcrResultDto,
-    PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
+    DmaBufProbeResultDto, ElementDto, ElementListResultDto, MouseButtonDto, OcrBlockDto,
+    OcrResultDto, PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
     PluginToolExecutionResultDto, RectDto, UiStateDto, VisualDiffDto, WindowDto,
     WindowListResultDto, default_socket_path, send_request,
 };
@@ -143,6 +145,14 @@ fn main() {
             Err(CliError::HelpRequested) => {}
             Err(CliError::Failure(error)) => {
                 eprintln!("desktop failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("doctor") => match doctor::run(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("doctor failed: {error}");
                 std::process::exit(1);
             }
         },
@@ -336,8 +346,13 @@ enum CliError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct WindowsArgs {
+    json: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum WindowsCommand {
-    Run,
+    Run(WindowsArgs),
     Help,
 }
 
@@ -346,6 +361,7 @@ struct ElementsArgs {
     selector: String,
     limit: usize,
     vision_fallback: bool,
+    json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,6 +374,7 @@ enum ElementsCommand {
 struct OcrArgs {
     region: Option<Rect>,
     language: Option<String>,
+    json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,6 +390,7 @@ struct CompareArgs {
     region: Option<Rect>,
     per_channel_threshold: u8,
     max_changed_ratio: f32,
+    json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -389,6 +407,7 @@ struct UiStateArgs {
     stable_max_changed_ratio: f32,
     loading_min_changed_ratio: f32,
     required_stable_transitions: u32,
+    json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -407,12 +426,19 @@ struct VisionElementsArgs {
     min_component_pixels: u32,
     max_elements: u32,
     merge_distance: u32,
+    json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum VisionElementsCommand {
     Run(VisionElementsArgs),
     Help,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesktopProfilesArgs {
+    json: bool,
+    app: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,6 +449,9 @@ struct DesktopFocusArgs {
     wait_after_focus_ms: u64,
     overview_wait_ms: u64,
     window_title: Option<String>,
+    window_id: Option<String>,
+    verify: bool,
+    json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -432,6 +461,8 @@ struct DesktopLocateArgs {
     image: Option<PathBuf>,
     prefer_accessibility: bool,
     window_title: Option<String>,
+    window_id: Option<String>,
+    json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -441,8 +472,11 @@ struct DesktopClickArgs {
     image: Option<PathBuf>,
     prefer_accessibility: bool,
     window_title: Option<String>,
+    window_id: Option<String>,
     button: MouseButton,
     dry_run: bool,
+    verify: bool,
+    json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -452,11 +486,14 @@ struct DesktopDragArgs {
     image: Option<PathBuf>,
     prefer_accessibility: bool,
     window_title: Option<String>,
+    window_id: Option<String>,
     button: MouseButton,
     from_ratio: (f32, f32),
     to_ratio: (f32, f32),
     duration_ms: u64,
     dry_run: bool,
+    verify: bool,
+    json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -467,8 +504,11 @@ struct DesktopTypeIntoArgs {
     image: Option<PathBuf>,
     prefer_accessibility: bool,
     window_title: Option<String>,
+    window_id: Option<String>,
     clear: bool,
     dry_run: bool,
+    verify: bool,
+    json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -478,12 +518,14 @@ struct DesktopAssertArgs {
     image: Option<PathBuf>,
     prefer_accessibility: bool,
     window_title: Option<String>,
+    window_id: Option<String>,
     assertion: DesktopAssertion,
+    json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum DesktopCommand {
-    Profiles,
+    Profiles(DesktopProfilesArgs),
     Focus(DesktopFocusArgs),
     Locate(DesktopLocateArgs),
     Click(DesktopClickArgs),
@@ -1330,7 +1372,7 @@ fn string_or_dash(value: &str) -> &str {
 }
 
 fn windows(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
-    let WindowsCommand::Run = parse_windows_args(args)? else {
+    let WindowsCommand::Run(args) = parse_windows_args(args)? else {
         print_windows_usage();
         return Err(CliError::HelpRequested);
     };
@@ -1342,12 +1384,22 @@ fn windows(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 "daemon returned unexpected windows response".to_owned(),
             ));
         };
-        print_window_dto_table(metadata);
+        if args.json {
+            print_json_pretty(&metadata)?;
+        } else {
+            print_window_dto_table(metadata);
+        }
         return Ok(());
     }
 
     let metadata =
         peekaboox_windows::list_windows().map_err(|error| CliError::Failure(error.to_string()))?;
+    let metadata = window_list_dto(metadata);
+
+    if args.json {
+        print_json_pretty(&metadata)?;
+        return Ok(());
+    }
 
     for warning in metadata.warnings {
         eprintln!("warning: {warning}");
@@ -1364,16 +1416,7 @@ fn windows(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
     );
 
     for window in metadata.windows {
-        println!(
-            "{:<14} {:<7} {:<10} {:<11} {:<11} {:<18} {}",
-            window.id,
-            if window.focused { "yes" } else { "no" },
-            format!("{:?}", window.state).to_ascii_lowercase(),
-            format!("{},{}", window.bounds.x, window.bounds.y),
-            format!("{}x{}", window.bounds.width, window.bounds.height),
-            window.app_id.unwrap_or_else(|| "-".to_owned()),
-            window.title
-        );
+        print_window_dto(window);
     }
 
     Ok(())
@@ -1412,19 +1455,40 @@ fn print_window_dto(window: WindowDto) {
     );
 }
 
-fn parse_windows_args(args: Vec<String>) -> Result<WindowsCommand, CliError> {
-    match args.as_slice() {
-        [] => Ok(WindowsCommand::Run),
-        [arg] => match arg.as_str() {
-            "--help" | "-h" => Ok(WindowsCommand::Help),
-            unknown => Err(CliError::Failure(format!(
-                "unknown windows argument: {unknown}"
-            ))),
-        },
-        _ => Err(CliError::Failure(
-            "windows does not accept positional arguments".to_owned(),
-        )),
+fn window_list_dto(metadata: peekaboox_windows::WindowListMetadata) -> WindowListResultDto {
+    WindowListResultDto {
+        backend_name: metadata.backend_name,
+        backend_kind: backend_kind_label(metadata.backend_kind),
+        warnings: metadata.warnings,
+        windows: metadata
+            .windows
+            .into_iter()
+            .map(|window| WindowDto {
+                id: window.id,
+                title: window.title,
+                app_id: window.app_id,
+                bounds: window.bounds.into(),
+                focused: window.focused,
+                state: format!("{:?}", window.state).to_ascii_lowercase(),
+            })
+            .collect(),
     }
+}
+
+fn parse_windows_args(args: Vec<String>) -> Result<WindowsCommand, CliError> {
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--help" | "-h" => return Ok(WindowsCommand::Help),
+            unknown => {
+                return Err(CliError::Failure(format!(
+                    "unknown windows argument: {unknown}"
+                )));
+            }
+        }
+    }
+    Ok(WindowsCommand::Run(WindowsArgs { json }))
 }
 
 fn elements(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
@@ -1446,12 +1510,23 @@ fn elements(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 "daemon returned unexpected elements response".to_owned(),
             ));
         };
-        print_element_dto_table(metadata, args.limit);
+        if args.json {
+            print_json_pretty(&limited_element_list_dto(metadata, args.limit))?;
+        } else {
+            print_element_dto_table(metadata, args.limit);
+        }
         return Ok(());
     }
 
     let metadata = find_elements_metadata(&args.selector, args.vision_fallback)?;
-    print_element_table(metadata, args.limit);
+    if args.json {
+        print_json_pretty(&limited_element_list_dto(
+            element_list_dto(metadata),
+            args.limit,
+        ))?;
+    } else {
+        print_element_table(metadata, args.limit);
+    }
 
     Ok(())
 }
@@ -1610,6 +1685,36 @@ fn print_element_dto(element: ElementDto) {
     );
 }
 
+fn element_list_dto(metadata: AccessibilityTreeMetadata) -> ElementListResultDto {
+    ElementListResultDto {
+        backend_name: metadata.backend_name,
+        backend_kind: backend_kind_label(metadata.backend_kind),
+        warnings: metadata.warnings,
+        elements: metadata.elements.into_iter().map(element_dto).collect(),
+    }
+}
+
+fn limited_element_list_dto(
+    mut metadata: ElementListResultDto,
+    limit: usize,
+) -> ElementListResultDto {
+    if limit > 0 && metadata.elements.len() > limit {
+        metadata.elements.truncate(limit);
+    }
+    metadata
+}
+
+fn element_dto(element: UiElement) -> ElementDto {
+    ElementDto {
+        id: element.id,
+        role: element.role,
+        label: element.label,
+        bounds: element.bounds.into(),
+        confidence: element.confidence,
+        states: element.states,
+    }
+}
+
 fn format_states(states: &[String]) -> String {
     if states.is_empty() {
         "-".to_owned()
@@ -1623,6 +1728,7 @@ fn parse_elements_args(args: Vec<String>) -> Result<ElementsCommand, CliError> {
     let mut selector_parts = Vec::new();
     let mut limit = 50;
     let mut vision_fallback = false;
+    let mut json = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -1692,6 +1798,7 @@ fn parse_elements_args(args: Vec<String>) -> Result<ElementsCommand, CliError> {
                 limit = parse_usize("--limit", value)?;
             }
             "--vision-fallback" => vision_fallback = true,
+            "--json" => json = true,
             "--help" | "-h" => return Ok(ElementsCommand::Help),
             value if value.starts_with('-') => {
                 return Err(CliError::Failure(format!(
@@ -1724,6 +1831,7 @@ fn parse_elements_args(args: Vec<String>) -> Result<ElementsCommand, CliError> {
         selector,
         limit,
         vision_fallback,
+        json,
     }))
 }
 
@@ -1746,7 +1854,11 @@ fn ocr(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 "daemon returned unexpected OCR response".to_owned(),
             ));
         };
-        print_ocr_dto_result(result);
+        if args.json {
+            print_json_pretty(&result)?;
+        } else {
+            print_ocr_dto_result(result);
+        }
         return Ok(());
     }
 
@@ -1762,7 +1874,11 @@ fn ocr(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         None => peekaboox_vision::ocr_screen_with_backend(&backend),
     }
     .map_err(|error| CliError::Failure(error.to_string()))?;
-    print_ocr_result(result);
+    if args.json {
+        print_json_pretty(&ocr_result_dto(result))?;
+    } else {
+        print_ocr_result(result);
+    }
 
     Ok(())
 }
@@ -1770,6 +1886,7 @@ fn ocr(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
 fn parse_ocr_args(args: Vec<String>) -> Result<OcrCommand, CliError> {
     let mut region = None;
     let mut language = None;
+    let mut json = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -1788,6 +1905,7 @@ fn parse_ocr_args(args: Vec<String>) -> Result<OcrCommand, CliError> {
                 };
                 language = non_empty_cli_string(value);
             }
+            "--json" => json = true,
             "--help" | "-h" => return Ok(OcrCommand::Help),
             unknown => {
                 return Err(CliError::Failure(format!(
@@ -1799,7 +1917,11 @@ fn parse_ocr_args(args: Vec<String>) -> Result<OcrCommand, CliError> {
         index += 1;
     }
 
-    Ok(OcrCommand::Run(OcrArgs { region, language }))
+    Ok(OcrCommand::Run(OcrArgs {
+        region,
+        language,
+        json,
+    }))
 }
 
 fn print_ocr_result(result: OcrResult) {
@@ -1823,6 +1945,22 @@ fn print_ocr_dto_result(result: OcrResultDto) {
         println!("no OCR text found via {}", result.backend_name);
     } else {
         println!("{}", result.text);
+    }
+}
+
+fn ocr_result_dto(result: OcrResult) -> OcrResultDto {
+    OcrResultDto {
+        backend_name: result.backend_name,
+        text: result.text,
+        blocks: result
+            .blocks
+            .into_iter()
+            .map(|block| OcrBlockDto {
+                text: block.text,
+                element: element_dto(block.element),
+            })
+            .collect(),
+        warnings: result.warnings,
     }
 }
 
@@ -1856,14 +1994,22 @@ fn compare(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 "daemon returned unexpected visual diff response".to_owned(),
             ));
         };
-        print_visual_diff_dto(&result);
+        if args.json {
+            print_json_pretty(&result)?;
+        } else {
+            print_visual_diff_dto(&result);
+        }
         return visual_diff_exit_status(result.matches);
     }
 
     let options = visual_compare_options(&args);
     let result = peekaboox_vision::compare_image_files(&args.expected, &args.actual, &options)
         .map_err(|error| CliError::Failure(error.to_string()))?;
-    print_visual_diff(&result);
+    if args.json {
+        print_json_pretty(&visual_diff_dto(&result))?;
+    } else {
+        print_visual_diff(&result);
+    }
     visual_diff_exit_status(result.matches)
 }
 
@@ -1873,6 +2019,7 @@ fn parse_compare_args(args: Vec<String>) -> Result<CompareCommand, CliError> {
     let mut region = None;
     let mut per_channel_threshold = 0_u8;
     let mut max_changed_ratio = 0.0_f32;
+    let mut json = false;
     let mut positional = Vec::new();
     let mut index = 0;
 
@@ -1917,6 +2064,7 @@ fn parse_compare_args(args: Vec<String>) -> Result<CompareCommand, CliError> {
                 };
                 max_changed_ratio = parse_unit_f32("--max-changed-ratio", value)?;
             }
+            "--json" => json = true,
             "--help" | "-h" => return Ok(CompareCommand::Help),
             value if value.starts_with('-') => {
                 return Err(CliError::Failure(format!(
@@ -1959,6 +2107,7 @@ fn parse_compare_args(args: Vec<String>) -> Result<CompareCommand, CliError> {
         region,
         per_channel_threshold,
         max_changed_ratio,
+        json,
     }))
 }
 
@@ -2003,6 +2152,19 @@ fn print_visual_diff_dto(result: &VisualDiffDto) {
             .map(format_rect)
             .unwrap_or_else(|| "-".to_owned())
     );
+}
+
+fn visual_diff_dto(result: &VisualDiffResult) -> VisualDiffDto {
+    VisualDiffDto {
+        compared_region: result.compared_region.into(),
+        compared_pixels: result.compared_pixels,
+        changed_pixels: result.changed_pixels,
+        changed_ratio: result.changed_ratio,
+        mean_absolute_error: result.mean_absolute_error,
+        max_channel_delta: result.max_channel_delta,
+        changed_bounds: result.changed_bounds.map(Into::into),
+        matches: result.matches,
+    }
 }
 
 fn print_capture_delta_dto(result: &CaptureDeltaResultDto) {
@@ -2070,14 +2232,22 @@ fn ui_state(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 "daemon returned unexpected UI state response".to_owned(),
             ));
         };
-        print_ui_state_dto(&result);
+        if args.json {
+            print_json_pretty(&result)?;
+        } else {
+            print_ui_state_dto(&result);
+        }
         return Ok(());
     }
 
     let options = ui_state_options(&args);
     let result = peekaboox_vision::detect_ui_state_from_image_files(&args.image_paths, &options)
         .map_err(|error| CliError::Failure(error.to_string()))?;
-    print_ui_state(&result);
+    if args.json {
+        print_json_pretty(&ui_state_dto(&result))?;
+    } else {
+        print_ui_state(&result);
+    }
     Ok(())
 }
 
@@ -2089,6 +2259,7 @@ fn parse_ui_state_args(args: Vec<String>) -> Result<UiStateCommand, CliError> {
     let mut loading_min_changed_ratio = UiStateOptions::default().loading_min_changed_ratio;
     let mut required_stable_transitions =
         u32::try_from(UiStateOptions::default().required_stable_transitions).unwrap_or(1);
+    let mut json = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -2144,6 +2315,7 @@ fn parse_ui_state_args(args: Vec<String>) -> Result<UiStateCommand, CliError> {
                 required_stable_transitions =
                     parse_positive_u32("--required-stable-transitions", value)?;
             }
+            "--json" => json = true,
             "--help" | "-h" => return Ok(UiStateCommand::Help),
             value if value.starts_with('-') => {
                 return Err(CliError::Failure(format!(
@@ -2175,6 +2347,7 @@ fn parse_ui_state_args(args: Vec<String>) -> Result<UiStateCommand, CliError> {
         stable_max_changed_ratio,
         loading_min_changed_ratio,
         required_stable_transitions,
+        json,
     }))
 }
 
@@ -2225,6 +2398,21 @@ fn print_ui_state_dto(result: &UiStateDto) {
     );
 }
 
+fn ui_state_dto(result: &UiStateResult) -> UiStateDto {
+    UiStateDto {
+        state: format!("{:?}", result.state).to_ascii_lowercase(),
+        compared_transitions: u64::try_from(result.compared_transitions).unwrap_or(u64::MAX),
+        stable_transitions: u64::try_from(result.stable_transitions).unwrap_or(u64::MAX),
+        loading_transitions: u64::try_from(result.loading_transitions).unwrap_or(u64::MAX),
+        trailing_stable_transitions: u64::try_from(result.trailing_stable_transitions)
+            .unwrap_or(u64::MAX),
+        latest_diff: visual_diff_dto(&result.latest_diff),
+        max_changed_ratio: result.max_changed_ratio,
+        mean_changed_ratio: result.mean_changed_ratio,
+        changed_bounds: result.changed_bounds.map(Into::into),
+    }
+}
+
 fn vision_elements(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
     let VisionElementsCommand::Run(args) = parse_vision_elements_args(args)? else {
         print_vision_elements_usage();
@@ -2250,22 +2438,28 @@ fn vision_elements(args: Vec<String>, context: &CliContext) -> Result<(), CliErr
                 "daemon returned unexpected vision elements response".to_owned(),
             ));
         };
-        print_element_dto_table(metadata, 0);
+        if args.json {
+            print_json_pretty(&metadata)?;
+        } else {
+            print_element_dto_table(metadata, 0);
+        }
         return Ok(());
     }
 
     let options = vision_element_options(&args)?;
     let elements = peekaboox_vision::detect_ui_elements_from_image_file(&args.image, &options)
         .map_err(|error| CliError::Failure(error.to_string()))?;
-    print_element_table(
-        AccessibilityTreeMetadata {
-            backend_name: "heuristic_vision".to_owned(),
-            backend_kind: BackendKind::Vision,
-            warnings: Vec::new(),
-            elements,
-        },
-        0,
-    );
+    let metadata = AccessibilityTreeMetadata {
+        backend_name: "heuristic_vision".to_owned(),
+        backend_kind: BackendKind::Vision,
+        warnings: Vec::new(),
+        elements,
+    };
+    if args.json {
+        print_json_pretty(&element_list_dto(metadata))?;
+    } else {
+        print_element_table(metadata, 0);
+    }
     Ok(())
 }
 
@@ -2279,6 +2473,7 @@ fn parse_vision_elements_args(args: Vec<String>) -> Result<VisionElementsCommand
     let mut min_component_pixels = defaults.min_component_pixels;
     let mut max_elements = u32::try_from(defaults.max_elements).unwrap_or(100);
     let mut merge_distance = defaults.merge_distance;
+    let mut json = false;
     let mut positional = Vec::new();
     let mut index = 0;
 
@@ -2361,6 +2556,7 @@ fn parse_vision_elements_args(args: Vec<String>) -> Result<VisionElementsCommand
                     ))
                 })?;
             }
+            "--json" => json = true,
             "--help" | "-h" => return Ok(VisionElementsCommand::Help),
             value if value.starts_with('-') => {
                 return Err(CliError::Failure(format!(
@@ -2393,6 +2589,7 @@ fn parse_vision_elements_args(args: Vec<String>) -> Result<VisionElementsCommand
         min_component_pixels,
         max_elements,
         merge_distance,
+        json,
     }))
 }
 
@@ -2418,11 +2615,8 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
     }
 
     match command {
-        DesktopCommand::Profiles => {
-            println!(
-                "supported apps: {}",
-                peekaboox_desktop::supported_apps().join(", ")
-            );
+        DesktopCommand::Profiles(args) => {
+            print_desktop_profiles(args)?;
             Ok(())
         }
         DesktopCommand::Focus(args) => {
@@ -2434,10 +2628,16 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                     wait_after_focus_ms: args.wait_after_focus_ms,
                     overview_wait_ms: args.overview_wait_ms,
                     window_title: args.window_title,
+                    window_id: args.window_id,
+                    verify: args.verify,
                 },
             )
             .map_err(|error| CliError::Failure(error.to_string()))?;
-            print_desktop_action_result(result);
+            if args.json {
+                print_desktop_action_result_json(&result)?;
+            } else {
+                print_desktop_action_result(result);
+            }
             Ok(())
         }
         DesktopCommand::Locate(args) => {
@@ -2448,21 +2648,15 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                     image: args.image,
                     prefer_accessibility: args.prefer_accessibility,
                     window_title: args.window_title,
+                    window_id: args.window_id,
                 },
             )
             .map_err(|error| CliError::Failure(error.to_string()))?;
-            println!(
-                "{} {} {},{} rect={} via {}",
-                target.app,
-                target.target,
-                target.point.x,
-                target.point.y,
-                target
-                    .rect
-                    .map(format_rect)
-                    .unwrap_or_else(|| "-".to_owned()),
-                target.source.label()
-            );
+            if args.json {
+                print_desktop_locate_result_json(&target)?;
+            } else {
+                print_desktop_locate_result(target);
+            }
             Ok(())
         }
         DesktopCommand::Click(args) => {
@@ -2474,13 +2668,19 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                         image: args.image,
                         prefer_accessibility: args.prefer_accessibility,
                         window_title: args.window_title,
+                        window_id: args.window_id,
                     },
                     button: args.button,
                     dry_run: args.dry_run,
+                    verify: args.verify,
                 },
             )
             .map_err(|error| CliError::Failure(error.to_string()))?;
-            print_desktop_action_result(result);
+            if args.json {
+                print_desktop_action_result_json(&result)?;
+            } else {
+                print_desktop_action_result(result);
+            }
             Ok(())
         }
         DesktopCommand::Drag(args) => {
@@ -2492,16 +2692,22 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                         image: args.image,
                         prefer_accessibility: args.prefer_accessibility,
                         window_title: args.window_title,
+                        window_id: args.window_id,
                     },
                     from_ratio: args.from_ratio,
                     to_ratio: args.to_ratio,
                     button: args.button,
                     duration_ms: args.duration_ms,
                     dry_run: args.dry_run,
+                    verify: args.verify,
                 },
             )
             .map_err(|error| CliError::Failure(error.to_string()))?;
-            print_desktop_action_result(result);
+            if args.json {
+                print_desktop_action_result_json(&result)?;
+            } else {
+                print_desktop_action_result(result);
+            }
             Ok(())
         }
         DesktopCommand::TypeInto(args) => {
@@ -2514,13 +2720,19 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                         image: args.image,
                         prefer_accessibility: args.prefer_accessibility,
                         window_title: args.window_title,
+                        window_id: args.window_id,
                     },
                     clear: args.clear,
                     dry_run: args.dry_run,
+                    verify: args.verify,
                 },
             )
             .map_err(|error| CliError::Failure(error.to_string()))?;
-            print_desktop_action_result(result);
+            if args.json {
+                print_desktop_action_result_json(&result)?;
+            } else {
+                print_desktop_action_result(result);
+            }
             Ok(())
         }
         DesktopCommand::Assert(args) => {
@@ -2532,12 +2744,17 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                         image: args.image,
                         prefer_accessibility: args.prefer_accessibility,
                         window_title: args.window_title,
+                        window_id: args.window_id,
                     },
                     assertion: args.assertion,
                 },
             )
             .map_err(|error| CliError::Failure(error.to_string()))?;
-            print_desktop_action_result(result);
+            if args.json {
+                print_desktop_action_result_json(&result)?;
+            } else {
+                print_desktop_action_result(result);
+            }
             Ok(())
         }
         DesktopCommand::Help => {
@@ -2549,11 +2766,8 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
 
 fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), CliError> {
     match command {
-        DesktopCommand::Profiles => {
-            println!(
-                "supported apps: {}",
-                peekaboox_desktop::supported_apps().join(", ")
-            );
+        DesktopCommand::Profiles(args) => {
+            print_desktop_profiles(args)?;
             Ok(())
         }
         DesktopCommand::Focus(args) => {
@@ -2566,6 +2780,8 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                     wait_after_focus_ms: args.wait_after_focus_ms,
                     overview_wait_ms: args.overview_wait_ms,
                     window_title: args.window_title,
+                    window_id: args.window_id,
+                    verify: args.verify,
                 },
             )?;
             let ApiResult::DesktopAction(result) = result else {
@@ -2573,7 +2789,11 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                     "daemon returned unexpected desktop focus response".to_owned(),
                 ));
             };
-            print_desktop_action_dto(result);
+            if args.json {
+                print_json_pretty(&result)?;
+            } else {
+                print_desktop_action_dto(result);
+            }
             Ok(())
         }
         DesktopCommand::Locate(args) => {
@@ -2585,6 +2805,7 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                     image_path: args.image.map(path_to_cli_string),
                     prefer_accessibility: args.prefer_accessibility,
                     window_title: args.window_title,
+                    window_id: args.window_id,
                 },
             )?;
             let ApiResult::DesktopLocate(result) = result else {
@@ -2592,7 +2813,11 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                     "daemon returned unexpected desktop locate response".to_owned(),
                 ));
             };
-            print_desktop_locate_dto(result);
+            if args.json {
+                print_json_pretty(&result)?;
+            } else {
+                print_desktop_locate_dto(result);
+            }
             Ok(())
         }
         DesktopCommand::Click(args) => {
@@ -2606,6 +2831,8 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                     window_title: args.window_title,
                     button: mouse_button_dto(args.button),
                     dry_run: args.dry_run,
+                    window_id: args.window_id,
+                    verify: args.verify,
                 },
             )?;
             let ApiResult::DesktopAction(result) = result else {
@@ -2613,7 +2840,11 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                     "daemon returned unexpected desktop click response".to_owned(),
                 ));
             };
-            print_desktop_action_dto(result);
+            if args.json {
+                print_json_pretty(&result)?;
+            } else {
+                print_desktop_action_dto(result);
+            }
             Ok(())
         }
         DesktopCommand::Drag(args) => {
@@ -2632,6 +2863,8 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                     to_ratio_y: args.to_ratio.1,
                     duration_ms: args.duration_ms,
                     dry_run: args.dry_run,
+                    window_id: args.window_id,
+                    verify: args.verify,
                 },
             )?;
             let ApiResult::DesktopAction(result) = result else {
@@ -2639,7 +2872,11 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                     "daemon returned unexpected desktop drag response".to_owned(),
                 ));
             };
-            print_desktop_action_dto(result);
+            if args.json {
+                print_json_pretty(&result)?;
+            } else {
+                print_desktop_action_dto(result);
+            }
             Ok(())
         }
         DesktopCommand::TypeInto(args) => {
@@ -2654,6 +2891,8 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                     window_title: args.window_title,
                     clear: args.clear,
                     dry_run: args.dry_run,
+                    window_id: args.window_id,
+                    verify: args.verify,
                 },
             )?;
             let ApiResult::DesktopAction(result) = result else {
@@ -2661,7 +2900,11 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                     "daemon returned unexpected desktop type-into response".to_owned(),
                 ));
             };
-            print_desktop_action_dto(result);
+            if args.json {
+                print_json_pretty(&result)?;
+            } else {
+                print_desktop_action_dto(result);
+            }
             Ok(())
         }
         DesktopCommand::Assert(args) => {
@@ -2676,6 +2919,7 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                     window_title: args.window_title,
                     assertion,
                     expected_text,
+                    window_id: args.window_id,
                 },
             )?;
             let ApiResult::DesktopAction(result) = result else {
@@ -2683,7 +2927,11 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                     "daemon returned unexpected desktop assert response".to_owned(),
                 ));
             };
-            print_desktop_action_dto(result);
+            if args.json {
+                print_json_pretty(&result)?;
+            } else {
+                print_desktop_action_dto(result);
+            }
             Ok(())
         }
         DesktopCommand::Help => {
@@ -2698,12 +2946,41 @@ fn print_desktop_action_result(result: peekaboox_desktop::DesktopActionResult) {
         "{} {}: {} via {}",
         result.app, result.action, result.detail, result.backend_name
     );
+    if let Some(detail) = result.verification_detail {
+        eprintln!(
+            "verification: {}{}",
+            if result.verified { "passed: " } else { "" },
+            detail
+        );
+    }
 }
 
 fn print_desktop_action_dto(result: DesktopActionResultDto) {
     println!(
         "{} {}: {} via {}",
         result.app, result.action, result.detail, result.backend_name
+    );
+    if let Some(detail) = result.verification_detail {
+        eprintln!(
+            "verification: {}{}",
+            if result.verified { "passed: " } else { "" },
+            detail
+        );
+    }
+}
+
+fn print_desktop_locate_result(target: peekaboox_desktop::ResolvedDesktopTarget) {
+    println!(
+        "{} {} {},{} rect={} via {}",
+        target.app,
+        target.target,
+        target.point.x,
+        target.point.y,
+        target
+            .rect
+            .map(format_rect)
+            .unwrap_or_else(|| "-".to_owned()),
+        target.source.label()
     );
 }
 
@@ -2723,21 +3000,85 @@ fn print_desktop_locate_dto(target: DesktopLocateResultDto) {
     );
 }
 
+fn print_desktop_profiles(args: DesktopProfilesArgs) -> Result<(), CliError> {
+    let profiles = if let Some(app) = args.app {
+        vec![
+            peekaboox_desktop::desktop_profile(&app)
+                .map_err(|error| CliError::Failure(error.to_string()))?,
+        ]
+    } else {
+        peekaboox_desktop::desktop_profiles()
+    };
+    if args.json {
+        print_json_pretty(&serde_json::json!({
+            "profiles": profiles.iter().map(desktop_profile_json).collect::<Vec<_>>(),
+        }))
+    } else {
+        for profile in profiles {
+            println!(
+                "{} targets={} aliases={} desktop_ids={} commands={}",
+                profile.id,
+                profile.targets.join(","),
+                profile.aliases.join(","),
+                profile.desktop_ids.join(","),
+                profile.commands.join(",")
+            );
+        }
+        Ok(())
+    }
+}
+
+fn desktop_profile_json(profile: &peekaboox_desktop::DesktopProfileInfo) -> serde_json::Value {
+    serde_json::json!({
+        "id": &profile.id,
+        "aliases": &profile.aliases,
+        "search_name": &profile.search_name,
+        "desktop_ids": &profile.desktop_ids,
+        "commands": &profile.commands,
+        "targets": &profile.targets,
+    })
+}
+
+fn print_desktop_action_result_json(
+    result: &peekaboox_desktop::DesktopActionResult,
+) -> Result<(), CliError> {
+    print_json_pretty(&serde_json::json!({
+        "app": &result.app,
+        "action": &result.action,
+        "detail": &result.detail,
+        "backend_name": &result.backend_name,
+        "verified": result.verified,
+        "verification_detail": &result.verification_detail,
+    }))
+}
+
+fn print_desktop_locate_result_json(
+    target: &peekaboox_desktop::ResolvedDesktopTarget,
+) -> Result<(), CliError> {
+    print_json_pretty(&serde_json::json!({
+        "app": &target.app,
+        "target": &target.target,
+        "point": {
+            "x": target.point.x,
+            "y": target.point.y,
+        },
+        "rect": target.rect.map(|rect| serde_json::json!({
+            "x": rect.x,
+            "y": rect.y,
+            "width": rect.width,
+            "height": rect.height,
+        })),
+        "source": target.source.label(),
+    }))
+}
+
 fn parse_desktop_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
     let Some((command, rest)) = args.split_first() else {
         return Ok(DesktopCommand::Help);
     };
 
     match command.as_str() {
-        "profiles" | "apps" => {
-            if rest.is_empty() {
-                Ok(DesktopCommand::Profiles)
-            } else {
-                Err(CliError::Failure(
-                    "desktop profiles does not accept arguments".to_owned(),
-                ))
-            }
-        }
+        "profiles" | "apps" => parse_desktop_profiles_args(rest.to_vec()),
         "focus" => parse_desktop_focus_args(rest.to_vec()),
         "locate" => parse_desktop_locate_args(rest.to_vec()),
         "click" => parse_desktop_click_args(rest.to_vec()),
@@ -2752,6 +3093,34 @@ fn parse_desktop_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
     }
 }
 
+fn parse_desktop_profiles_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
+    let mut json = false;
+    let mut app = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
+            "--help" | "-h" => return Ok(DesktopCommand::Help),
+            value if value.starts_with('-') => {
+                return Err(CliError::Failure(format!(
+                    "unknown desktop profiles argument: {value}"
+                )));
+            }
+            value if app.is_none() => app = Some(value.to_owned()),
+            value => {
+                return Err(CliError::Failure(format!(
+                    "unexpected desktop profiles argument: {value}"
+                )));
+            }
+        }
+        index += 1;
+    }
+
+    Ok(DesktopCommand::Profiles(DesktopProfilesArgs { json, app }))
+}
+
 fn parse_desktop_focus_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
     let mut app = None;
     let mut use_gnome_overview = true;
@@ -2759,6 +3128,9 @@ fn parse_desktop_focus_args(args: Vec<String>) -> Result<DesktopCommand, CliErro
     let mut wait_after_focus_ms = 1_000_u64;
     let mut overview_wait_ms = 800_u64;
     let mut window_title = None;
+    let mut window_id = None;
+    let mut verify = false;
+    let mut json = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -2767,8 +3139,11 @@ fn parse_desktop_focus_args(args: Vec<String>) -> Result<DesktopCommand, CliErro
             "--window-title" | "--title" => {
                 window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
             }
+            "--window-id" => window_id = Some(parse_next_string(&args, &mut index, "--window-id")?),
             "--no-overview" => use_gnome_overview = false,
             "--no-launch" => launch_if_needed = false,
+            "--verify" => verify = true,
+            "--json" => json = true,
             "--wait-ms" => {
                 wait_after_focus_ms = parse_u64(
                     "--wait-ms",
@@ -2804,6 +3179,9 @@ fn parse_desktop_focus_args(args: Vec<String>) -> Result<DesktopCommand, CliErro
         wait_after_focus_ms,
         overview_wait_ms,
         window_title,
+        window_id,
+        verify,
+        json,
     }))
 }
 
@@ -2813,6 +3191,8 @@ fn parse_desktop_locate_args(args: Vec<String>) -> Result<DesktopCommand, CliErr
     let mut image = None;
     let mut prefer_accessibility = true;
     let mut window_title = None;
+    let mut window_id = None;
+    let mut json = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -2822,12 +3202,14 @@ fn parse_desktop_locate_args(args: Vec<String>) -> Result<DesktopCommand, CliErr
             "--window-title" | "--title" => {
                 window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
             }
+            "--window-id" => window_id = Some(parse_next_string(&args, &mut index, "--window-id")?),
             "--image" | "-i" => {
                 image = Some(PathBuf::from(parse_next_string(
                     &args, &mut index, "--image",
                 )?))
             }
             "--no-accessibility" => prefer_accessibility = false,
+            "--json" => json = true,
             "--help" | "-h" => return Ok(DesktopCommand::Help),
             value if value.starts_with('-') => {
                 return Err(CliError::Failure(format!(
@@ -2851,6 +3233,8 @@ fn parse_desktop_locate_args(args: Vec<String>) -> Result<DesktopCommand, CliErr
         image,
         prefer_accessibility,
         window_title,
+        window_id,
+        json,
     }))
 }
 
@@ -2860,8 +3244,11 @@ fn parse_desktop_click_args(args: Vec<String>) -> Result<DesktopCommand, CliErro
     let mut image = None;
     let mut prefer_accessibility = true;
     let mut window_title = None;
+    let mut window_id = None;
     let mut button = MouseButton::Left;
     let mut dry_run = false;
+    let mut verify = false;
+    let mut json = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -2871,6 +3258,7 @@ fn parse_desktop_click_args(args: Vec<String>) -> Result<DesktopCommand, CliErro
             "--window-title" | "--title" => {
                 window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
             }
+            "--window-id" => window_id = Some(parse_next_string(&args, &mut index, "--window-id")?),
             "--image" | "-i" => {
                 image = Some(PathBuf::from(parse_next_string(
                     &args, &mut index, "--image",
@@ -2880,6 +3268,8 @@ fn parse_desktop_click_args(args: Vec<String>) -> Result<DesktopCommand, CliErro
                 button = parse_mouse_button(&parse_next_string(&args, &mut index, "--button")?)?
             }
             "--dry-run" => dry_run = true,
+            "--verify" => verify = true,
+            "--json" => json = true,
             "--no-accessibility" => prefer_accessibility = false,
             "--help" | "-h" => return Ok(DesktopCommand::Help),
             value if value.starts_with('-') => {
@@ -2904,8 +3294,11 @@ fn parse_desktop_click_args(args: Vec<String>) -> Result<DesktopCommand, CliErro
         image,
         prefer_accessibility,
         window_title,
+        window_id,
         button,
         dry_run,
+        verify,
+        json,
     }))
 }
 
@@ -2915,11 +3308,14 @@ fn parse_desktop_drag_args(args: Vec<String>) -> Result<DesktopCommand, CliError
     let mut image = None;
     let mut prefer_accessibility = true;
     let mut window_title = None;
+    let mut window_id = None;
     let mut button = MouseButton::Left;
     let mut from_ratio = None;
     let mut to_ratio = None;
     let mut duration_ms = 250_u64;
     let mut dry_run = false;
+    let mut verify = false;
+    let mut json = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -2929,6 +3325,7 @@ fn parse_desktop_drag_args(args: Vec<String>) -> Result<DesktopCommand, CliError
             "--window-title" | "--title" => {
                 window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
             }
+            "--window-id" => window_id = Some(parse_next_string(&args, &mut index, "--window-id")?),
             "--image" | "-i" => {
                 image = Some(PathBuf::from(parse_next_string(
                     &args, &mut index, "--image",
@@ -2956,6 +3353,8 @@ fn parse_desktop_drag_args(args: Vec<String>) -> Result<DesktopCommand, CliError
                 )?;
             }
             "--dry-run" => dry_run = true,
+            "--verify" => verify = true,
+            "--json" => json = true,
             "--no-accessibility" => prefer_accessibility = false,
             "--help" | "-h" => return Ok(DesktopCommand::Help),
             value if value.starts_with('-') => {
@@ -2980,12 +3379,15 @@ fn parse_desktop_drag_args(args: Vec<String>) -> Result<DesktopCommand, CliError
         image,
         prefer_accessibility,
         window_title,
+        window_id,
         button,
         from_ratio: from_ratio
             .ok_or_else(|| CliError::Failure("missing --from-ratio".to_owned()))?,
         to_ratio: to_ratio.ok_or_else(|| CliError::Failure("missing --to-ratio".to_owned()))?,
         duration_ms,
         dry_run,
+        verify,
+        json,
     }))
 }
 
@@ -2995,8 +3397,11 @@ fn parse_desktop_type_into_args(args: Vec<String>) -> Result<DesktopCommand, Cli
     let mut image = None;
     let mut prefer_accessibility = true;
     let mut window_title = None;
+    let mut window_id = None;
     let mut clear = false;
     let mut dry_run = false;
+    let mut verify = false;
+    let mut json = false;
     let mut text_parts = Vec::new();
     let mut index = 0;
 
@@ -3007,6 +3412,7 @@ fn parse_desktop_type_into_args(args: Vec<String>) -> Result<DesktopCommand, Cli
             "--window-title" | "--title" => {
                 window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
             }
+            "--window-id" => window_id = Some(parse_next_string(&args, &mut index, "--window-id")?),
             "--image" | "-i" => {
                 image = Some(PathBuf::from(parse_next_string(
                     &args, &mut index, "--image",
@@ -3014,6 +3420,8 @@ fn parse_desktop_type_into_args(args: Vec<String>) -> Result<DesktopCommand, Cli
             }
             "--clear" => clear = true,
             "--dry-run" => dry_run = true,
+            "--verify" => verify = true,
+            "--json" => json = true,
             "--no-accessibility" => prefer_accessibility = false,
             "--help" | "-h" => return Ok(DesktopCommand::Help),
             value if value.starts_with('-') && text_parts.is_empty() => {
@@ -3040,8 +3448,11 @@ fn parse_desktop_type_into_args(args: Vec<String>) -> Result<DesktopCommand, Cli
         image,
         prefer_accessibility,
         window_title,
+        window_id,
         clear,
         dry_run,
+        verify,
+        json,
     }))
 }
 
@@ -3051,7 +3462,9 @@ fn parse_desktop_assert_args(args: Vec<String>, negated: bool) -> Result<Desktop
     let mut image = None;
     let mut prefer_accessibility = true;
     let mut window_title = None;
+    let mut window_id = None;
     let mut assertion = None;
+    let mut json = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -3061,6 +3474,7 @@ fn parse_desktop_assert_args(args: Vec<String>, negated: bool) -> Result<Desktop
             "--window-title" | "--title" => {
                 window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
             }
+            "--window-id" => window_id = Some(parse_next_string(&args, &mut index, "--window-id")?),
             "--image" | "-i" => {
                 image = Some(PathBuf::from(parse_next_string(
                     &args, &mut index, "--image",
@@ -3096,6 +3510,7 @@ fn parse_desktop_assert_args(args: Vec<String>, negated: bool) -> Result<Desktop
                 });
             }
             "--no-accessibility" => prefer_accessibility = false,
+            "--json" => json = true,
             "--help" | "-h" => return Ok(DesktopCommand::Help),
             value if value.starts_with('-') => {
                 return Err(CliError::Failure(format!(
@@ -3119,6 +3534,7 @@ fn parse_desktop_assert_args(args: Vec<String>, negated: bool) -> Result<Desktop
         image,
         prefer_accessibility,
         window_title,
+        window_id,
         assertion: assertion.unwrap_or({
             if negated {
                 DesktopAssertion::NotPresent
@@ -3126,6 +3542,7 @@ fn parse_desktop_assert_args(args: Vec<String>, negated: bool) -> Result<Desktop
                 DesktopAssertion::Present
             }
         }),
+        json,
     }))
 }
 
@@ -4181,9 +4598,18 @@ fn daemon_request(context: &CliContext, request: ApiRequest) -> Result<ApiResult
     }
 }
 
+fn print_json_pretty(value: &impl serde::Serialize) -> Result<(), CliError> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value)
+            .map_err(|error| CliError::Failure(error.to_string()))?
+    );
+    Ok(())
+}
+
 fn print_usage() {
     println!(
-        "Usage: peekaboox [--daemon] [--socket <path>] <capture|capture-delta|capture-backends|capture-dmabuf|plugins|plugin-call|windows|elements|ocr|compare|state|vision-elements|desktop|click|move|drag|type|paste|hotkey>"
+        "Usage: peekaboox [--daemon] [--socket <path>] <capture|capture-delta|capture-backends|capture-dmabuf|plugins|plugin-call|windows|elements|ocr|compare|state|vision-elements|desktop|doctor|click|move|drag|type|paste|hotkey>"
     );
     println!("Try:   peekaboox capture --output screenshot.png");
     println!("Try:   peekaboox --daemon capture-delta --stream agent-loop");
@@ -4202,6 +4628,7 @@ fn print_usage() {
     println!("Try:   peekaboox vision-elements screenshot.png --min-width 8");
     println!("Try:   peekaboox desktop focus --app telegram");
     println!("Try:   peekaboox desktop click --app telegram --target search-input");
+    println!("Try:   peekaboox doctor --json");
     println!("Try:   peekaboox click --x 100 --y 200");
     println!("Try:   peekaboox click --text \"Submit\"");
     println!("Try:   peekaboox move --x 100 --y 200");
@@ -4241,59 +4668,59 @@ fn print_plugin_call_usage() {
 }
 
 fn print_windows_usage() {
-    println!("Usage: peekaboox windows");
+    println!("Usage: peekaboox windows [--json]");
 }
 
 fn print_elements_usage() {
     println!(
-        "Usage: peekaboox elements [<selector>|--selector <query>] [--role <role>] [--text <label>] [--state <state>] [--bounds x,y,w,h] [--contains x,y] [--min-confidence <float>] [--limit <n>] [--vision-fallback]"
+        "Usage: peekaboox elements [<selector>|--selector <query>] [--role <role>] [--text <label>] [--state <state>] [--bounds x,y,w,h] [--contains x,y] [--min-confidence <float>] [--limit <n>] [--vision-fallback] [--json]"
     );
 }
 
 fn print_ocr_usage() {
-    println!("Usage: peekaboox ocr [--region x,y,width,height] [--language <code>]");
+    println!("Usage: peekaboox ocr [--region x,y,width,height] [--language <code>] [--json]");
 }
 
 fn print_compare_usage() {
     println!(
-        "Usage: peekaboox compare [--expected <path>] [--actual <path>] [--region x,y,width,height] [--threshold 0..255] [--max-changed-ratio 0.0..1.0]"
+        "Usage: peekaboox compare [--expected <path>] [--actual <path>] [--region x,y,width,height] [--threshold 0..255] [--max-changed-ratio 0.0..1.0] [--json]"
     );
     println!("       peekaboox compare <expected-path> <actual-path>");
 }
 
 fn print_ui_state_usage() {
     println!(
-        "Usage: peekaboox state [--image <path>]... [--region x,y,width,height] [--threshold 0..255] [--stable-max-changed-ratio 0.0..1.0] [--loading-min-changed-ratio 0.0..1.0] [--required-stable-transitions <n>]"
+        "Usage: peekaboox state [--image <path>]... [--region x,y,width,height] [--threshold 0..255] [--stable-max-changed-ratio 0.0..1.0] [--loading-min-changed-ratio 0.0..1.0] [--required-stable-transitions <n>] [--json]"
     );
     println!("       peekaboox state <image-path> <image-path> [more-image-paths...]");
 }
 
 fn print_vision_elements_usage() {
     println!(
-        "Usage: peekaboox vision-elements [--image <path>] [--region x,y,width,height] [--threshold 1..255] [--min-width <pixels>] [--min-height <pixels>] [--min-component-pixels <pixels>] [--max-elements <n>] [--merge-distance <pixels>]"
+        "Usage: peekaboox vision-elements [--image <path>] [--region x,y,width,height] [--threshold 1..255] [--min-width <pixels>] [--min-height <pixels>] [--min-component-pixels <pixels>] [--max-elements <n>] [--merge-distance <pixels>] [--json]"
     );
     println!("       peekaboox vision-elements <image-path>");
 }
 
 fn print_desktop_usage() {
-    println!("Usage: peekaboox desktop profiles");
+    println!("Usage: peekaboox desktop profiles [--app <app>] [--json]");
     println!(
-        "Usage: peekaboox desktop focus --app <app> [--window-title <text>] [--no-overview] [--no-launch] [--wait-ms <ms>] [--overview-wait-ms <ms>]"
+        "Usage: peekaboox desktop focus --app <app> [--window-id <id>|--window-title <text>] [--verify] [--json] [--no-overview] [--no-launch] [--wait-ms <ms>] [--overview-wait-ms <ms>]"
     );
     println!(
-        "Usage: peekaboox desktop locate --app <app> --target <target> [--window-title <text>] [--image <path>] [--no-accessibility]"
+        "Usage: peekaboox desktop locate --app <app> --target <target> [--window-id <id>|--window-title <text>] [--image <path>] [--json] [--no-accessibility]"
     );
     println!(
-        "Usage: peekaboox desktop click --app <app> --target <target> [--window-title <text>] [--button left|middle|right] [--image <path>] [--dry-run] [--no-accessibility]"
+        "Usage: peekaboox desktop click --app <app> --target <target> [--window-id <id>|--window-title <text>] [--button left|middle|right] [--image <path>] [--dry-run] [--verify] [--json] [--no-accessibility]"
     );
     println!(
-        "Usage: peekaboox desktop drag --app <app> --target <target> --from-ratio <x,y> --to-ratio <x,y> [--window-title <text>] [--duration-ms <ms>] [--button left|middle|right] [--image <path>] [--dry-run] [--no-accessibility]"
+        "Usage: peekaboox desktop drag --app <app> --target <target> --from-ratio <x,y> --to-ratio <x,y> [--window-id <id>|--window-title <text>] [--duration-ms <ms>] [--button left|middle|right] [--image <path>] [--dry-run] [--verify] [--json] [--no-accessibility]"
     );
     println!(
-        "Usage: peekaboox desktop type-into --app <app> --target <target> [--window-title <text>] [--clear] [--image <path>] [--dry-run] <text>"
+        "Usage: peekaboox desktop type-into --app <app> --target <target> [--window-id <id>|--window-title <text>] [--clear] [--image <path>] [--dry-run] [--verify] [--json] <text>"
     );
     println!(
-        "Usage: peekaboox desktop assert --app <app> --target <target> [--window-title <text>] [--present|--active|--not-active|--contains <text>] [--image <path>]"
+        "Usage: peekaboox desktop assert --app <app> --target <target> [--window-id <id>|--window-title <text>] [--present|--active|--not-active|--contains <text>] [--image <path>] [--json]"
     );
     println!(
         "       peekaboox desktop assert-not --app <app> --target <target> [--window-title <text>] [--present|--active|--contains <text>]"
@@ -4339,14 +4766,15 @@ mod tests {
         CaptureDmaBufArgs, CaptureDmaBufCommand, CaptureDmaBufImportTarget, CliContext, CliError,
         ClickArgs, ClickCommand, ClickTarget, CompareArgs, CompareCommand, DesktopAssertArgs,
         DesktopClickArgs, DesktopCommand, DesktopDragArgs, DesktopFocusArgs, DesktopLocateArgs,
-        DesktopTypeIntoArgs, DragArgs, DragCommand, ElementsArgs, ElementsCommand, GlobalArgs,
-        HotkeyArgs, HotkeyCommand, MoveArgs, MoveCommand, OcrArgs, OcrCommand, PluginsArgs,
-        PluginsCommand, TypeArgs, TypeCommand, UiStateArgs, UiStateCommand, VisionElementsArgs,
-        VisionElementsCommand, WindowsCommand, parse_capture_args, parse_capture_backends_args,
-        parse_capture_delta_args, parse_capture_dmabuf_args, parse_click_args, parse_compare_args,
-        parse_desktop_args, parse_drag_args, parse_elements_args, parse_global_args,
-        parse_hotkey_args, parse_move_args, parse_ocr_args, parse_plugins_args, parse_type_args,
-        parse_ui_state_args, parse_vision_elements_args, parse_windows_args,
+        DesktopProfilesArgs, DesktopTypeIntoArgs, DragArgs, DragCommand, ElementsArgs,
+        ElementsCommand, GlobalArgs, HotkeyArgs, HotkeyCommand, MoveArgs, MoveCommand, OcrArgs,
+        OcrCommand, PluginsArgs, PluginsCommand, TypeArgs, TypeCommand, UiStateArgs,
+        UiStateCommand, VisionElementsArgs, VisionElementsCommand, WindowsArgs, WindowsCommand,
+        parse_capture_args, parse_capture_backends_args, parse_capture_delta_args,
+        parse_capture_dmabuf_args, parse_click_args, parse_compare_args, parse_desktop_args,
+        parse_drag_args, parse_elements_args, parse_global_args, parse_hotkey_args,
+        parse_move_args, parse_ocr_args, parse_plugins_args, parse_type_args, parse_ui_state_args,
+        parse_vision_elements_args, parse_windows_args,
     };
     use peekaboox_core::{Point, Rect};
     use peekaboox_desktop::DesktopAssertion;
@@ -4662,7 +5090,14 @@ mod tests {
     fn windows_accepts_no_arguments() {
         let command = parse_windows_args(vec![]).unwrap();
 
-        assert_eq!(command, WindowsCommand::Run);
+        assert_eq!(command, WindowsCommand::Run(WindowsArgs { json: false }));
+    }
+
+    #[test]
+    fn windows_accepts_json() {
+        let command = parse_windows_args(vec!["--json".to_owned()]).unwrap();
+
+        assert_eq!(command, WindowsCommand::Run(WindowsArgs { json: true }));
     }
 
     #[test]
@@ -4681,7 +5116,8 @@ mod tests {
             ElementsCommand::Run(ElementsArgs {
                 selector: String::new(),
                 limit: 50,
-                vision_fallback: false
+                vision_fallback: false,
+                json: false
             })
         );
     }
@@ -4711,7 +5147,8 @@ mod tests {
                     "role=push button,label=Submit,state=enabled,contains=25,30,confidence>=0.9"
                         .to_owned(),
                 limit: 5,
-                vision_fallback: false
+                vision_fallback: false,
+                json: false
             })
         );
     }
@@ -4730,7 +5167,8 @@ mod tests {
             ElementsCommand::Run(ElementsArgs {
                 selector: "role=visual-region".to_owned(),
                 limit: 50,
-                vision_fallback: true
+                vision_fallback: true,
+                json: false
             })
         );
     }
@@ -4749,7 +5187,8 @@ mod tests {
             command,
             OcrCommand::Run(OcrArgs {
                 region: Some(Rect::new(10, 20, 300, 80)),
-                language: Some("eng".to_owned())
+                language: Some("eng".to_owned()),
+                json: false
             })
         );
     }
@@ -4786,7 +5225,8 @@ mod tests {
                 actual: PathBuf::from("after.png"),
                 region: Some(Rect::new(10, 20, 300, 80)),
                 per_channel_threshold: 4,
-                max_changed_ratio: 0.01
+                max_changed_ratio: 0.01,
+                json: false
             })
         );
     }
@@ -4851,7 +5291,8 @@ mod tests {
                 per_channel_threshold: 4,
                 stable_max_changed_ratio: 0.002,
                 loading_min_changed_ratio: 0.03,
-                required_stable_transitions: 2
+                required_stable_transitions: 2,
+                json: false
             })
         );
     }
@@ -4918,7 +5359,8 @@ mod tests {
                 min_height: 7,
                 min_component_pixels: 20,
                 max_elements: 12,
-                merge_distance: 3
+                merge_distance: 3,
+                json: false
             })
         );
     }
@@ -4950,7 +5392,32 @@ mod tests {
     fn desktop_profiles_accepts_no_arguments() {
         let command = parse_desktop_args(vec!["profiles".to_owned()]).unwrap();
 
-        assert_eq!(command, DesktopCommand::Profiles);
+        assert_eq!(
+            command,
+            DesktopCommand::Profiles(DesktopProfilesArgs {
+                json: false,
+                app: None
+            })
+        );
+    }
+
+    #[test]
+    fn desktop_profiles_accepts_json_and_app_filter() {
+        let command = parse_desktop_args(vec![
+            "profiles".to_owned(),
+            "--json".to_owned(),
+            "--app".to_owned(),
+            "telegram".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DesktopCommand::Profiles(DesktopProfilesArgs {
+                json: true,
+                app: Some("telegram".to_owned())
+            })
+        );
     }
 
     #[test]
@@ -4975,7 +5442,10 @@ mod tests {
                 launch_if_needed: true,
                 wait_after_focus_ms: 250,
                 overview_wait_ms: 125,
-                window_title: None
+                window_title: None,
+                window_id: None,
+                verify: false,
+                json: false
             })
         );
     }
@@ -5000,7 +5470,39 @@ mod tests {
                 launch_if_needed: false,
                 wait_after_focus_ms: 1_000,
                 overview_wait_ms: 800,
-                window_title: Some("peekaboox-draft.txt".to_owned())
+                window_title: Some("peekaboox-draft.txt".to_owned()),
+                window_id: None,
+                verify: false,
+                json: false
+            })
+        );
+    }
+
+    #[test]
+    fn desktop_focus_accepts_window_id_verify_and_json() {
+        let command = parse_desktop_args(vec![
+            "focus".to_owned(),
+            "--app".to_owned(),
+            "telegram".to_owned(),
+            "--window-id".to_owned(),
+            "123".to_owned(),
+            "--verify".to_owned(),
+            "--json".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DesktopCommand::Focus(DesktopFocusArgs {
+                app: "telegram".to_owned(),
+                use_gnome_overview: true,
+                launch_if_needed: true,
+                wait_after_focus_ms: 1_000,
+                overview_wait_ms: 800,
+                window_title: None,
+                window_id: Some("123".to_owned()),
+                verify: true,
+                json: true
             })
         );
     }
@@ -5021,7 +5523,9 @@ mod tests {
                 target: "send-button".to_owned(),
                 image: None,
                 prefer_accessibility: true,
-                window_title: None
+                window_title: None,
+                window_id: None,
+                json: false
             })
         );
     }
@@ -5051,8 +5555,11 @@ mod tests {
                 image: Some(PathBuf::from("screen.png")),
                 prefer_accessibility: false,
                 window_title: None,
+                window_id: None,
                 button: MouseButton::Right,
-                dry_run: true
+                dry_run: true,
+                verify: false,
+                json: false
             })
         );
     }
@@ -5083,11 +5590,14 @@ mod tests {
                 image: None,
                 prefer_accessibility: true,
                 window_title: None,
+                window_id: None,
                 button: MouseButton::Left,
                 from_ratio: (0.2, 0.3),
                 to_ratio: (0.8, 0.7),
                 duration_ms: 400,
-                dry_run: true
+                dry_run: true,
+                verify: false,
+                json: false
             })
         );
     }
@@ -5113,8 +5623,11 @@ mod tests {
                 image: None,
                 prefer_accessibility: true,
                 window_title: None,
+                window_id: None,
                 clear: true,
-                dry_run: false
+                dry_run: false,
+                verify: false,
+                json: false
             })
         );
     }
@@ -5139,7 +5652,9 @@ mod tests {
                 image: None,
                 prefer_accessibility: true,
                 window_title: None,
-                assertion: DesktopAssertion::NotActive
+                window_id: None,
+                assertion: DesktopAssertion::NotActive,
+                json: false
             })
         );
     }
@@ -5163,7 +5678,9 @@ mod tests {
                 image: None,
                 prefer_accessibility: true,
                 window_title: None,
-                assertion: DesktopAssertion::NotContains("Alerts".to_owned())
+                window_id: None,
+                assertion: DesktopAssertion::NotContains("Alerts".to_owned()),
+                json: false
             })
         );
     }

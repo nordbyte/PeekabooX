@@ -2576,11 +2576,21 @@ class RuntimeTests(unittest.TestCase):
         stub = Stub()
         client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
 
-        self.assertEqual(client.desktop_focus("telegram").action, "focus")
-        locate = client.desktop_locate("telegram", "search-input")
+        self.assertEqual(
+            client.desktop_focus("telegram", window_id="window-1", verify=True).action,
+            "focus",
+        )
+        locate = client.desktop_locate("telegram", "search-input", window_id="window-1")
         self.assertEqual(locate.rect.width, 30)
         self.assertEqual(
-            client.desktop_click("telegram", "search-input", button="right", dry_run=True).action,
+            client.desktop_click(
+                "telegram",
+                "search-input",
+                button="right",
+                dry_run=True,
+                window_id="window-1",
+                verify=True,
+            ).action,
             "click",
         )
         self.assertEqual(
@@ -2590,11 +2600,19 @@ class RuntimeTests(unittest.TestCase):
                 from_ratio=(0.1, 0.2),
                 to_ratio=(0.9, 0.8),
                 dry_run=True,
+                window_id="window-2",
+                verify=True,
             ).action,
             "drag",
         )
         self.assertEqual(
-            client.desktop_type_into("telegram", "message-input", "PeekabooX").action,
+            client.desktop_type_into(
+                "telegram",
+                "message-input",
+                "PeekabooX",
+                window_id="window-1",
+                verify=True,
+            ).action,
             "type-into",
         )
         self.assertEqual(
@@ -2603,11 +2621,17 @@ class RuntimeTests(unittest.TestCase):
                 "message-list",
                 assertion="contains",
                 expected_text="PeekabooX",
+                window_id="window-1",
             ).action,
             "assert",
         )
 
+        self.assertEqual(stub.requests[0][1].window_id, "window-1")
+        self.assertTrue(stub.requests[0][1].verify)
+        self.assertEqual(stub.requests[1][1].window_id, "window-1")
         self.assertEqual(stub.requests[2][1].button, peekaboox_pb2.MOUSE_BUTTON_RIGHT)
+        self.assertEqual(stub.requests[2][1].window_id, "window-1")
+        self.assertTrue(stub.requests[2][1].verify)
         self.assertAlmostEqual(stub.requests[3][1].from_ratio_x, 0.1)
         self.assertEqual(
             stub.requests[5][1].assertion,

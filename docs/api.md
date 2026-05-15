@@ -121,7 +121,9 @@ Current gRPC method coverage:
   tool execution
 - `DesktopFocus`, `DesktopLocate`, `DesktopClick`, `DesktopDrag`,
   `DesktopTypeInto`, and `DesktopAssert` for named app-target desktop helpers
-  backed by the Rust desktop profiles
+  backed by the Rust desktop profiles. The helpers accept optional
+  `window_title` or `window_id` scoping; mutating helper actions also accept
+  `verify` to run a post-action guard before returning.
 
 Supported `FindElement` selector forms:
 
@@ -407,7 +409,9 @@ capture streams.
 The desktop helper tools accept supported app profile names such as `telegram`,
 `paint`, `drawing`, `pinta`, `kolourpaint`, and `text-editor`, plus named
 targets such as Telegram's `search-input`/`message-input`, Paint's `canvas`, or
-Text Editor's `document`.
+Text Editor's `document`. Use `window_id` for exact-window targeting when
+multiple windows share an app profile; use `verify: true` on focus, click, drag,
+or type-into calls when the caller needs an immediate postcondition check.
 `click` and `find_element` both accept `vision_fallback: true`; when a fresh
 graph cache hits, `find_element` returns cached elements directly and semantic
 `click` uses the cached element center as a coordinate click.
@@ -526,6 +530,8 @@ optional `region` or `window_id`, `per_channel_threshold`, and `low_bandwidth`.
 `low_bandwidth=true` is the default and returns changed-rectangle patches after
 the first frame; `low_bandwidth=false` forces a full-frame patch for that
 request. Responses carry patch bytes as `patch_base64` and echo `low_bandwidth`.
+Daemon-routed desktop helper requests accept the same `window_id`,
+`window_title`, and `verify` fields as the gRPC/Python/MCP surfaces.
 Daemon-routed `probe_dmabuf` requests accept `import_target` values `compute`,
 `egl`, or `egl_texture` when `peekabooxd` is built with the matching
 `pipewire-backend`/`egl-backend` features.

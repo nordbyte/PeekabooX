@@ -102,9 +102,12 @@ class BenchmarkClient:
         stream_id: str = "default",
         reset: bool = False,
         region: Rect | None = None,
+        window_id: str | None = None,
         per_channel_threshold: int | None = None,
         low_bandwidth: bool = True,
     ) -> CaptureDeltaResult:
+        if region is not None and window_id is not None:
+            raise ValueError("provide either region or window_id, not both")
         bounds = region or Rect(x=8, y=12, width=64, height=16)
         return CaptureDeltaResult(
             stream_id=stream_id,

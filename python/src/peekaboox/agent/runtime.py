@@ -767,6 +767,8 @@ class AgentRuntime:
         wait_after_focus_ms: int = 1_000,
         overview_wait_ms: int = 800,
         window_title: str | None = None,
+        window_id: str | None = None,
+        verify: bool = False,
     ) -> DesktopActionResult:
         self._require_capability(Capability.OBSERVE, "desktop_focus", app=app)
         self._require_capability(Capability.CLICK, "desktop_focus", app=app)
@@ -775,6 +777,8 @@ class AgentRuntime:
             "desktop_focus",
             app=app,
             has_window_title=bool(window_title),
+            has_window_id=bool(window_id),
+            verify=verify,
         )
         return self._require_client().desktop_focus(
             app,
@@ -783,6 +787,8 @@ class AgentRuntime:
             wait_after_focus_ms=wait_after_focus_ms,
             overview_wait_ms=overview_wait_ms,
             window_title=window_title,
+            window_id=window_id,
+            verify=verify,
         )
 
     def desktop_locate(
@@ -793,6 +799,7 @@ class AgentRuntime:
         image_path: str | Path | None = None,
         prefer_accessibility: bool = True,
         window_title: str | None = None,
+        window_id: str | None = None,
     ) -> DesktopLocateResult:
         self._require_capability(Capability.OBSERVE, "desktop_locate", app=app, target=target)
         self._require_capability(Capability.VISION, "desktop_locate", app=app, target=target)
@@ -802,6 +809,7 @@ class AgentRuntime:
             image_path=image_path,
             prefer_accessibility=prefer_accessibility,
             window_title=window_title,
+            window_id=window_id,
         )
 
     def desktop_click(
@@ -812,8 +820,10 @@ class AgentRuntime:
         image_path: str | Path | None = None,
         prefer_accessibility: bool = True,
         window_title: str | None = None,
+        window_id: str | None = None,
         button: str = "left",
         dry_run: bool = False,
+        verify: bool = False,
     ) -> DesktopActionResult:
         self._require_capability(Capability.OBSERVE, "desktop_click", app=app, target=target)
         self._require_capability(Capability.VISION, "desktop_click", app=app, target=target)
@@ -825,6 +835,8 @@ class AgentRuntime:
                 app=app,
                 target=target,
                 button=button,
+                has_window_id=bool(window_id),
+                verify=verify,
             )
         return self._require_client().desktop_click(
             app,
@@ -832,8 +844,10 @@ class AgentRuntime:
             image_path=image_path,
             prefer_accessibility=prefer_accessibility,
             window_title=window_title,
+            window_id=window_id,
             button=button,
             dry_run=dry_run,
+            verify=verify,
         )
 
     def desktop_drag(
@@ -844,11 +858,13 @@ class AgentRuntime:
         image_path: str | Path | None = None,
         prefer_accessibility: bool = True,
         window_title: str | None = None,
+        window_id: str | None = None,
         button: str = "left",
         from_ratio: tuple[float, float] = (0.5, 0.5),
         to_ratio: tuple[float, float] = (0.5, 0.5),
         duration_ms: int = 250,
         dry_run: bool = False,
+        verify: bool = False,
     ) -> DesktopActionResult:
         if duration_ms < 0:
             raise ValueError("duration_ms must be non-negative")
@@ -863,6 +879,8 @@ class AgentRuntime:
                 target=target,
                 button=button,
                 duration_ms=duration_ms,
+                has_window_id=bool(window_id),
+                verify=verify,
             )
         return self._require_client().desktop_drag(
             app,
@@ -870,11 +888,13 @@ class AgentRuntime:
             image_path=image_path,
             prefer_accessibility=prefer_accessibility,
             window_title=window_title,
+            window_id=window_id,
             button=button,
             from_ratio=from_ratio,
             to_ratio=to_ratio,
             duration_ms=duration_ms,
             dry_run=dry_run,
+            verify=verify,
         )
 
     def desktop_type_into(
@@ -886,8 +906,10 @@ class AgentRuntime:
         image_path: str | Path | None = None,
         prefer_accessibility: bool = True,
         window_title: str | None = None,
+        window_id: str | None = None,
         clear: bool = False,
         dry_run: bool = False,
+        verify: bool = False,
     ) -> DesktopActionResult:
         self._require_capability(Capability.OBSERVE, "desktop_type_into", app=app, target=target)
         self._require_capability(Capability.VISION, "desktop_type_into", app=app, target=target)
@@ -907,6 +929,8 @@ class AgentRuntime:
                 target=target,
                 text_length=len(text),
                 clear=clear,
+                has_window_id=bool(window_id),
+                verify=verify,
             )
         return self._require_client().desktop_type_into(
             app,
@@ -915,8 +939,10 @@ class AgentRuntime:
             image_path=image_path,
             prefer_accessibility=prefer_accessibility,
             window_title=window_title,
+            window_id=window_id,
             clear=clear,
             dry_run=dry_run,
+            verify=verify,
         )
 
     def desktop_assert(
@@ -929,6 +955,7 @@ class AgentRuntime:
         image_path: str | Path | None = None,
         prefer_accessibility: bool = True,
         window_title: str | None = None,
+        window_id: str | None = None,
     ) -> DesktopActionResult:
         self._require_capability(Capability.OBSERVE, "desktop_assert", app=app, target=target)
         if assertion.strip().casefold().replace("-", "_") in {
@@ -946,6 +973,7 @@ class AgentRuntime:
             image_path=image_path,
             prefer_accessibility=prefer_accessibility,
             window_title=window_title,
+            window_id=window_id,
         )
 
     def ingest_desktop_snapshot(

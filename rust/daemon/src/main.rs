@@ -1672,6 +1672,8 @@ fn dispatch_request(
             wait_after_focus_ms,
             overview_wait_ms,
             window_title,
+            window_id,
+            verify,
         } => {
             ensure_input_allowed(config)?;
             let result = peekaboox_desktop::focus_app(
@@ -1682,6 +1684,8 @@ fn dispatch_request(
                     wait_after_focus_ms,
                     overview_wait_ms,
                     window_title,
+                    window_id,
+                    verify,
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -1693,6 +1697,7 @@ fn dispatch_request(
             image_path,
             prefer_accessibility,
             window_title,
+            window_id,
         } => {
             let result = peekaboox_desktop::locate_target(
                 &app,
@@ -1701,6 +1706,7 @@ fn dispatch_request(
                     image: image_path.map(PathBuf::from),
                     prefer_accessibility,
                     window_title,
+                    window_id,
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -1714,6 +1720,8 @@ fn dispatch_request(
             window_title,
             button,
             dry_run,
+            window_id,
+            verify,
         } => {
             if !dry_run {
                 ensure_input_allowed(config)?;
@@ -1726,9 +1734,11 @@ fn dispatch_request(
                         image: image_path.map(PathBuf::from),
                         prefer_accessibility,
                         window_title,
+                        window_id,
                     },
                     button: mouse_button(button),
                     dry_run,
+                    verify,
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -1747,6 +1757,8 @@ fn dispatch_request(
             to_ratio_y,
             duration_ms,
             dry_run,
+            window_id,
+            verify,
         } => {
             if !dry_run {
                 ensure_input_allowed(config)?;
@@ -1763,12 +1775,14 @@ fn dispatch_request(
                         image: image_path.map(PathBuf::from),
                         prefer_accessibility,
                         window_title,
+                        window_id,
                     },
                     from_ratio: (from_ratio_x, from_ratio_y),
                     to_ratio: (to_ratio_x, to_ratio_y),
                     button: mouse_button(button),
                     duration_ms,
                     dry_run,
+                    verify,
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -1783,6 +1797,8 @@ fn dispatch_request(
             window_title,
             clear,
             dry_run,
+            window_id,
+            verify,
         } => {
             if !dry_run {
                 ensure_input_allowed(config)?;
@@ -1796,9 +1812,11 @@ fn dispatch_request(
                         image: image_path.map(PathBuf::from),
                         prefer_accessibility,
                         window_title,
+                        window_id,
                     },
                     clear,
                     dry_run,
+                    verify,
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -1812,6 +1830,7 @@ fn dispatch_request(
             window_title,
             assertion,
             expected_text,
+            window_id,
         } => {
             let result = peekaboox_desktop::assert_target(
                 &app,
@@ -1821,6 +1840,7 @@ fn dispatch_request(
                         image: image_path.map(PathBuf::from),
                         prefer_accessibility,
                         window_title,
+                        window_id,
                     },
                     assertion: desktop_assertion(assertion, expected_text)?,
                 },
@@ -2193,7 +2213,9 @@ impl PeekabooX for GrpcPeekabooXService {
             "app": request.app.as_str(),
             "use_gnome_overview": request.use_gnome_overview.unwrap_or(true),
             "launch_if_needed": request.launch_if_needed.unwrap_or(true),
-            "has_window_title": request.window_title.as_deref().is_some_and(|value| !value.trim().is_empty())
+            "has_window_title": request.window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_window_id": request.window_id.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "verify": request.verify
         });
         let result = grpc_desktop_focus(request, &self.config);
         audit_grpc_result(&self.audit, "grpc.desktop_focus", &result, details);
@@ -2210,7 +2232,8 @@ impl PeekabooX for GrpcPeekabooXService {
             "target": request.target.as_str(),
             "has_image_path": request.image_path.is_some(),
             "prefer_accessibility": request.prefer_accessibility.unwrap_or(true),
-            "has_window_title": request.window_title.as_deref().is_some_and(|value| !value.trim().is_empty())
+            "has_window_title": request.window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_window_id": request.window_id.as_deref().is_some_and(|value| !value.trim().is_empty())
         });
         let result = grpc_desktop_locate(request);
         audit_grpc_result(&self.audit, "grpc.desktop_locate", &result, details);
@@ -2226,8 +2249,10 @@ impl PeekabooX for GrpcPeekabooXService {
             "app": request.app.as_str(),
             "target": request.target.as_str(),
             "dry_run": request.dry_run,
+            "verify": request.verify,
             "has_image_path": request.image_path.is_some(),
-            "prefer_accessibility": request.prefer_accessibility.unwrap_or(true)
+            "prefer_accessibility": request.prefer_accessibility.unwrap_or(true),
+            "has_window_id": request.window_id.as_deref().is_some_and(|value| !value.trim().is_empty())
         });
         let result = grpc_desktop_click(request, &self.config);
         audit_grpc_result(&self.audit, "grpc.desktop_click", &result, details);
@@ -2243,7 +2268,9 @@ impl PeekabooX for GrpcPeekabooXService {
             "app": request.app.as_str(),
             "target": request.target.as_str(),
             "dry_run": request.dry_run,
-            "duration_ms": request.duration_ms.unwrap_or(250)
+            "duration_ms": request.duration_ms.unwrap_or(250),
+            "verify": request.verify,
+            "has_window_id": request.window_id.as_deref().is_some_and(|value| !value.trim().is_empty())
         });
         let result = grpc_desktop_drag(request, &self.config);
         audit_grpc_result(&self.audit, "grpc.desktop_drag", &result, details);
@@ -2260,7 +2287,9 @@ impl PeekabooX for GrpcPeekabooXService {
             "target": request.target.as_str(),
             "text_length": request.text.chars().count(),
             "clear": request.clear,
-            "dry_run": request.dry_run
+            "dry_run": request.dry_run,
+            "verify": request.verify,
+            "has_window_id": request.window_id.as_deref().is_some_and(|value| !value.trim().is_empty())
         });
         let result = grpc_desktop_type_into(request, &self.config);
         audit_grpc_result(&self.audit, "grpc.desktop_type_into", &result, details);
@@ -2276,7 +2305,8 @@ impl PeekabooX for GrpcPeekabooXService {
             "app": request.app.as_str(),
             "target": request.target.as_str(),
             "assertion": request.assertion,
-            "has_expected_text": request.expected_text.as_deref().is_some_and(|value| !value.trim().is_empty())
+            "has_expected_text": request.expected_text.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_window_id": request.window_id.as_deref().is_some_and(|value| !value.trim().is_empty())
         });
         let result = grpc_desktop_assert(request);
         audit_grpc_result(&self.audit, "grpc.desktop_assert", &result, details);
@@ -3129,6 +3159,8 @@ fn grpc_desktop_focus(
             wait_after_focus_ms: request.wait_after_focus_ms.unwrap_or(1_000),
             overview_wait_ms: request.overview_wait_ms.unwrap_or(800),
             window_title: request.window_title,
+            window_id: request.window_id,
+            verify: request.verify,
         },
     )
     .map_err(|error| Status::failed_precondition(error.to_string()))?;
@@ -3145,6 +3177,7 @@ fn grpc_desktop_locate(
             image: request.image_path.map(PathBuf::from),
             prefer_accessibility: request.prefer_accessibility.unwrap_or(true),
             window_title: request.window_title,
+            window_id: request.window_id,
         },
     )
     .map_err(|error| Status::failed_precondition(error.to_string()))?;
@@ -3166,9 +3199,11 @@ fn grpc_desktop_click(
                 image: request.image_path.map(PathBuf::from),
                 prefer_accessibility: request.prefer_accessibility.unwrap_or(true),
                 window_title: request.window_title,
+                window_id: request.window_id,
             },
             button: proto_mouse_button(request.button)?,
             dry_run: request.dry_run,
+            verify: request.verify,
         },
     )
     .map_err(|error| Status::failed_precondition(error.to_string()))?;
@@ -3202,12 +3237,14 @@ fn grpc_desktop_drag(
                 image: request.image_path.map(PathBuf::from),
                 prefer_accessibility: request.prefer_accessibility.unwrap_or(true),
                 window_title: request.window_title,
+                window_id: request.window_id,
             },
             from_ratio,
             to_ratio,
             button: proto_mouse_button(request.button)?,
             duration_ms: request.duration_ms.unwrap_or(250),
             dry_run: request.dry_run,
+            verify: request.verify,
         },
     )
     .map_err(|error| Status::failed_precondition(error.to_string()))?;
@@ -3230,9 +3267,11 @@ fn grpc_desktop_type_into(
                 image: request.image_path.map(PathBuf::from),
                 prefer_accessibility: request.prefer_accessibility.unwrap_or(true),
                 window_title: request.window_title,
+                window_id: request.window_id,
             },
             clear: request.clear,
             dry_run: request.dry_run,
+            verify: request.verify,
         },
     )
     .map_err(|error| Status::failed_precondition(error.to_string()))?;
@@ -3250,6 +3289,7 @@ fn grpc_desktop_assert(
                 image: request.image_path.map(PathBuf::from),
                 prefer_accessibility: request.prefer_accessibility.unwrap_or(true),
                 window_title: request.window_title,
+                window_id: request.window_id,
             },
             assertion: proto_desktop_assertion(request.assertion, request.expected_text)?,
         },
@@ -3650,6 +3690,8 @@ fn proto_desktop_action_response(
         action: result.action,
         detail: result.detail,
         backend_name: result.backend_name,
+        verified: result.verified,
+        verification_detail: result.verification_detail,
     }
 }
 
@@ -3947,6 +3989,8 @@ fn desktop_action_dto(result: peekaboox_desktop::DesktopActionResult) -> Desktop
         action: result.action,
         detail: result.detail,
         backend_name: result.backend_name,
+        verified: result.verified,
+        verification_detail: result.verification_detail,
     }
 }
 
@@ -4368,13 +4412,17 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             wait_after_focus_ms,
             overview_wait_ms,
             window_title,
+            window_id,
+            verify,
         } => json!({
             "app": app,
             "use_gnome_overview": use_gnome_overview,
             "launch_if_needed": launch_if_needed,
             "wait_after_focus_ms": wait_after_focus_ms,
             "overview_wait_ms": overview_wait_ms,
-            "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty())
+            "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "verify": verify
         }),
         ApiRequest::DesktopLocate {
             app,
@@ -4382,12 +4430,14 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             image_path,
             prefer_accessibility,
             window_title,
+            window_id,
         } => json!({
             "app": app,
             "target": target,
             "has_image_path": image_path.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "prefer_accessibility": prefer_accessibility,
-            "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty())
+            "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty())
         }),
         ApiRequest::DesktopClick {
             app,
@@ -4397,14 +4447,18 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             window_title,
             button,
             dry_run,
+            window_id,
+            verify,
         } => json!({
             "app": app,
             "target": target,
             "has_image_path": image_path.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "prefer_accessibility": prefer_accessibility,
             "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "button": format!("{button:?}").to_ascii_lowercase(),
-            "dry_run": dry_run
+            "dry_run": dry_run,
+            "verify": verify
         }),
         ApiRequest::DesktopDrag {
             app,
@@ -4419,19 +4473,23 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             to_ratio_y,
             duration_ms,
             dry_run,
+            window_id,
+            verify,
         } => json!({
             "app": app,
             "target": target,
             "has_image_path": image_path.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "prefer_accessibility": prefer_accessibility,
             "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "button": format!("{button:?}").to_ascii_lowercase(),
             "from_ratio_x": from_ratio_x,
             "from_ratio_y": from_ratio_y,
             "to_ratio_x": to_ratio_x,
             "to_ratio_y": to_ratio_y,
             "duration_ms": duration_ms,
-            "dry_run": dry_run
+            "dry_run": dry_run,
+            "verify": verify
         }),
         ApiRequest::DesktopTypeInto {
             app,
@@ -4442,6 +4500,8 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             window_title,
             clear,
             dry_run,
+            window_id,
+            verify,
         } => json!({
             "app": app,
             "target": target,
@@ -4449,8 +4509,10 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             "has_image_path": image_path.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "prefer_accessibility": prefer_accessibility,
             "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "clear": clear,
-            "dry_run": dry_run
+            "dry_run": dry_run,
+            "verify": verify
         }),
         ApiRequest::DesktopAssert {
             app,
@@ -4460,12 +4522,14 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             window_title,
             assertion,
             expected_text,
+            window_id,
         } => json!({
             "app": app,
             "target": target,
             "has_image_path": image_path.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "prefer_accessibility": prefer_accessibility,
             "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "assertion": format!("{assertion:?}").to_ascii_lowercase(),
             "has_expected_text": expected_text.as_deref().is_some_and(|value| !value.trim().is_empty())
         }),

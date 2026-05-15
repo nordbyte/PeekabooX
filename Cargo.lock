@@ -775,6 +775,7 @@ dependencies = [
  "peekaboox-plugins",
  "peekaboox-vision",
  "peekaboox-windows",
+ "serde",
  "serde_json",
 ]
 

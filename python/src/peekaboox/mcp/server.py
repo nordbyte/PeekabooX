@@ -391,6 +391,8 @@ class McpServer:
                         "wait_after_focus_ms": {"type": "integer", "minimum": 0, "default": 1000},
                         "overview_wait_ms": {"type": "integer", "minimum": 0, "default": 800},
                         "window_title": {"type": "string"},
+                        "window_id": {"type": "string"},
+                        "verify": {"type": "boolean", "default": False},
                     },
                     required=["app"],
                 ),
@@ -406,6 +408,7 @@ class McpServer:
                         "image_path": {"type": "string"},
                         "prefer_accessibility": {"type": "boolean", "default": True},
                         "window_title": {"type": "string"},
+                        "window_id": {"type": "string"},
                     },
                     required=["app", "target"],
                 ),
@@ -421,8 +424,10 @@ class McpServer:
                         "image_path": {"type": "string"},
                         "prefer_accessibility": {"type": "boolean", "default": True},
                         "window_title": {"type": "string"},
+                        "window_id": {"type": "string"},
                         "button": {"type": "string", "enum": ["left", "middle", "right"]},
                         "dry_run": {"type": "boolean", "default": False},
+                        "verify": {"type": "boolean", "default": False},
                     },
                     required=["app", "target"],
                 ),
@@ -438,6 +443,7 @@ class McpServer:
                         "image_path": {"type": "string"},
                         "prefer_accessibility": {"type": "boolean", "default": True},
                         "window_title": {"type": "string"},
+                        "window_id": {"type": "string"},
                         "button": {"type": "string", "enum": ["left", "middle", "right"]},
                         "from_ratio": {
                             "type": "array",
@@ -453,6 +459,7 @@ class McpServer:
                         },
                         "duration_ms": {"type": "integer", "minimum": 0, "default": 250},
                         "dry_run": {"type": "boolean", "default": False},
+                        "verify": {"type": "boolean", "default": False},
                     },
                     required=["app", "target"],
                 ),
@@ -469,8 +476,10 @@ class McpServer:
                         "image_path": {"type": "string"},
                         "prefer_accessibility": {"type": "boolean", "default": True},
                         "window_title": {"type": "string"},
+                        "window_id": {"type": "string"},
                         "clear": {"type": "boolean", "default": False},
                         "dry_run": {"type": "boolean", "default": False},
+                        "verify": {"type": "boolean", "default": False},
                     },
                     required=["app", "target", "text"],
                 ),
@@ -499,6 +508,7 @@ class McpServer:
                         "image_path": {"type": "string"},
                         "prefer_accessibility": {"type": "boolean", "default": True},
                         "window_title": {"type": "string"},
+                        "window_id": {"type": "string"},
                     },
                     required=["app", "target"],
                 ),
@@ -970,6 +980,8 @@ class McpServer:
                 wait_after_focus_ms=int(arguments.get("wait_after_focus_ms", 1_000)),
                 overview_wait_ms=int(arguments.get("overview_wait_ms", 800)),
                 window_title=_optional_string(arguments, "window_title"),
+                window_id=_optional_string(arguments, "window_id"),
+                verify=bool(arguments.get("verify", False)),
             )
         )
 
@@ -981,6 +993,7 @@ class McpServer:
                 image_path=_optional_string(arguments, "image_path"),
                 prefer_accessibility=bool(arguments.get("prefer_accessibility", True)),
                 window_title=_optional_string(arguments, "window_title"),
+                window_id=_optional_string(arguments, "window_id"),
             )
         )
 
@@ -992,8 +1005,10 @@ class McpServer:
                 image_path=_optional_string(arguments, "image_path"),
                 prefer_accessibility=bool(arguments.get("prefer_accessibility", True)),
                 window_title=_optional_string(arguments, "window_title"),
+                window_id=_optional_string(arguments, "window_id"),
                 button=_optional_string(arguments, "button") or "left",
                 dry_run=bool(arguments.get("dry_run", False)),
+                verify=bool(arguments.get("verify", False)),
             )
         )
 
@@ -1005,11 +1020,13 @@ class McpServer:
                 image_path=_optional_string(arguments, "image_path"),
                 prefer_accessibility=bool(arguments.get("prefer_accessibility", True)),
                 window_title=_optional_string(arguments, "window_title"),
+                window_id=_optional_string(arguments, "window_id"),
                 button=_optional_string(arguments, "button") or "left",
                 from_ratio=_optional_ratio_pair(arguments, "from_ratio") or (0.5, 0.5),
                 to_ratio=_optional_ratio_pair(arguments, "to_ratio") or (0.5, 0.5),
                 duration_ms=int(arguments.get("duration_ms", 250)),
                 dry_run=bool(arguments.get("dry_run", False)),
+                verify=bool(arguments.get("verify", False)),
             )
         )
 
@@ -1022,8 +1039,10 @@ class McpServer:
                 image_path=_optional_string(arguments, "image_path"),
                 prefer_accessibility=bool(arguments.get("prefer_accessibility", True)),
                 window_title=_optional_string(arguments, "window_title"),
+                window_id=_optional_string(arguments, "window_id"),
                 clear=bool(arguments.get("clear", False)),
                 dry_run=bool(arguments.get("dry_run", False)),
+                verify=bool(arguments.get("verify", False)),
             )
         )
 
@@ -1037,6 +1056,7 @@ class McpServer:
                 image_path=_optional_string(arguments, "image_path"),
                 prefer_accessibility=bool(arguments.get("prefer_accessibility", True)),
                 window_title=_optional_string(arguments, "window_title"),
+                window_id=_optional_string(arguments, "window_id"),
             )
         )
 

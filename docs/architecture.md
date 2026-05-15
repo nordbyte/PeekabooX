@@ -11,7 +11,11 @@ The Rust side owns low-latency desktop integration:
 - vision primitives, including a Tesseract-backed OCR provider abstraction
 - reusable desktop-operation helpers that combine app focus, screenshot layout
   detection, and action guards for app-specific automation profiles, exposed
-  through CLI, daemon IPC, gRPC, Python runtime, and MCP
+  through CLI, daemon IPC, gRPC, Python runtime, and MCP. Helpers support
+  exact `window_id` scoping, optional post-action verification, and a CLI-visible
+  app/target profile registry.
+- environment diagnostics through `peekaboox doctor`, which reports capture,
+  window, input, OCR, Python gRPC, and profile availability as text or JSON
 - IPC contracts
 
 The Python side owns agent orchestration:
