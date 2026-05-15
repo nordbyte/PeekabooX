@@ -30,6 +30,7 @@ accessibility, and input backends:
 
 ```bash
 bash examples/desktop/live_smoke.sh
+bash examples/desktop/ocr_visible_window.sh
 bash examples/desktop/paint_draw_and_save.sh
 bash examples/desktop/text_editor_save_dialog.sh
 bash examples/desktop/telegram_saved_messages.sh
@@ -46,6 +47,15 @@ draws with ratio-based `desktop drag` actions, saves with `hotkey ctrl+s`, falls
 back to the detected Save toolbar button when needed, and verifies that the
 output file changed. Override `PEEKABOOX_PAINT_APP` to force a specific paint
 application.
+
+`examples/desktop/ocr_visible_window.sh` opens
+`examples/desktop/assets/ocr_desktop_sample.png` in the desktop's image viewer,
+captures the visible desktop, runs live Tesseract-backed `peekaboox ocr` over
+the screen, checks for `PX-OCR-204`, `READY`, and `VERIFY SCREEN TEXT`, and
+writes text and JSON OCR outputs under `target/examples/desktop-ocr`. Override
+`PEEKABOOX_DESKTOP_OCR_VIEWER` to force a specific viewer, or set
+`PEEKABOOX_DESKTOP_OCR_WINDOW_TITLE`, `PEEKABOOX_DESKTOP_OCR_WINDOW_ID`, or
+`PEEKABOOX_DESKTOP_OCR_APP` to scope OCR to a matching window.
 
 `examples/desktop/text_editor_save_dialog.sh` launches GNOME Text Editor on a
 unique draft file, locates the document target while passing
