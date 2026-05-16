@@ -167,6 +167,12 @@ Constrain MCP tool calls with the same profile names:
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --capability-profile observe
 ```
 
+Enable Doctor-backed preflight gates for MCP tool calls at startup:
+
+```bash
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --preflight-mode strict --preflight-timeout 5
+```
+
 or:
 
 ```bash

@@ -1294,6 +1294,32 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(fake_client.last_window_query["sort"], "focused")
         self.assertEqual(fake_client.last_window_query["backend"], "at-spi")
 
+    def test_agent_cli_passes_preflight_options_to_runtime(self) -> None:
+        fake_client = FakeClient()
+        output = StringIO()
+        with (
+            patch("sys.stdout", output),
+            patch(
+                "peekaboox.agent.runtime.AgentRuntime.connect",
+                return_value=AgentRuntime(client=fake_client),
+            ) as connect,
+        ):
+            exit_code = agent_runtime_module.main(
+                [
+                    "--preflight-mode",
+                    "strict",
+                    "--preflight-timeout",
+                    "2.5",
+                    "windows",
+                    "--diagnose",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        connect.assert_called_once()
+        self.assertEqual(connect.call_args.kwargs["preflight_mode"], "strict")
+        self.assertEqual(connect.call_args.kwargs["preflight_timeout_seconds"], 2.5)
+
     def test_agent_cli_windows_diagnose_prints_metadata(self) -> None:
         fake_client = FakeClient()
         output = StringIO()
@@ -2867,6 +2893,18 @@ class RuntimeTests(unittest.TestCase):
             response["result"]["structuredContent"]["error"],
             "CapabilityDeniedError",
         )
+
+    def test_mcp_create_server_applies_preflight_options(self) -> None:
+        server = create_server(
+            "127.0.0.1:47777",
+            connect=False,
+            preflight_mode="warn",
+            preflight_timeout_seconds=4.5,
+        )
+
+        self.assertIsNotNone(server.runtime)
+        self.assertEqual(server.runtime.preflight_mode, "warn")
+        self.assertEqual(server.runtime.preflight_timeout_seconds, 4.5)
 
     def test_mcp_server_reports_confirmation_requirements_as_tool_errors(self) -> None:
         runtime = AgentRuntime(

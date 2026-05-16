@@ -2113,6 +2113,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--audit-log", help="optional JSONL audit log path")
     parser.add_argument(
+        "--preflight-mode",
+        choices=("off", "warn", "strict"),
+        help="Doctor-backed preflight mode for live operations",
+    )
+    parser.add_argument(
+        "--preflight-timeout",
+        type=_positive_float,
+        default=30.0,
+        help="maximum seconds to wait for preflight Doctor checks",
+    )
+    parser.add_argument(
         "--plugin-path",
         action="append",
         default=[],
@@ -2164,7 +2175,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "plugins":
             paths = tuple(Path(path) for path in [*args.plugin_path, *args.path])
-            runtime = _local_runtime(args.profile, args.audit_log, paths)
+            runtime = _local_runtime(
+                args.profile,
+                args.audit_log,
+                paths,
+                preflight_mode=args.preflight_mode,
+                preflight_timeout_seconds=args.preflight_timeout,
+            )
             _print_json(runtime.list_plugins())
             return 0
         if args.command == "doctor":
@@ -2172,6 +2189,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.profile,
                 args.audit_log,
                 tuple(Path(path) for path in args.plugin_path),
+                preflight_mode=args.preflight_mode,
+                preflight_timeout_seconds=args.preflight_timeout,
             )
             result = runtime.doctor(strict=args.strict, timeout_seconds=args.timeout)
             _print_json(result)
@@ -2182,6 +2201,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             capability_profile=args.profile,
             audit_log_path=args.audit_log,
             plugin_paths=tuple(Path(path) for path in args.plugin_path),
+            preflight_mode=args.preflight_mode,
+            preflight_timeout_seconds=args.preflight_timeout,
         )
         if args.command == "windows":
             query = _window_query_kwargs(
@@ -2260,10 +2281,20 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
 def _local_runtime(
     profile: str,
     audit_log_path: str | None,
     plugin_paths: tuple[Path, ...],
+    *,
+    preflight_mode: str | None = None,
+    preflight_timeout_seconds: float = 30.0,
 ) -> AgentRuntime:
     audit_logger = (
         JsonlAuditLogger(audit_log_path, source="runtime")
@@ -2274,6 +2305,8 @@ def _local_runtime(
         capability_policy=CapabilityPolicy.from_profile(profile, audit_logger=audit_logger),
         audit_logger=audit_logger,
         plugin_paths=plugin_paths,
+        preflight_mode=preflight_mode,
+        preflight_timeout_seconds=preflight_timeout_seconds,
     )
 
 

@@ -1535,6 +1535,23 @@ def _optional_float(arguments: dict[str, Any], name: str) -> float | None:
     return None if value is None else float(value)
 
 
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def _env_positive_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    parsed = float(value)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be greater than zero")
+    return parsed
+
+
 def _optional_bool(arguments: dict[str, Any], name: str) -> bool:
     value = arguments.get(name)
     if value is None:
@@ -1639,6 +1656,8 @@ def create_server(
     confirmation_policy: ConfirmationPolicy | None = None,
     audit_log_path: str | os.PathLike[str] | None = None,
     plugin_paths: tuple[str | os.PathLike[str], ...] = (),
+    preflight_mode: str | None = None,
+    preflight_timeout_seconds: float = 30.0,
 ) -> McpServer:
     runtime = None
     if connect:
@@ -1650,6 +1669,8 @@ def create_server(
             audit_log_path=audit_log_path,
             audit_source="mcp",
             plugin_paths=plugin_paths,
+            preflight_mode=preflight_mode,
+            preflight_timeout_seconds=preflight_timeout_seconds,
         )
     else:
         audit_logger = (
@@ -1667,6 +1688,8 @@ def create_server(
             confirmation_policy=confirmation_policy or ConfirmationPolicy.disabled(),
             audit_logger=audit_logger,
             plugin_paths=tuple(Path(path) for path in plugin_paths),
+            preflight_mode=preflight_mode,
+            preflight_timeout_seconds=preflight_timeout_seconds,
         )
     server = McpServer(runtime=runtime)
     server.register_default_tools()
@@ -1700,6 +1723,18 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--preflight-mode",
+        choices=("off", "warn", "strict"),
+        default=os.environ.get("PEEKABOOX_PREFLIGHT_MODE"),
+        help="Doctor-backed preflight mode for live MCP tool calls",
+    )
+    parser.add_argument(
+        "--preflight-timeout",
+        type=_positive_float,
+        default=_env_positive_float("PEEKABOOX_PREFLIGHT_TIMEOUT", 30.0),
+        help="maximum seconds to wait for preflight Doctor checks",
+    )
+    parser.add_argument(
         "--plugin-path",
         action="append",
         default=[],
@@ -1714,6 +1749,8 @@ def main() -> None:
             capability_profile=args.capability_profile,
             audit_log_path=args.audit_log,
             plugin_paths=tuple(args.plugin_path),
+            preflight_mode=args.preflight_mode,
+            preflight_timeout_seconds=args.preflight_timeout,
         )
     except ImportError:
         server = create_server(
@@ -1722,6 +1759,8 @@ def main() -> None:
             capability_profile=args.capability_profile,
             audit_log_path=args.audit_log,
             plugin_paths=tuple(args.plugin_path),
+            preflight_mode=args.preflight_mode,
+            preflight_timeout_seconds=args.preflight_timeout,
         )
     if args.list_tools:
         print("peekaboox-mcp tools:", ", ".join(tool["name"] for tool in server.list_tools()))

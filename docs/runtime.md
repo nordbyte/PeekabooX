@@ -195,11 +195,14 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server --list-tools
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --audit-log runtime-audit.jsonl
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --capability-profile observe
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --preflight-mode strict
 ```
 
 Tool execution through MCP requires Python runtime dependencies and a running
 `peekabooxd` reachable at `PEEKABOOX_GRPC_TARGET` or `--target`. Without those
 dependencies, the server can still list tool descriptors for inspection.
+Use `--preflight-mode off|warn|strict` and `--preflight-timeout <seconds>` to
+control Doctor-backed preflight gates without changing application code.
 
 The current tool surface includes capture, capture delta, DMA-BUF probe,
 click, text and paste input, semantic lookup, window listing, desktop state,
@@ -216,6 +219,7 @@ For local inspection without an MCP client:
 peekaboox-agent --version
 peekaboox-agent plugins --path examples/plugins
 peekaboox-agent windows
+peekaboox-agent --preflight-mode strict windows
 peekaboox-agent windows --focused --limit 1 --sort focused
 peekaboox-agent windows --app calculator --diagnose
 peekaboox-agent desktop-state

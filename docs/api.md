@@ -376,6 +376,7 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server --list-tools
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --audit-log runtime-audit.jsonl
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --capability-profile observe
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --preflight-mode strict
 ```
 
 The stdio transport handles `initialize`, `ping`, `tools/list`, `tools/call`,
@@ -394,6 +395,8 @@ Set `--audit-log` or `PEEKABOOX_RUNTIME_AUDIT_LOG` to persist those runtime
 checks for MCP sessions. Set `--capability-profile`,
 `PEEKABOOX_MCP_CAPABILITY_PROFILE`, or `PEEKABOOX_CAPABILITY_PROFILE` to apply a
 reusable runtime allowlist to MCP tool calls.
+Set `--preflight-mode off|warn|strict` and `--preflight-timeout <seconds>` to
+enable Doctor-backed preflight checks directly at MCP server startup.
 
 The current tool surface includes:
 
@@ -543,6 +546,7 @@ Inspect the installed Python runtime without starting an MCP client:
 peekaboox-agent --version
 peekaboox-agent plugins --path examples/plugins
 peekaboox-agent windows
+peekaboox-agent --preflight-mode strict windows
 peekaboox-agent windows --focused --limit 1 --sort focused
 peekaboox-agent windows --app calculator --diagnose
 peekaboox-agent desktop-state
