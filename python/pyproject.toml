@@ -22,6 +22,7 @@ Issues = "https://github.com/nordbyte/PeekabooX/issues"
 [project.optional-dependencies]
 dev = [
     "grpcio-tools>=1.80",
+    "pytest>=9.0",
 ]
 
 [project.scripts]

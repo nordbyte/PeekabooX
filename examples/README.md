@@ -66,6 +66,7 @@ accessibility, and input backends:
 bash examples/desktop/live_smoke.sh
 bash examples/desktop/capture_backends_diagnostics.sh
 ./examples/desktop/capture_window_targets.sh
+./examples/desktop/capture_daemon_mcp_targets.sh
 python3 examples/python/capture_backends_runtime.py
 bash examples/mcp/jsonrpc_capture_backends.sh
 bash examples/desktop/capture_delta_stream.sh
@@ -99,6 +100,15 @@ XWD output, and `--no-overwrite`. It writes artifacts under
 `target/examples/capture-window-targets`. Override `PEEKABOOX_CAPTURE_APP`,
 `PEEKABOOX_CAPTURE_APP_QUERY`, or `PEEKABOOX_CAPTURE_TITLE_REGEX` for custom
 desktops.
+
+`examples/desktop/capture_daemon_mcp_targets.sh` starts a temporary observe-only
+daemon and validates the same capture targeting through daemon IPC, Python
+`AgentRuntime.capture_screen(...)`, and MCP JSON-RPC `capture_screen`. It checks
+app/title-regex targeting, window-relative regions, daemon JSON metadata,
+semantic-tree metadata, XWD output, and daemon `--no-overwrite`. It writes
+artifacts under `target/examples/capture-daemon-mcp-targets`. Override
+`PEEKABOOX_CAPTURE_PARITY_APP_QUERY`, `PEEKABOOX_CAPTURE_PARITY_TITLE_REGEX`,
+or `PEEKABOOX_PYTHON_BIN` for custom desktops or Python runtimes.
 
 `examples/python/capture_backends_runtime.py` and
 `examples/mcp/jsonrpc_capture_backends.sh` run matching capture-backends
