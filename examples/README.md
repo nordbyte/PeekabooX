@@ -93,6 +93,7 @@ python3 examples/python/capture_delta_runtime.py
 bash examples/mcp/jsonrpc_capture_delta.sh
 bash examples/desktop/windows_inventory.sh
 bash examples/desktop/desktop_profiles_registry.sh
+bash examples/desktop/desktop_profiles_daemon_parity.sh
 bash examples/desktop/elements_accessibility_probe.sh
 bash examples/desktop/elements_calculator.sh
 bash examples/desktop/ocr_visible_window.sh
@@ -184,6 +185,16 @@ filters by app, target, command, and target capability, verifies that launch
 command arguments such as `flatpak run org.telegram.desktop` are preserved, and
 exercises `--availability` metadata. It writes JSON reports under
 `target/examples/desktop-profiles`.
+
+`examples/desktop/desktop_profiles_daemon_parity.sh` starts a temporary
+observe-only daemon with a short Unix socket path and gRPC enabled, then checks
+the same `desktop_profiles` query through daemon CLI IPC, `PeekabooXClient`,
+and MCP JSON-RPC. It validates schema/count fields, `message-input`
+`type-into` support, command argument preservation, and availability metadata,
+then writes all three JSON responses under
+`target/examples/desktop-profiles-daemon-parity`. Set `PEEKABOOX_PYTHON_BIN`
+when your system Python does not already have `grpcio`, `protobuf`, and the
+local PeekabooX package importable.
 
 `examples/desktop/ocr_visible_window.sh` opens
 `examples/desktop/assets/ocr_desktop_sample.png` in the desktop's image viewer,
