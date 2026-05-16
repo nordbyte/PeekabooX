@@ -9,7 +9,7 @@ from textwrap import dedent
 from unittest.mock import patch
 
 import peekaboox.agent.runtime as agent_runtime_module
-from peekaboox.agent import AgentRuntime, VerificationResult
+from peekaboox.agent import AgentRuntime, PreflightError, VerificationResult
 from peekaboox.client import (
     ActionResult,
     CaptureBackend,
@@ -35,7 +35,7 @@ from peekaboox.client import (
     WindowListResult,
     ZeroCopyBackend,
 )
-from peekaboox.doctor import DoctorCheck, DoctorResult, run_doctor
+from peekaboox.doctor import DoctorCategory, DoctorCheck, DoctorResult, run_doctor
 from peekaboox.memory import MemoryStore, SQLiteMemoryStore, SemanticDesktopGraph
 from peekaboox.mcp import McpServer
 from peekaboox.mcp.server import create_server
@@ -738,6 +738,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("capture_delta", server.tools)
         self.assertIn("capture_backends", server.tools)
         self.assertIn("doctor", server.tools)
+        self.assertIn("preflight", server.tools)
         self.assertIn("probe_dmabuf", server.tools)
         self.assertIn("get_desktop_state", server.tools)
         self.assertIn("find_element", server.tools)
@@ -854,6 +855,152 @@ class RuntimeTests(unittest.TestCase):
         run.assert_called_once_with(strict=True, timeout_seconds=2.5)
         self.assertEqual(runtime.capability_audit()[-1].capability, Capability.OBSERVE)
         self.assertEqual(runtime.capability_audit()[-1].operation, "doctor")
+
+    def test_agent_runtime_preflight_blocks_unusable_input(self) -> None:
+        fake_client = FakeClient()
+        runtime = AgentRuntime(client=fake_client, preflight_mode="strict")
+        doctor = DoctorResult(
+            status="fail",
+            checks=(
+                DoctorCheck(
+                    name="input-click",
+                    status="fail",
+                    detail="no input backend candidate detected",
+                ),
+            ),
+            categories=(
+                DoctorCategory(
+                    name="input",
+                    status="fail",
+                    severity="error",
+                    ok_count=0,
+                    warn_count=0,
+                    fail_count=1,
+                    total_count=1,
+                ),
+            ),
+            ok_count=0,
+            warn_count=0,
+            fail_count=1,
+            exit_code=0,
+        )
+
+        with patch("peekaboox.agent.runtime.run_doctor", return_value=doctor) as run:
+            with self.assertRaisesRegex(PreflightError, "input"):
+                runtime.click(10, 20)
+
+        run.assert_called_once_with(strict=False, timeout_seconds=30.0)
+        self.assertIsNone(fake_client.clicked_at)
+
+    def test_agent_runtime_preflight_allows_warnings_and_caches_doctor(self) -> None:
+        fake_client = FakeClient()
+        runtime = AgentRuntime(client=fake_client, preflight_mode="strict")
+        doctor = DoctorResult(
+            status="ok",
+            checks=(
+                DoctorCheck(
+                    name="input-click",
+                    status="warn",
+                    detail="only fallback input backend available",
+                ),
+            ),
+            categories=(
+                DoctorCategory(
+                    name="input",
+                    status="warn",
+                    severity="warning",
+                    ok_count=0,
+                    warn_count=1,
+                    fail_count=0,
+                    total_count=1,
+                ),
+            ),
+            ok_count=0,
+            warn_count=1,
+            fail_count=0,
+            exit_code=0,
+        )
+
+        with patch("peekaboox.agent.runtime.run_doctor", return_value=doctor) as run:
+            runtime.move_mouse(30, 40)
+            runtime.hotkey("ctrl+s")
+
+        run.assert_called_once_with(strict=False, timeout_seconds=30.0)
+        self.assertEqual(fake_client.moved_to, (30, 40))
+        self.assertEqual(fake_client.hotkeys[-1], ("ctrl", "s"))
+
+    def test_agent_runtime_preflight_keeps_diagnostics_available(self) -> None:
+        runtime = AgentRuntime(client=FakeClient(), preflight_mode="strict")
+
+        with patch("peekaboox.agent.runtime.run_doctor") as run:
+            result = runtime.capture_backends(diagnose=True, probe="none")
+
+        run.assert_not_called()
+        self.assertEqual(result.image_backends[0].name, "portal")
+
+    def test_execute_workflow_returns_preflight_failure_before_actions(self) -> None:
+        fake_client = FakeClient()
+        runtime = AgentRuntime(client=fake_client, preflight_mode="strict")
+        workflow = Workflow(
+            name="capture then click",
+            steps=(
+                WorkflowStep(action="capture_screen"),
+                WorkflowStep(action="click", x=10, y=20),
+            ),
+        )
+        doctor = DoctorResult(
+            status="fail",
+            checks=(
+                DoctorCheck(
+                    name="capture-file",
+                    status="fail",
+                    detail="no backend candidate detected",
+                ),
+            ),
+            categories=(
+                DoctorCategory(
+                    name="desktop",
+                    status="ok",
+                    severity="info",
+                    ok_count=1,
+                    warn_count=0,
+                    fail_count=0,
+                    total_count=1,
+                ),
+                DoctorCategory(
+                    name="capture",
+                    status="fail",
+                    severity="error",
+                    ok_count=0,
+                    warn_count=0,
+                    fail_count=1,
+                    total_count=1,
+                ),
+                DoctorCategory(
+                    name="input",
+                    status="ok",
+                    severity="info",
+                    ok_count=1,
+                    warn_count=0,
+                    fail_count=0,
+                    total_count=1,
+                ),
+            ),
+            ok_count=2,
+            warn_count=0,
+            fail_count=1,
+            exit_code=0,
+        )
+
+        with patch("peekaboox.agent.runtime.run_doctor", return_value=doctor):
+            result = runtime.execute_workflow(workflow)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.steps, ())
+        self.assertEqual(result.recovery["next_action"], "run_doctor")
+        self.assertEqual(result.recovery["retryable"], False)
+        self.assertEqual(result.recovery["preflight"]["blocked_categories"], ["capture"])
+        self.assertIsNone(fake_client.clicked_at)
 
     def test_capability_policy_blocks_direct_runtime_actions_and_audits(self) -> None:
         policy = CapabilityPolicy.allow_only([Capability.OBSERVE])
@@ -2040,6 +2187,46 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result["checks"][0]["severity"], "error")
         self.assertEqual(result["categories"][0]["name"], "desktop")
         self.assertEqual(result["categories"][0]["severity"], "error")
+
+    def test_mcp_server_calls_preflight_tool(self) -> None:
+        server = McpServer(runtime=AgentRuntime(client=FakeClient()))
+        server.register_default_tools()
+        doctor = DoctorResult(
+            status="fail",
+            checks=(
+                DoctorCheck(
+                    name="capture-file",
+                    status="fail",
+                    detail="no backend candidate detected",
+                ),
+            ),
+            categories=(
+                DoctorCategory(
+                    name="capture",
+                    status="fail",
+                    severity="error",
+                    ok_count=0,
+                    warn_count=0,
+                    fail_count=1,
+                    total_count=1,
+                ),
+            ),
+            ok_count=0,
+            warn_count=0,
+            fail_count=1,
+            exit_code=0,
+        )
+
+        with patch("peekaboox.agent.runtime.run_doctor", return_value=doctor) as run:
+            result = server.call_tool(
+                "preflight",
+                {"categories": ["capture"], "operation": "capture_screen"},
+            )
+
+        run.assert_called_once_with(strict=False, timeout_seconds=30.0)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["blocked_categories"], ["capture"])
+        self.assertEqual(result["category_status"]["capture"], "fail")
 
     def test_mcp_server_validates_doctor_arguments(self) -> None:
         server = McpServer(runtime=AgentRuntime(client=FakeClient()))

@@ -14,6 +14,7 @@ PYTHONPATH=python/src python3 examples/python/runtime_smoke.py
 PYTHONPATH=python/src python3 examples/python/doctor_runtime.py
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_list_tools.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_doctor.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_preflight.sh
 cargo run -q -p peekaboox-cli -- doctor --json
 ```
 
@@ -31,6 +32,8 @@ MCP JSON-RPC `tools/call`. They validate per-check categories, severities, and
 category rollups, then write JSON under
 `target/examples/python-doctor` or `target/examples/mcp-doctor`. Set
 `PEEKABOOX_BIN` to test an installed binary instead of the local Cargo fallback.
+`examples/mcp/jsonrpc_preflight.sh` uses those Doctor categories through the MCP
+`preflight` tool before a capture-style operation.
 
 ## Live desktop examples
 

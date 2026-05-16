@@ -20,6 +20,7 @@ echo "$tools_line"
 grep -q "capture_screen" <<<"$tools_line"
 grep -q "list_plugins" <<<"$tools_line"
 grep -q "execute_workflow" <<<"$tools_line"
+grep -q "preflight" <<<"$tools_line"
 
 echo "== MCP JSON-RPC tools/list =="
 response="$(
@@ -36,7 +37,7 @@ import sys
 payload = json.loads(sys.argv[1])
 tools = payload["result"]["tools"]
 names = {tool["name"] for tool in tools}
-required = {"capture_screen", "list_plugins", "execute_workflow"}
+required = {"capture_screen", "list_plugins", "execute_workflow", "preflight"}
 missing = sorted(required - names)
 if missing:
     raise SystemExit(f"missing MCP tools: {', '.join(missing)}")

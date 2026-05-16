@@ -20,12 +20,14 @@ runtime = AgentRuntime.connect(
     capability_profile=CapabilityProfile.ASSIST,
     confirmation_policy=ConfirmationPolicy.require_for([DangerousAction.CLICK]),
     audit_log_path="peekaboox-runtime-audit.jsonl",
+    preflight_mode="strict",
 )
 print(runtime.list_windows())
 print(runtime.list_windows(focused=True, limit=1, sort="focused"))
 print(runtime.list_windows_result(app="calculator", diagnose=True))
 print(runtime.doctor().status)
 print(runtime.doctor().categories)
+print(runtime.preflight(["desktop", "capture"], operation="capture_screen"))
 print(runtime.find_element("role=push button"))
 print(runtime.ocr_screen().text)
 print(
@@ -60,6 +62,15 @@ operations. Pointer movement, drags, and hotkeys use the `click` confirmation
 gate. Decisions are available through `runtime.confirmation_audit()`. Pass
 `audit_log_path` or run `peekaboox-mcp --audit-log <path>` to persist runtime
 security checks as JSONL.
+
+Set `preflight_mode="strict"` or `PEEKABOOX_PREFLIGHT_MODE=strict` to run
+Doctor-backed preflight checks before live desktop, capture, input, and OCR
+actions. The runtime caches the latest Doctor result, treats `warn` categories
+as usable but visible in `PreflightResult.warning_categories`, and blocks
+`fail` or missing categories with `PreflightError`. Use `preflight_mode="warn"`
+to collect the same diagnostics without blocking, or call
+`runtime.require_preflight(["desktop", "input"], operation="click")` manually
+before a custom action.
 
 ## Workflows
 
@@ -107,6 +118,10 @@ During replay, selector-based `find_element` and `click` steps self-heal across
 retries. After an initial selector failure, the runtime refreshes the semantic
 desktop graph; on a later retry it enables `vision_fallback` if the step did
 not already request it. Step results report the applied recovery strategies.
+When runtime preflight is strict, workflows are checked as a whole before the
+first step. Missing required Doctor categories return a failed
+`WorkflowExecutionResult` with `recovery["preflight"]` and `next_action` set to
+`run_doctor`.
 
 Workflows can also be loaded from JSON or YAML files. The checked-in
 `examples/workflow.yaml` uses the same `WorkflowStep` fields as the Python API:

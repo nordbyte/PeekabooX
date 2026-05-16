@@ -401,6 +401,7 @@ The current tool surface includes:
 - `capture_delta`
 - `capture_backends`
 - `doctor`
+- `preflight`
 - `probe_dmabuf`
 - `click`
 - `type_text`
@@ -450,6 +451,9 @@ capture streams. `capture_backends` accepts `output`, optional `region`,
 `all`. `doctor` accepts optional `strict` and `timeout_seconds` arguments and
 returns the structured `peekaboox doctor --json` health checks with per-check
 `category`/`severity` fields and top-level category summaries.
+`preflight` accepts `categories`, optional `operation`, `refresh`,
+`timeout_seconds`, and `require`; it returns the Doctor-backed category gate
+used by `AgentRuntime(preflight_mode="strict")` before live automation.
 The desktop helper tools accept supported app profile names such as `telegram`,
 `paint`, `drawing`, `pinta`, `kolourpaint`, and `text-editor`, plus named
 targets such as Telegram's `search-input`/`message-input`, Paint's `canvas`, or

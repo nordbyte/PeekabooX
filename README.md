@@ -18,8 +18,8 @@ JSON output, runnable examples, and release-grade packaging.
   with dry-run checks and daemon-side permission gates.
 - Desktop helper profiles for Telegram, paint/drawing apps, and text editors,
   including `window_id` targeting and post-action `--verify` checks.
-- Python runtime, MCP server, workflow generation/replay, semantic desktop
-  graph memory, and JSONL audit hooks.
+- Python runtime, MCP server, workflow generation/replay, Doctor-backed
+  preflight gating, semantic desktop graph memory, and JSONL audit hooks.
 - Directory-based Plugin SDK with manifest validation, bounded process tools,
   CLI, daemon, gRPC, Python, and MCP integration.
 - Local packaging for Rust binaries, Python wheels, Debian packages, Docker

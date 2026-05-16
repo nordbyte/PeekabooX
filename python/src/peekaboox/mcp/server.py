@@ -293,6 +293,28 @@ class McpServer:
                 self._doctor,
             ),
             self._tool(
+                "preflight",
+                "Check required Doctor categories before a live automation action.",
+                _schema(
+                    {
+                        "categories": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["desktop", "capture", "input", "ocr", "python"],
+                            },
+                            "minItems": 1,
+                        },
+                        "operation": {"type": "string", "default": "mcp"},
+                        "require": {"type": "boolean", "default": False},
+                        "refresh": {"type": "boolean", "default": False},
+                        "timeout_seconds": {"type": "number", "minimum": 0.1, "default": 30.0},
+                    },
+                    required=["categories"],
+                ),
+                self._preflight,
+            ),
+            self._tool(
                 "probe_dmabuf",
                 "Probe the optional DMA-BUF capture/import path.",
                 _schema(
@@ -992,6 +1014,28 @@ class McpServer:
             )
         )
 
+    def _preflight(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = _optional_float(arguments, "timeout_seconds")
+        if timeout is not None and timeout <= 0:
+            raise ValueError("timeout_seconds must be greater than zero")
+        categories = _required_string_array(arguments, "categories")
+        runtime = self._require_runtime()
+        if _optional_bool(arguments, "require"):
+            result = runtime.require_preflight(
+                categories,
+                operation=_optional_string(arguments, "operation") or "mcp",
+                refresh=_optional_bool(arguments, "refresh"),
+                timeout_seconds=timeout,
+            )
+        else:
+            result = runtime.preflight(
+                categories,
+                operation=_optional_string(arguments, "operation") or "mcp",
+                refresh=_optional_bool(arguments, "refresh"),
+                timeout_seconds=timeout,
+            )
+        return _to_mcp_value(result)
+
     def _probe_dmabuf(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return _to_mcp_value(
             self._require_runtime().probe_dmabuf(
@@ -1469,6 +1513,16 @@ def _required_str(arguments: dict[str, Any], name: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{name} must be a non-empty string")
     return value
+
+
+def _required_string_array(arguments: dict[str, Any], name: str) -> tuple[str, ...]:
+    value = arguments.get(name)
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{name} must be a non-empty string array")
+    items = tuple(item for item in value if isinstance(item, str) and item)
+    if len(items) != len(value):
+        raise ValueError(f"{name} must contain only non-empty strings")
+    return items
 
 
 def _optional_int(arguments: dict[str, Any], name: str) -> int | None:

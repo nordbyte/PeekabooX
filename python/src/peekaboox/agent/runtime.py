@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field, fields, is_dataclass, replace
@@ -102,6 +103,25 @@ class WorkflowExecutionResult:
     recovery: dict[str, object]
 
 
+@dataclass(frozen=True, slots=True)
+class PreflightResult:
+    operation: str
+    required_categories: tuple[str, ...]
+    ok: bool
+    blocked_categories: tuple[str, ...]
+    warning_categories: tuple[str, ...]
+    category_status: dict[str, str] = field(default_factory=dict)
+    category_severity: dict[str, str] = field(default_factory=dict)
+    messages: tuple[str, ...] = ()
+    doctor_status: str = "ok"
+
+
+class PreflightError(RuntimeError):
+    def __init__(self, result: PreflightResult) -> None:
+        super().__init__(_preflight_error_message(result))
+        self.result = result
+
+
 Verifier = Callable[[WorkflowStep, object], VerificationResult | bool]
 
 
@@ -121,8 +141,14 @@ class AgentRuntime:
     audit_logger: JsonlAuditLogger | None = None
     plugin_paths: tuple[Path, ...] = ()
     plugin_registry: PluginDiscoveryResult | None = None
+    preflight_mode: str | None = None
+    preflight_timeout_seconds: float = 30.0
+    _preflight_doctor_result: DoctorResult | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self.preflight_mode = _normalize_preflight_mode(self.preflight_mode)
+        if self.preflight_timeout_seconds <= 0:
+            raise ValueError("preflight_timeout_seconds must be greater than zero")
         if self.audit_logger is not None:
             self.capability_policy.audit_logger = self.audit_logger
             self.confirmation_policy.audit_logger = self.audit_logger
@@ -138,6 +164,8 @@ class AgentRuntime:
         audit_log_path: str | Path | None = None,
         audit_source: str = "runtime",
         plugin_paths: tuple[str | Path, ...] = (),
+        preflight_mode: str | None = None,
+        preflight_timeout_seconds: float = 30.0,
     ) -> "AgentRuntime":
         if capability_policy is not None and capability_profile is not None:
             raise ValueError("use either capability_policy or capability_profile, not both")
@@ -160,6 +188,8 @@ class AgentRuntime:
             confirmation_policy=confirmation_policy or ConfirmationPolicy.disabled(),
             audit_logger=audit_logger,
             plugin_paths=tuple(Path(path) for path in plugin_paths),
+            preflight_mode=preflight_mode,
+            preflight_timeout_seconds=preflight_timeout_seconds,
         )
 
     def register_tool(self, name: str, tool: object) -> None:
@@ -226,7 +256,53 @@ class AgentRuntime:
         timeout_seconds: float = 30.0,
     ) -> DoctorResult:
         self._require_capability(Capability.OBSERVE, "doctor", strict=strict)
-        return run_doctor(strict=strict, timeout_seconds=timeout_seconds)
+        result = run_doctor(strict=strict, timeout_seconds=timeout_seconds)
+        self._preflight_doctor_result = result
+        return result
+
+    def preflight(
+        self,
+        categories: Sequence[str] | str,
+        *,
+        operation: str = "runtime",
+        refresh: bool = False,
+        timeout_seconds: float | None = None,
+    ) -> PreflightResult:
+        required_categories = _preflight_categories(categories)
+        self._require_capability(
+            Capability.OBSERVE,
+            "preflight",
+            target_operation=operation,
+            categories=list(required_categories),
+            refresh=refresh,
+        )
+        doctor = self._doctor_for_preflight(
+            refresh=refresh,
+            timeout_seconds=timeout_seconds,
+        )
+        return _preflight_result(
+            doctor,
+            operation=operation,
+            required_categories=required_categories,
+        )
+
+    def require_preflight(
+        self,
+        categories: Sequence[str] | str,
+        *,
+        operation: str = "runtime",
+        refresh: bool = False,
+        timeout_seconds: float | None = None,
+    ) -> PreflightResult:
+        result = self.preflight(
+            categories,
+            operation=operation,
+            refresh=refresh,
+            timeout_seconds=timeout_seconds,
+        )
+        if not result.ok:
+            raise PreflightError(result)
+        return result
 
     def generate_workflow(
         self,
@@ -355,6 +431,17 @@ class AgentRuntime:
                     steps=tuple(all_steps),
                     recovery=recovery,
                 )
+            if result.recovery.get("retryable") is False and "preflight" in result.recovery:
+                recovery = dict(result.recovery)
+                if replan_events:
+                    recovery["replanned"] = True
+                    recovery["replans"] = replan_events
+                return WorkflowExecutionResult(
+                    goal=result.goal,
+                    ok=False,
+                    steps=tuple(all_steps),
+                    recovery=recovery,
+                )
             if not replan_on_failure or replan_index >= max_replans:
                 recovery = dict(result.recovery)
                 if replan_events:
@@ -408,6 +495,18 @@ class AgentRuntime:
         )
         if not workflow.steps:
             raise ValueError("workflow must contain at least one step")
+        try:
+            self._require_preflight(
+                "execute_workflow",
+                _workflow_preflight_categories(workflow),
+            )
+        except PreflightError as exc:
+            return WorkflowExecutionResult(
+                goal=workflow.name,
+                ok=False,
+                steps=(),
+                recovery=_preflight_recovery(exc.result),
+            )
         self._require_confirmation(
             DangerousAction.WORKFLOW_EXECUTE,
             "execute_workflow",
@@ -427,9 +526,17 @@ class AgentRuntime:
                     "attempts": result.recovery.get("attempts", 0),
                     "next_action": "inspect_state",
                 }
-                for key in ("successful", "strategy", "strategies", "events"):
+                for key in (
+                    "successful",
+                    "strategy",
+                    "strategies",
+                    "events",
+                    "preflight",
+                ):
                     if key in result.recovery:
                         recovery[key] = result.recovery[key]
+                if "preflight" in recovery:
+                    recovery["retryable"] = False
                 return WorkflowExecutionResult(
                     goal=workflow.name,
                     ok=False,
@@ -531,6 +638,8 @@ class AgentRuntime:
             except Exception as exc:
                 result = None
                 metadata: dict[str, object] = {"exception": type(exc).__name__}
+                if isinstance(exc, PreflightError):
+                    metadata["preflight"] = _preflight_metadata(exc.result)
                 if attempt_recovery:
                     metadata["recovery"] = attempt_recovery
                     metadata["recovery_strategy"] = attempt_recovery["strategy"]
@@ -568,23 +677,30 @@ class AgentRuntime:
                 )
 
         last_attempt = attempts[-1]
+        recovery = {
+            "action": step.action,
+            "reason": last_attempt.message,
+            "attempts": len(attempts),
+            "retryable": False,
+            "next_action": "inspect_state",
+            **_step_recovery_report(
+                successful=False,
+                attempt=len(attempts),
+                events=recovery_events,
+            ),
+        }
+        if (
+            last_attempt.verification is not None
+            and "preflight" in last_attempt.verification.metadata
+        ):
+            recovery["preflight"] = last_attempt.verification.metadata["preflight"]
+            recovery["next_action"] = "run_doctor"
         return StepExecutionResult(
             step=step,
             ok=False,
             attempts=tuple(attempts),
             result=last_attempt.result,
-            recovery={
-                "action": step.action,
-                "reason": last_attempt.message,
-                "attempts": len(attempts),
-                "retryable": False,
-                "next_action": "inspect_state",
-                **_step_recovery_report(
-                    successful=False,
-                    attempt=len(attempts),
-                    events=recovery_events,
-                ),
-            },
+            recovery=recovery,
         )
 
     def capture_screen(
@@ -594,6 +710,7 @@ class AgentRuntime:
         window_id: str | None = None,
     ) -> CaptureScreenResult:
         self._require_capability(Capability.OBSERVE, "capture_screen")
+        self._require_preflight("capture_screen", ("desktop", "capture"))
         result = self._require_client().capture_screen(
             include_semantic_tree,
             region=region,
@@ -612,6 +729,7 @@ class AgentRuntime:
         low_bandwidth: bool = True,
     ) -> CaptureDeltaResult:
         self._require_capability(Capability.OBSERVE, "capture_delta")
+        self._require_preflight("capture_delta", ("desktop", "capture"))
         result = self._require_client().capture_delta(
             stream_id=stream_id,
             reset=reset,
@@ -631,6 +749,8 @@ class AgentRuntime:
         probe: str = "none",
     ) -> CaptureBackendsResult:
         self._require_capability(Capability.OBSERVE, "capture_backends")
+        if probe != "none":
+            self._require_preflight("capture_backends", "capture")
         result = self._require_client().capture_backends(
             output=output,
             region=region,
@@ -647,12 +767,14 @@ class AgentRuntime:
         **kwargs: object,
     ) -> OcrResult:
         self._require_capability(Capability.VISION, "ocr_screen")
+        self._require_preflight("ocr_screen", ("capture", "ocr"))
         return self._require_client().ocr_screen(region=region, language=language, **kwargs)
 
     def ocr_region(
         self, region: Rect, language: str | None = None, **kwargs: object
     ) -> OcrResult:
         self._require_capability(Capability.VISION, "ocr_region")
+        self._require_preflight("ocr_region", ("capture", "ocr"))
         return self._require_client().ocr_region(region, language, **kwargs)
 
     def compare_images(
@@ -784,6 +906,7 @@ class AgentRuntime:
 
     def probe_dmabuf(self, import_target: str = "compute") -> DmaBufProbeResult:
         self._require_capability(Capability.OBSERVE, "probe_dmabuf", import_target=import_target)
+        self._require_preflight("probe_dmabuf", "capture")
         return self._require_client().probe_dmabuf(import_target)
 
     def list_windows(
@@ -800,6 +923,8 @@ class AgentRuntime:
         diagnose: bool = False,
     ) -> tuple[WindowInfo, ...]:
         self._require_capability(Capability.OBSERVE, "list_windows")
+        if not diagnose:
+            self._require_preflight("list_windows", "desktop")
         kwargs = _window_query_kwargs(
             id=id,
             app=app,
@@ -830,6 +955,8 @@ class AgentRuntime:
         diagnose: bool = False,
     ) -> WindowListResult:
         self._require_capability(Capability.OBSERVE, "list_windows")
+        if not diagnose:
+            self._require_preflight("list_windows", "desktop")
         kwargs = _window_query_kwargs(
             id=id,
             app=app,
@@ -845,6 +972,7 @@ class AgentRuntime:
 
     def get_desktop_state(self) -> DesktopState:
         self._require_capability(Capability.OBSERVE, "get_desktop_state")
+        self._require_preflight("get_desktop_state", "desktop")
         return self._require_client().get_desktop_state()
 
     def desktop_focus(
@@ -861,6 +989,7 @@ class AgentRuntime:
     ) -> DesktopActionResult:
         self._require_capability(Capability.OBSERVE, "desktop_focus", app=app)
         self._require_capability(Capability.CLICK, "desktop_focus", app=app)
+        self._require_preflight("desktop_focus", ("desktop", "input"))
         self._require_confirmation(
             DangerousAction.CLICK,
             "desktop_focus",
@@ -892,6 +1021,7 @@ class AgentRuntime:
     ) -> DesktopLocateResult:
         self._require_capability(Capability.OBSERVE, "desktop_locate", app=app, target=target)
         self._require_capability(Capability.VISION, "desktop_locate", app=app, target=target)
+        self._require_preflight("desktop_locate", ("desktop", "capture"))
         return self._require_client().desktop_locate(
             app,
             target,
@@ -917,6 +1047,7 @@ class AgentRuntime:
         self._require_capability(Capability.OBSERVE, "desktop_click", app=app, target=target)
         self._require_capability(Capability.VISION, "desktop_click", app=app, target=target)
         self._require_capability(Capability.CLICK, "desktop_click", app=app, target=target)
+        self._require_preflight("desktop_click", ("desktop", "capture", "input"))
         if not dry_run:
             self._require_confirmation(
                 DangerousAction.CLICK,
@@ -960,6 +1091,7 @@ class AgentRuntime:
         self._require_capability(Capability.OBSERVE, "desktop_drag", app=app, target=target)
         self._require_capability(Capability.VISION, "desktop_drag", app=app, target=target)
         self._require_capability(Capability.CLICK, "desktop_drag", app=app, target=target)
+        self._require_preflight("desktop_drag", ("desktop", "capture", "input"))
         if not dry_run:
             self._require_confirmation(
                 DangerousAction.CLICK,
@@ -1010,6 +1142,7 @@ class AgentRuntime:
             target=target,
             text_length=len(text),
         )
+        self._require_preflight("desktop_type_into", ("desktop", "capture", "input"))
         if not dry_run:
             self._require_confirmation(
                 DangerousAction.TYPE_TEXT,
@@ -1047,13 +1180,19 @@ class AgentRuntime:
         window_id: str | None = None,
     ) -> DesktopActionResult:
         self._require_capability(Capability.OBSERVE, "desktop_assert", app=app, target=target)
-        if assertion.strip().casefold().replace("-", "_") in {
+        assertion_name = assertion.strip().casefold().replace("-", "_")
+        required_categories: tuple[str, ...] = ("desktop",)
+        if assertion_name in {
             "active",
             "not_active",
             "contains",
             "not_contains",
         }:
             self._require_capability(Capability.VISION, "desktop_assert", app=app, target=target)
+            required_categories = ("desktop", "capture")
+            if assertion_name in {"contains", "not_contains"}:
+                required_categories = ("desktop", "capture", "ocr")
+        self._require_preflight("desktop_assert", required_categories)
         return self._require_client().desktop_assert(
             app,
             target,
@@ -1172,6 +1311,12 @@ class AgentRuntime:
                 semantic_selector,
                 vision_fallback=vision_fallback,
             )
+        categories: tuple[str, ...] = ("input",)
+        if semantic_selector is not None:
+            categories = ("desktop", "input")
+        if vision_fallback:
+            categories = (*categories, "capture")
+        self._require_preflight("click", categories)
         self._require_confirmation(
             DangerousAction.CLICK,
             "click",
@@ -1204,6 +1349,10 @@ class AgentRuntime:
         )
         if vision_fallback:
             self._require_capability(Capability.VISION, "click_selector.vision_fallback")
+        categories: tuple[str, ...] = ("desktop", "input")
+        if vision_fallback:
+            categories = ("desktop", "input", "capture")
+        self._require_preflight("click_selector", categories)
         self._require_confirmation(
             DangerousAction.CLICK,
             "click_selector",
@@ -1238,6 +1387,7 @@ class AgentRuntime:
 
     def move_mouse(self, x: int, y: int) -> ActionResult:
         self._require_capability(Capability.CLICK, "move_mouse", x=x, y=y)
+        self._require_preflight("move_mouse", "input")
         self._require_confirmation(DangerousAction.CLICK, "move_mouse", x=x, y=y)
         result = self._require_client().move_mouse(x, y)
         self._record_step(WorkflowStep(action="move_mouse", x=x, y=y))
@@ -1268,6 +1418,7 @@ class AgentRuntime:
             button=button,
             duration_ms=duration_ms,
         )
+        self._require_preflight("drag", "input")
         self._require_confirmation(
             DangerousAction.CLICK,
             "drag",
@@ -1305,6 +1456,7 @@ class AgentRuntime:
         typing_speed_chars_per_second: int | None = None,
     ) -> ActionResult:
         self._require_capability(Capability.TYPE_TEXT, "type_text", text_length=len(text))
+        self._require_preflight("type_text", "input")
         self._require_confirmation(
             DangerousAction.TYPE_TEXT,
             "type_text",
@@ -1317,6 +1469,7 @@ class AgentRuntime:
 
     def paste_text(self, text: str, preserve_clipboard: bool = False) -> ActionResult:
         self._require_capability(Capability.TYPE_TEXT, "paste_text", text_length=len(text))
+        self._require_preflight("paste_text", "input")
         self._require_confirmation(
             DangerousAction.TYPE_TEXT,
             "paste_text",
@@ -1330,6 +1483,7 @@ class AgentRuntime:
     def hotkey(self, keys: Sequence[str] | str) -> ActionResult:
         key_values = _hotkey_keys(keys)
         self._require_capability(Capability.CLICK, "hotkey", key_count=len(key_values))
+        self._require_preflight("hotkey", "input")
         self._require_confirmation(
             DangerousAction.CLICK,
             "hotkey",
@@ -1361,6 +1515,10 @@ class AgentRuntime:
         )
         if vision_fallback:
             self._require_capability(Capability.VISION, "find_element.vision_fallback")
+        categories: tuple[str, ...] = ("desktop",)
+        if vision_fallback:
+            categories = ("desktop", "capture")
+        self._require_preflight("find_element", categories)
         has_scope_or_vision_options = any(
             value is not None
             for value in (
@@ -1518,6 +1676,40 @@ class AgentRuntime:
 
         return VerificationResult(ok=True, message="result accepted")
 
+    def _doctor_for_preflight(
+        self,
+        *,
+        refresh: bool = False,
+        timeout_seconds: float | None = None,
+    ) -> DoctorResult:
+        if not refresh and self._preflight_doctor_result is not None:
+            return self._preflight_doctor_result
+        timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else self.preflight_timeout_seconds
+        )
+        if timeout <= 0:
+            raise ValueError("preflight timeout_seconds must be greater than zero")
+        result = run_doctor(strict=False, timeout_seconds=timeout)
+        self._preflight_doctor_result = result
+        return result
+
+    def _require_preflight(
+        self,
+        operation: str,
+        categories: Sequence[str] | str,
+    ) -> PreflightResult | None:
+        if self.preflight_mode == "off":
+            return None
+        required_categories = _preflight_categories(categories)
+        if not required_categories:
+            return None
+        result = self.preflight(required_categories, operation=operation)
+        if self.preflight_mode == "strict" and not result.ok:
+            raise PreflightError(result)
+        return result
+
     def _require_client(self) -> PeekabooXClient:
         if self.client is None:
             raise RuntimeError("AgentRuntime requires a PeekabooXClient for daemon RPC calls")
@@ -1665,6 +1857,170 @@ def _candidate_selectors_for_element(element: UiElement) -> tuple[str, ...]:
     add(bounds)
 
     return tuple(dict.fromkeys(selectors))
+
+
+def _normalize_preflight_mode(value: str | None) -> str:
+    raw = value
+    if raw is None:
+        raw = os.environ.get("PEEKABOOX_PREFLIGHT_MODE", "off")
+    normalized = raw.strip().casefold().replace("_", "-")
+    aliases = {
+        "0": "off",
+        "false": "off",
+        "disabled": "off",
+        "disable": "off",
+        "none": "off",
+        "no": "off",
+        "1": "strict",
+        "true": "strict",
+        "enabled": "strict",
+        "enable": "strict",
+        "on": "strict",
+        "require": "strict",
+        "required": "strict",
+        "block": "strict",
+        "blocking": "strict",
+        "audit": "warn",
+        "warning": "warn",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"off", "warn", "strict"}:
+        raise ValueError("preflight_mode must be off, warn, or strict")
+    return normalized
+
+
+def _preflight_categories(categories: Sequence[str] | str) -> tuple[str, ...]:
+    values = (categories,) if isinstance(categories, str) else tuple(categories)
+    normalized: list[str] = []
+    for value in values:
+        category = value.strip().casefold().replace("_", "-")
+        if not category:
+            raise ValueError("preflight categories must not be empty")
+        if category not in normalized:
+            normalized.append(category)
+    return tuple(normalized)
+
+
+def _preflight_result(
+    doctor: DoctorResult,
+    *,
+    operation: str,
+    required_categories: tuple[str, ...],
+) -> PreflightResult:
+    category_status = {category.name: category.status for category in doctor.categories}
+    category_severity = {category.name: category.severity for category in doctor.categories}
+    blocked: list[str] = []
+    warnings: list[str] = []
+    messages: list[str] = []
+
+    for category in required_categories:
+        status = category_status.get(category)
+        if status is None:
+            blocked.append(category)
+            messages.append(f"{category}: missing doctor category")
+            continue
+        if status == "fail":
+            blocked.append(category)
+            messages.append(f"{category}: {_doctor_category_detail(doctor, category)}")
+        elif status == "warn":
+            warnings.append(category)
+            messages.append(f"{category}: {_doctor_category_detail(doctor, category)}")
+
+    return PreflightResult(
+        operation=operation,
+        required_categories=required_categories,
+        ok=not blocked,
+        blocked_categories=tuple(blocked),
+        warning_categories=tuple(warnings),
+        category_status=category_status,
+        category_severity=category_severity,
+        messages=tuple(messages),
+        doctor_status=doctor.status,
+    )
+
+
+def _doctor_category_detail(doctor: DoctorResult, category: str) -> str:
+    checks = [
+        f"{check.name}={check.status}: {check.detail}"
+        for check in doctor.checks
+        if check.category == category and check.status != "ok"
+    ]
+    if checks:
+        return "; ".join(checks[:3])
+    summary = next((item for item in doctor.categories if item.name == category), None)
+    if summary is None:
+        return "category missing"
+    return summary.status
+
+
+def _preflight_error_message(result: PreflightResult) -> str:
+    categories = ", ".join(result.blocked_categories) or ", ".join(result.required_categories)
+    detail = (
+        "; ".join(result.messages)
+        if result.messages
+        else "doctor reported unavailable support"
+    )
+    return f"preflight blocked {result.operation}: {categories}; {detail}"
+
+
+def _preflight_metadata(result: PreflightResult) -> dict[str, object]:
+    return {
+        "operation": result.operation,
+        "required_categories": list(result.required_categories),
+        "blocked_categories": list(result.blocked_categories),
+        "warning_categories": list(result.warning_categories),
+        "category_status": dict(result.category_status),
+        "category_severity": dict(result.category_severity),
+        "messages": list(result.messages),
+        "doctor_status": result.doctor_status,
+    }
+
+
+def _preflight_recovery(result: PreflightResult) -> dict[str, object]:
+    return {
+        "reason": _preflight_error_message(result),
+        "retryable": False,
+        "next_action": "run_doctor",
+        "preflight": _preflight_metadata(result),
+    }
+
+
+def _workflow_preflight_categories(workflow: Workflow) -> tuple[str, ...]:
+    categories: list[str] = []
+
+    def add(*values: str) -> None:
+        for value in values:
+            if value not in categories:
+                categories.append(value)
+
+    for step in workflow.steps:
+        action = step.action.strip().lower()
+        if action in {"observe", "capture", "capture_screen"}:
+            add("desktop", "capture")
+        elif action == "find_element":
+            add("desktop")
+            if step.vision_fallback:
+                add("capture")
+        elif action == "click":
+            add("input")
+            if step.selector:
+                add("desktop")
+            if step.vision_fallback:
+                add("capture")
+        elif action in {
+            "move",
+            "move_mouse",
+            "drag",
+            "type",
+            "type_text",
+            "paste",
+            "paste_text",
+            "hotkey",
+        }:
+            add("input")
+        elif action in {"list_windows", "get_desktop_state"}:
+            add("desktop")
+    return tuple(categories)
 
 
 def _hotkey_keys(keys: Sequence[str] | str) -> list[str]:

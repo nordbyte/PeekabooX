@@ -28,9 +28,9 @@ The Python side owns agent orchestration:
 - MCP integration through a transport-neutral tool registry and dispatcher bound
   to `AgentRuntime`, with stdio JSON-RPC transport for MCP clients
 - runtime security policy for Python and MCP callers, including granular
-  capability checks, reusable allowlist profiles, optional dangerous-action
-  confirmations, and in-memory plus JSONL audit events layered above
-  daemon-side input permission gates
+  capability checks, Doctor-backed preflight gates, reusable allowlist profiles,
+  optional dangerous-action confirmations, and in-memory plus JSONL audit events
+  layered above daemon-side input permission gates
 - daemon-side emergency stop handling, including a best-effort Linux input
   hotkey listener for `CTRL + ALT + ESC` and backend modifier release on
   shutdown or input failure
