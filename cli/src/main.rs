@@ -282,6 +282,7 @@ struct CaptureDeltaArgs {
     window_id: Option<String>,
     per_channel_threshold: u8,
     low_bandwidth: bool,
+    json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -703,7 +704,11 @@ fn capture_delta(args: Vec<String>, context: &CliContext) -> Result<(), CliError
             "daemon returned unexpected capture delta response".to_owned(),
         ));
     };
-    print_capture_delta_dto(&delta);
+    if args.json {
+        print_json_pretty(&delta)?;
+    } else {
+        print_capture_delta_dto(&delta);
+    }
     Ok(())
 }
 
@@ -714,6 +719,7 @@ fn parse_capture_delta_args(args: Vec<String>) -> Result<CaptureDeltaCommand, Cl
     let mut window_id = None;
     let mut per_channel_threshold = 0_u8;
     let mut low_bandwidth = true;
+    let mut json = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -753,6 +759,7 @@ fn parse_capture_delta_args(args: Vec<String>) -> Result<CaptureDeltaCommand, Cl
             }
             "--low-bandwidth" => low_bandwidth = true,
             "--full-frame" => low_bandwidth = false,
+            "--json" => json = true,
             "--help" | "-h" => return Ok(CaptureDeltaCommand::Help),
             unknown => {
                 return Err(CliError::Failure(format!(
@@ -777,6 +784,7 @@ fn parse_capture_delta_args(args: Vec<String>) -> Result<CaptureDeltaCommand, Cl
         window_id,
         per_channel_threshold,
         low_bandwidth,
+        json,
     }))
 }
 
@@ -5983,7 +5991,7 @@ fn print_capture_usage() {
 
 fn print_capture_delta_usage() {
     println!(
-        "Usage: peekaboox --daemon capture-delta [--stream <id>] [--reset] [--region x,y,width,height | --window-id <id>] [--threshold <0-255>] [--low-bandwidth|--full-frame]"
+        "Usage: peekaboox --daemon capture-delta [--stream <id>] [--reset] [--region x,y,width,height | --window-id <id>] [--threshold <0-255>] [--low-bandwidth|--full-frame] [--json]"
     );
 }
 
@@ -6262,6 +6270,25 @@ mod tests {
                 window_id: None,
                 per_channel_threshold: 3,
                 low_bandwidth: false,
+                json: false,
+            })
+        );
+    }
+
+    #[test]
+    fn capture_delta_accepts_json_output() {
+        let args = parse_capture_delta_args(vec!["--json".to_owned()]).unwrap();
+
+        assert_eq!(
+            args,
+            CaptureDeltaCommand::Run(CaptureDeltaArgs {
+                stream_id: None,
+                reset: false,
+                region: None,
+                window_id: None,
+                per_channel_threshold: 0,
+                low_bandwidth: true,
+                json: true,
             })
         );
     }
@@ -6285,6 +6312,7 @@ mod tests {
                 window_id: Some("window-1".to_owned()),
                 per_channel_threshold: 0,
                 low_bandwidth: true,
+                json: false,
             })
         );
     }

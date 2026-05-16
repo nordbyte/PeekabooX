@@ -31,6 +31,7 @@ accessibility, and input backends:
 ```bash
 bash examples/desktop/live_smoke.sh
 bash examples/desktop/capture_backends_diagnostics.sh
+bash examples/desktop/capture_delta_stream.sh
 bash examples/desktop/windows_inventory.sh
 bash examples/desktop/elements_accessibility_probe.sh
 bash examples/desktop/elements_calculator.sh
@@ -51,6 +52,13 @@ optional DMA-BUF capture paths, and checks the daemon-routed command surface
 through a temporary observe-only `peekabooxd` socket. It writes per-run JSON
 reports and probe output under `target/examples/capture-backends`. Override
 `PEEKABOOX_CAPTURE_BACKENDS_REGION` to change the region probe.
+
+`examples/desktop/capture_delta_stream.sh` starts a temporary observe-only
+daemon and validates `peekaboox --daemon capture-delta --json` across reset
+full-frame captures, follow-up low-bandwidth deltas, forced full-frame requests,
+independent stream state, and region-scoped streams. It writes per-step JSON
+responses under `target/examples/capture-delta`. Override
+`PEEKABOOX_CAPTURE_DELTA_REGION` to change the region stream.
 
 `examples/desktop/paint_draw_and_save.sh` opens a blank PNG in `drawing`,
 `pinta`, or `kolourpaint`, locates the canvas through `peekaboox desktop`,

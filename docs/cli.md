@@ -76,8 +76,10 @@ image bytes.
 
 ## Capture Delta
 
-`capture-delta` keeps previous-frame state per stream and returns a full-frame
-patch first, then only changed rectangles when possible:
+`capture-delta` keeps previous-frame state per daemon stream and returns a
+full-frame patch first, then only changed rectangles when possible. Use `--json`
+when scripts need the sequence, `full_frame`, `capture_region`,
+`changed_bounds`, patch metadata, and backend fields as structured data:
 
 ```bash
 peekaboox --daemon capture-delta --stream agent-loop --threshold 2
@@ -85,6 +87,7 @@ peekaboox --daemon capture-delta --stream agent-loop --window-id window-1
 peekaboox --daemon capture-delta --stream agent-loop --low-bandwidth
 peekaboox --daemon capture-delta --stream agent-loop --full-frame
 peekaboox --daemon capture-delta --stream agent-loop --reset
+peekaboox --daemon capture-delta --stream agent-loop --json
 ```
 
 ## Input Actions
