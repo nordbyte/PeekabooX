@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT_DIR="${1:-${PEEKABOOX_EXAMPLE_OUT:-$ROOT/target/examples/click-calculator-keypad}}"
 RUN_ID="${PEEKABOOX_CLICK_CALCULATOR_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}"
 WINDOWS_JSON="$OUT_DIR/windows-$RUN_ID.json"
+WINDOW_WAIT_JSON="$OUT_DIR/window-wait-$RUN_ID.json"
 BUTTON_JSON="$OUT_DIR/calculator-button-7-$RUN_ID.json"
 SELECTOR_DRY_RUN_JSON="$OUT_DIR/click-selector-button-7-$RUN_ID.json"
 COORDINATE_DRY_RUN_JSON="$OUT_DIR/click-coordinate-button-7-$RUN_ID.json"
@@ -17,6 +18,8 @@ BACKEND="${PEEKABOOX_CLICK_BACKEND:-auto}"
 APP_SCOPE="${PEEKABOOX_CLICK_CALCULATOR_APP_SCOPE:-gnome-calculator}"
 WINDOW_TITLE="${PEEKABOOX_CLICK_CALCULATOR_WINDOW_TITLE:-Calculator}"
 LAUNCH_DELAY="${PEEKABOOX_CLICK_CALCULATOR_LAUNCH_DELAY:-2}"
+WAIT_ATTEMPTS="${PEEKABOOX_CLICK_CALCULATOR_WAIT_ATTEMPTS:-20}"
+WAIT_DELAY="${PEEKABOOX_CLICK_CALCULATOR_WAIT_DELAY:-0.25}"
 BUTTON_7_SELECTOR="role-exact=button,label-exact=7,app=${APP_SCOPE},window-title=${WINDOW_TITLE},min-width=20,min-height=20"
 failures=0
 
@@ -93,6 +96,32 @@ find_calculator_app() {
 launch_calculator_app() {
   local app="$1"
   "$app" >"$CALCULATOR_LOG" 2>&1 &
+}
+
+wait_for_calculator_window() {
+  local attempt
+  for attempt in $(seq 1 "$WAIT_ATTEMPTS"); do
+    if run_peekaboox windows \
+      --app "$APP_SCOPE" \
+      --title "$WINDOW_TITLE" \
+      --limit 1 \
+      --json >"$WINDOW_WAIT_JSON"; then
+      if python3 - "$WINDOW_WAIT_JSON" <<'PY'; then
+import json
+import sys
+
+payload = json.loads(open(sys.argv[1], encoding="utf-8").read())
+windows = payload.get("windows", payload if isinstance(payload, list) else [])
+if not windows:
+    raise SystemExit(1)
+PY
+        return 0
+      fi
+    fi
+    sleep "$WAIT_DELAY"
+  done
+
+  return 1
 }
 
 extract_center_point() {
@@ -195,7 +224,7 @@ run_live_click() {
 
 mkdir -p "$OUT_DIR"
 
-for path in "$WINDOWS_JSON" "$BUTTON_JSON" "$SELECTOR_DRY_RUN_JSON" "$COORDINATE_DRY_RUN_JSON" "$RATIO_DRY_RUN_JSON" "$AFTER_CAPTURE" "$CALCULATOR_LOG"; do
+for path in "$WINDOWS_JSON" "$WINDOW_WAIT_JSON" "$BUTTON_JSON" "$SELECTOR_DRY_RUN_JSON" "$COORDINATE_DRY_RUN_JSON" "$RATIO_DRY_RUN_JSON" "$AFTER_CAPTURE" "$CALCULATOR_LOG"; do
   if [[ -e "$path" ]]; then
     echo "error: refusing to overwrite existing file: $path" >&2
     exit 1
@@ -214,8 +243,7 @@ echo "Click backend: $BACKEND"
 launch_calculator_app "$calculator_app"
 sleep "$LAUNCH_DELAY"
 
-run_step "focus Calculator window" \
-  run_peekaboox desktop focus --app "$APP_SCOPE" --window-title "$WINDOW_TITLE" --no-launch --wait-ms 500
+run_step "wait for Calculator window" wait_for_calculator_window
 run_step "window enumeration after launching Calculator" write_windows_json
 run_step "exact Calculator button lookup" write_button_json
 
