@@ -372,8 +372,14 @@ class FakeClient:
         expected_image: bytes,
         actual_image: bytes,
         region: Rect | None = None,
+        ignore_regions=None,
         per_channel_threshold: int | None = None,
         max_changed_ratio: float | None = None,
+        max_changed_pixels: int | None = None,
+        max_mean_absolute_error: float | None = None,
+        max_channel_delta: int | None = None,
+        size_policy: str | None = None,
+        alpha: str | None = None,
     ) -> VisualDiffResult:
         return VisualDiffResult(
             compared_region=region or Rect(x=0, y=0, width=1, height=1),
@@ -391,15 +397,27 @@ class FakeClient:
         expected_path: str,
         actual_path: str,
         region: Rect | None = None,
+        ignore_regions=None,
         per_channel_threshold: int | None = None,
         max_changed_ratio: float | None = None,
+        max_changed_pixels: int | None = None,
+        max_mean_absolute_error: float | None = None,
+        max_channel_delta: int | None = None,
+        size_policy: str | None = None,
+        alpha: str | None = None,
     ) -> VisualDiffResult:
         return self.compare_images(
             b"expected",
             b"actual",
             region=region,
+            ignore_regions=ignore_regions,
             per_channel_threshold=per_channel_threshold,
             max_changed_ratio=max_changed_ratio,
+            max_changed_pixels=max_changed_pixels,
+            max_mean_absolute_error=max_mean_absolute_error,
+            max_channel_delta=max_channel_delta,
+            size_policy=size_policy,
+            alpha=alpha,
         )
 
     def detect_ui_state(
@@ -800,6 +818,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("app", capture_schema)
         self.assertIn("window_title", capture_schema)
         self.assertIn("title_regex", capture_schema)
+        compare_schema = server.tools["compare_images"].input_schema["properties"]
+        self.assertIn("ignore_regions", compare_schema)
+        self.assertIn("max_changed_pixels", compare_schema)
+        self.assertIn("max_mean_absolute_error", compare_schema)
+        self.assertIn("max_channel_delta", compare_schema)
+        self.assertIn("size_policy", compare_schema)
+        self.assertIn("alpha", compare_schema)
         window_schema = server.tools["list_windows"].input_schema["properties"]
         self.assertIn("title_regex", window_schema)
         self.assertIn("diagnose", window_schema)
@@ -4204,15 +4229,27 @@ class RuntimeTests(unittest.TestCase):
             b"expected",
             b"actual",
             region=Rect(x=0, y=0, width=4, height=3),
+            ignore_regions=(Rect(x=1, y=1, width=2, height=1),),
             per_channel_threshold=3,
             max_changed_ratio=0.01,
+            max_changed_pixels=4,
+            max_mean_absolute_error=16.0,
+            max_channel_delta=200,
+            size_policy="common-region",
+            alpha="compare",
         )
 
         self.assertEqual(stub.request.expected_image, b"expected")
         self.assertEqual(stub.request.actual_image, b"actual")
         self.assertEqual(stub.request.region.width, 4)
+        self.assertEqual(stub.request.ignore_regions[0].width, 2)
         self.assertEqual(stub.request.per_channel_threshold, 3)
         self.assertAlmostEqual(stub.request.max_changed_ratio, 0.01, places=6)
+        self.assertEqual(stub.request.max_changed_pixels, 4)
+        self.assertAlmostEqual(stub.request.max_mean_absolute_error, 16.0, places=6)
+        self.assertEqual(stub.request.max_channel_delta, 200)
+        self.assertEqual(stub.request.size_policy, "common-region")
+        self.assertEqual(stub.request.alpha, "compare")
         self.assertEqual(result.compared_pixels, 12)
         self.assertEqual(result.changed_bounds, Rect(x=1, y=1, width=2, height=1))
         self.assertFalse(result.matches)

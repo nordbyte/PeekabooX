@@ -1461,8 +1461,30 @@ class McpServer:
                         "expected_path": {"type": "string"},
                         "actual_path": {"type": "string"},
                         "region": RECT_SCHEMA,
+                        "ignore_regions": {
+                            "type": "array",
+                            "items": RECT_SCHEMA,
+                            "default": [],
+                        },
                         "per_channel_threshold": {"type": "integer", "minimum": 0},
                         "max_changed_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+                        "max_changed_pixels": {"type": "integer", "minimum": 0},
+                        "max_mean_absolute_error": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 255,
+                        },
+                        "max_channel_delta": {"type": "integer", "minimum": 0, "maximum": 255},
+                        "size_policy": {
+                            "type": "string",
+                            "enum": ["error", "common-region", "resize-actual"],
+                            "default": "error",
+                        },
+                        "alpha": {
+                            "type": "string",
+                            "enum": ["ignore", "compare"],
+                            "default": "ignore",
+                        },
                     },
                     required=["expected_path", "actual_path"],
                 ),
@@ -2171,8 +2193,16 @@ class McpServer:
                 _required_str(arguments, "expected_path"),
                 _required_str(arguments, "actual_path"),
                 region=_optional_rect(arguments, "region"),
+                ignore_regions=_optional_rects(arguments, "ignore_regions"),
                 per_channel_threshold=_optional_int(arguments, "per_channel_threshold"),
                 max_changed_ratio=_optional_float(arguments, "max_changed_ratio"),
+                max_changed_pixels=_optional_int(arguments, "max_changed_pixels"),
+                max_mean_absolute_error=_optional_float(
+                    arguments, "max_mean_absolute_error"
+                ),
+                max_channel_delta=_optional_int(arguments, "max_channel_delta"),
+                size_policy=_optional_string(arguments, "size_policy"),
+                alpha=_optional_string(arguments, "alpha"),
             )
         )
 
@@ -2355,6 +2385,21 @@ def _optional_rect(arguments: dict[str, Any], name: str) -> Rect | None:
         width=int(value["width"]),
         height=int(value["height"]),
     )
+
+
+def _optional_rects(arguments: dict[str, Any], name: str) -> tuple[Rect, ...] | None:
+    value = arguments.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"{name} must be a rectangle array")
+    rects = []
+    for item in value:
+        rect = _optional_rect({name: item}, name)
+        if rect is None:
+            raise ValueError(f"{name} must not contain null rectangles")
+        rects.append(rect)
+    return tuple(rects)
 
 
 def _required_str(arguments: dict[str, Any], name: str) -> str:

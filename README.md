@@ -124,7 +124,7 @@ Shell-native completion generation is not part of the current CLI surface.
 | [windows](docs/cli.md#windows-and-elements) | `--app`, `--title-regex`, `--focused`, `--limit`, `--diagnose`, `--json` | List, filter, and diagnose visible desktop windows |
 | [elements](docs/cli.md#windows-and-elements) | `--selector`, `--role`, `--state`, `--vision-fallback` | Query semantic UI elements |
 | [ocr](docs/cli.md#vision-tools) | `--image`, `--region`, `--window-id`, `--language`, `--psm`, `--json`, `--words` | Run Tesseract-backed OCR |
-| [compare](docs/cli.md#vision-tools) | `--threshold`, `--max-changed-ratio`, `--json` | Compare images or regions |
+| [compare](docs/cli.md#vision-tools) | `--threshold`, `--ignore-region`, `--diff-output`, `--report`, `--json` | Compare images or visual-regression gates |
 | [state](docs/cli.md#vision-tools) | `--image`, `--json` | Classify screen samples as stable, loading, or changing |
 | [vision-elements](docs/cli.md#vision-tools) | `--min-width`, `--max-elements`, `--json` | Detect UI-like regions from pixels |
 | [desktop](docs/cli.md#desktop-helpers) | `profiles`, `focus`, `locate`, `click`, `drag`, `type-into`, `assert` | Use app profiles and named targets |

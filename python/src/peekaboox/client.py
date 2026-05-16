@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from importlib import import_module
 from os import PathLike
 from types import ModuleType
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 
 DEFAULT_GRPC_TARGET = "127.0.0.1:47777"
@@ -493,8 +493,14 @@ class PeekabooXClient:
         expected_image: bytes,
         actual_image: bytes,
         region: Rect | None = None,
+        ignore_regions: Iterable[Rect] | None = None,
         per_channel_threshold: int | None = None,
         max_changed_ratio: float | None = None,
+        max_changed_pixels: int | None = None,
+        max_mean_absolute_error: float | None = None,
+        max_channel_delta: int | None = None,
+        size_policy: str | None = None,
+        alpha: str | None = None,
     ) -> VisualDiffResult:
         request_kwargs: dict[str, Any] = {
             "expected_image": expected_image,
@@ -502,10 +508,25 @@ class PeekabooXClient:
         }
         if region is not None:
             request_kwargs["region"] = _rect_to_proto(self.messages, region)
+        if ignore_regions is not None:
+            request_kwargs["ignore_regions"] = [
+                _rect_to_proto(self.messages, ignore_region)
+                for ignore_region in ignore_regions
+            ]
         if per_channel_threshold is not None:
             request_kwargs["per_channel_threshold"] = per_channel_threshold
         if max_changed_ratio is not None:
             request_kwargs["max_changed_ratio"] = max_changed_ratio
+        if max_changed_pixels is not None:
+            request_kwargs["max_changed_pixels"] = max_changed_pixels
+        if max_mean_absolute_error is not None:
+            request_kwargs["max_mean_absolute_error"] = max_mean_absolute_error
+        if max_channel_delta is not None:
+            request_kwargs["max_channel_delta"] = max_channel_delta
+        if size_policy is not None:
+            request_kwargs["size_policy"] = size_policy
+        if alpha is not None:
+            request_kwargs["alpha"] = alpha
         response = self._call(
             "CompareImages",
             self.messages.CompareImagesRequest(**request_kwargs),
@@ -517,8 +538,14 @@ class PeekabooXClient:
         expected_path: str | PathLike[str],
         actual_path: str | PathLike[str],
         region: Rect | None = None,
+        ignore_regions: Iterable[Rect] | None = None,
         per_channel_threshold: int | None = None,
         max_changed_ratio: float | None = None,
+        max_changed_pixels: int | None = None,
+        max_mean_absolute_error: float | None = None,
+        max_channel_delta: int | None = None,
+        size_policy: str | None = None,
+        alpha: str | None = None,
     ) -> VisualDiffResult:
         with open(expected_path, "rb") as expected_file:
             expected_image = expected_file.read()
@@ -528,8 +555,14 @@ class PeekabooXClient:
             expected_image,
             actual_image,
             region=region,
+            ignore_regions=ignore_regions,
             per_channel_threshold=per_channel_threshold,
             max_changed_ratio=max_changed_ratio,
+            max_changed_pixels=max_changed_pixels,
+            max_mean_absolute_error=max_mean_absolute_error,
+            max_channel_delta=max_channel_delta,
+            size_policy=size_policy,
+            alpha=alpha,
         )
 
     def detect_ui_state(

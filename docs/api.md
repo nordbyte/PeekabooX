@@ -120,7 +120,8 @@ Current gRPC method coverage:
 - `ListWindows`
 - `GetDesktopState` with windows, active-window metadata, and AT-SPI UI elements
 - `OcrScreen` for Tesseract-backed full-screen or region OCR
-- `CompareImages` for image-byte visual diffs with region and tolerance options
+- `CompareImages` for image-byte visual diffs with region, ignore-region,
+  tolerance, size-policy, and alpha options
 - `DetectUiState` for image-sequence stable/loading/changing classification
 - `DetectUiElements` for vision-only UI-region detection from image bytes
 - `ProbeDmaBuf` for the optional DMA-BUF capture/import path
@@ -216,7 +217,14 @@ window_region = runtime.capture_screen(
     app="calculator",
     region=Rect(x=10, y=10, width=220, height=160),
 )
-diff = runtime.compare_image_files("before.png", "after.png", max_changed_ratio=0.01)
+diff = runtime.compare_image_files(
+    "before.png",
+    "after.png",
+    ignore_regions=[Rect(x=10, y=20, width=80, height=24)],
+    max_changed_ratio=0.01,
+    max_changed_pixels=100,
+    size_policy="common-region",
+)
 ui_state = runtime.detect_ui_state_from_image_files(["frame1.png", "frame2.png", "frame3.png"])
 target = runtime.desktop_locate("telegram", "search-input")
 runtime.desktop_click("telegram", "search-input", dry_run=True)
@@ -697,6 +705,7 @@ Visual comparison through the CLI:
 ```bash
 cargo run -q -p peekaboox-cli -- compare before.png after.png
 cargo run -q -p peekaboox-cli -- compare --expected before.png --actual after.png --region 10,20,400,120 --threshold 3 --max-changed-ratio 0.01
+cargo run -q -p peekaboox-cli -- compare before.png after.png --ignore-region 10,20,80,24 --max-changed-pixels 100 --max-mae 2.5 --diff-output diff.png --report diff.json
 cargo run -q -p peekaboox-cli -- --daemon compare before.png after.png
 ```
 
@@ -742,13 +751,18 @@ coordinate space.
 
 `peekaboox-vision` also exposes a frame-based visual comparison foundation:
 
-- `VisualCompareOptions` selects an optional `Rect` region, per-channel pixel
-  threshold, and maximum allowed changed-pixel ratio.
+- `VisualCompareOptions` selects an optional `Rect` region, repeated ignored
+  regions, per-channel pixel threshold, maximum changed-pixel ratio, absolute
+  changed-pixel limit, MAE and max-channel gates, size policy, and alpha mode.
 - `compare_frames(expected, actual, options)` compares `CaptureFrame` values in
-  RGB space across `Rgb8`, `Rgba8`, and `Bgra8`.
+  RGB space across `Rgb8`, `Rgba8`, and `Bgra8` by default. Set alpha mode to
+  `compare` to include the alpha channel.
 - `VisualDiffResult` reports compared pixels, changed pixels, changed ratio,
   mean absolute error, maximum channel delta, changed bounds, and whether the
   frames match the requested tolerance.
+- `write_visual_diff_image_file(expected, actual, output, options)` writes a
+  transparent PNG-compatible diff mask with changed pixels marked red and
+  returns the same `VisualDiffResult`.
 - `incremental_capture_delta(previous, current, sequence, options)` emits an
   initial full-frame patch when no previous frame exists, otherwise emits only a
   densely packed patch for the changed bounds reported by `compare_frames`.
@@ -786,9 +800,11 @@ coordinate space.
   daemon over local IPC with `peekaboox --daemon capture-dmabuf --import ...`.
   The default build keeps the stable frame path on owned CPU bytes and reports
   that optional backend features are disabled.
-- `CompareImages` exposes the same diff result over gRPC using image bytes.
+- `CompareImages` exposes the same diff result over gRPC using image bytes,
+  including ignore regions, absolute metric gates, `size_policy`, and `alpha`.
 - The local daemon IPC and CLI compare image file paths and use the same
-  tolerance fields.
+  tolerance fields. The CLI adds report-oriented conveniences such as
+  `--diff-output`, `--report`, and `--no-fail`.
 
 Small image fixtures live under `tests/fixtures/vision` for regression tests,
 including screen-like PBM fixtures for decoder-backed UI-element detection,

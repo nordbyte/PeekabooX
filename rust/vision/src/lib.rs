@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,16 +25,41 @@ pub struct OcrResult {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VisualCompareOptions {
     pub region: Option<Rect>,
+    pub ignore_regions: Vec<Rect>,
     pub per_channel_threshold: u8,
     pub max_changed_ratio: f32,
+    pub max_changed_pixels: Option<u64>,
+    pub max_mean_absolute_error: Option<f32>,
+    pub max_channel_delta: Option<u8>,
+    pub size_policy: VisualSizePolicy,
+    pub alpha_mode: VisualAlphaMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisualSizePolicy {
+    Error,
+    CommonRegion,
+    ResizeActual,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisualAlphaMode {
+    Ignore,
+    Compare,
 }
 
 impl Default for VisualCompareOptions {
     fn default() -> Self {
         Self {
             region: None,
+            ignore_regions: Vec::new(),
             per_channel_threshold: 0,
             max_changed_ratio: 0.0,
+            max_changed_pixels: None,
+            max_mean_absolute_error: None,
+            max_channel_delta: None,
+            size_policy: VisualSizePolicy::Error,
+            alpha_mode: VisualAlphaMode::Ignore,
         }
     }
 }
@@ -415,6 +441,38 @@ pub fn compare_image_files(
     compare_frames(&expected, &actual, options)
 }
 
+pub fn write_visual_diff_image_file(
+    expected_path: impl AsRef<Path>,
+    actual_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+    options: &VisualCompareOptions,
+) -> Result<VisualDiffResult> {
+    let expected = load_image_file(expected_path)?;
+    let actual = load_image_file(actual_path)?;
+    let (result, image) = compare_frames_internal(&expected, &actual, options, true)?;
+    let image = image.expect("diff image was requested");
+    let output_path = output_path.as_ref();
+    if let Some(parent) = output_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            PeekabooXError::new(format!(
+                "failed to create visual diff output directory {}: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    image.save(output_path).map_err(|error| {
+        PeekabooXError::new(format!(
+            "failed to write visual diff image {}: {error}",
+            output_path.display()
+        ))
+    })?;
+
+    Ok(result)
+}
+
 pub fn compare_image_bytes(
     expected_image: &[u8],
     actual_image: &[u8],
@@ -462,6 +520,7 @@ pub fn detect_ui_state(frames: &[CaptureFrame], options: &UiStateOptions) -> Res
         region: options.region,
         per_channel_threshold: options.per_channel_threshold,
         max_changed_ratio: options.stable_max_changed_ratio,
+        ..VisualCompareOptions::default()
     };
     let mut latest_diff = None;
     let mut stable_transitions = 0_usize;
@@ -575,63 +634,99 @@ pub fn compare_frames(
     actual: &CaptureFrame,
     options: &VisualCompareOptions,
 ) -> Result<VisualDiffResult> {
+    compare_frames_internal(expected, actual, options, false).map(|(result, _)| result)
+}
+
+fn compare_frames_internal(
+    expected: &CaptureFrame,
+    actual: &CaptureFrame,
+    options: &VisualCompareOptions,
+    build_diff_image: bool,
+) -> Result<(VisualDiffResult, Option<RgbaImage>)> {
+    validate_visual_compare_options(options)?;
     validate_frame(expected, "expected")?;
     validate_frame(actual, "actual")?;
-    if expected.width != actual.width || expected.height != actual.height {
-        return Err(PeekabooXError::new(format!(
-            "visual comparison requires matching frame dimensions, got expected {}x{} and actual {}x{}",
-            expected.width, expected.height, actual.width, actual.height
-        )));
-    }
 
-    let region = comparison_region(expected, options.region)?;
+    let prepared = prepare_visual_frames(expected, actual, options)?;
+    validate_ignore_regions(&options.ignore_regions, prepared.region)?;
+
     let mut changed_pixels = 0_u64;
     let mut absolute_error_sum = 0_u64;
     let mut max_channel_delta = 0_u8;
     let mut changed_bounds = ChangedBounds::default();
+    let mut compared_pixels = 0_u64;
+    let channel_count = match options.alpha_mode {
+        VisualAlphaMode::Ignore => 3_u64,
+        VisualAlphaMode::Compare => 4_u64,
+    };
+    let mut diff_image = build_diff_image.then(|| {
+        RgbaImage::from_pixel(
+            prepared.expected.width,
+            prepared.expected.height,
+            Rgba([0, 0, 0, 0]),
+        )
+    });
 
-    for y in region.y..region_end_i32(region.y, region.height)? {
-        for x in region.x..region_end_i32(region.x, region.width)? {
-            let expected_pixel = pixel_rgb(expected, x as u32, y as u32)?;
-            let actual_pixel = pixel_rgb(actual, x as u32, y as u32)?;
-            let deltas = [
-                expected_pixel[0].abs_diff(actual_pixel[0]),
-                expected_pixel[1].abs_diff(actual_pixel[1]),
-                expected_pixel[2].abs_diff(actual_pixel[2]),
-            ];
-            let pixel_max_delta = deltas.into_iter().max().unwrap_or_default();
+    for y in prepared.region.y..region_end_i32(prepared.region.y, prepared.region.height)? {
+        for x in prepared.region.x..region_end_i32(prepared.region.x, prepared.region.width)? {
+            if point_is_ignored(&options.ignore_regions, x, y)? {
+                continue;
+            }
 
-            absolute_error_sum += deltas.into_iter().map(u64::from).sum::<u64>();
+            compared_pixels += 1;
+            let expected_pixel =
+                pixel_compare_channels(&prepared.expected, x as u32, y as u32, options.alpha_mode)?;
+            let actual_pixel =
+                pixel_compare_channels(&prepared.actual, x as u32, y as u32, options.alpha_mode)?;
+            let deltas = (0..usize::try_from(channel_count).unwrap())
+                .map(|index| expected_pixel[index].abs_diff(actual_pixel[index]))
+                .collect::<Vec<_>>();
+            let pixel_max_delta = deltas.iter().copied().max().unwrap_or_default();
+
+            absolute_error_sum += deltas.iter().copied().map(u64::from).sum::<u64>();
             max_channel_delta = max_channel_delta.max(pixel_max_delta);
             if pixel_max_delta > options.per_channel_threshold {
                 changed_pixels += 1;
                 changed_bounds.include(x, y);
+                if let Some(image) = diff_image.as_mut() {
+                    image.put_pixel(x as u32, y as u32, Rgba([255, 0, 0, 255]));
+                }
             }
         }
     }
 
-    let compared_pixels = u64::from(region.width) * u64::from(region.height);
-    let changed_ratio = if compared_pixels == 0 {
-        0.0
-    } else {
-        changed_pixels as f32 / compared_pixels as f32
-    };
-    let mean_absolute_error = if compared_pixels == 0 {
-        0.0
-    } else {
-        absolute_error_sum as f32 / (compared_pixels * 3) as f32
-    };
+    if compared_pixels == 0 {
+        return Err(PeekabooXError::new(
+            "visual comparison compares zero pixels after applying ignore regions",
+        ));
+    }
 
-    Ok(VisualDiffResult {
-        compared_region: region,
-        compared_pixels,
-        changed_pixels,
-        changed_ratio,
-        mean_absolute_error,
-        max_channel_delta,
-        changed_bounds: changed_bounds.into_rect(),
-        matches: changed_ratio <= options.max_changed_ratio,
-    })
+    let changed_ratio = changed_pixels as f32 / compared_pixels as f32;
+    let mean_absolute_error = absolute_error_sum as f32 / (compared_pixels * channel_count) as f32;
+    let matches = changed_ratio <= options.max_changed_ratio
+        && options
+            .max_changed_pixels
+            .is_none_or(|maximum| changed_pixels <= maximum)
+        && options
+            .max_mean_absolute_error
+            .is_none_or(|maximum| mean_absolute_error <= maximum)
+        && options
+            .max_channel_delta
+            .is_none_or(|maximum| max_channel_delta <= maximum);
+
+    Ok((
+        VisualDiffResult {
+            compared_region: prepared.region,
+            compared_pixels,
+            changed_pixels,
+            changed_ratio,
+            mean_absolute_error,
+            max_channel_delta,
+            changed_bounds: changed_bounds.into_rect(),
+            matches,
+        },
+        diff_image,
+    ))
 }
 
 pub fn incremental_capture_delta(
@@ -1834,7 +1929,11 @@ fn required_frame_len(frame: &CaptureFrame, bytes_per_pixel: usize) -> Result<us
 }
 
 fn comparison_region(frame: &CaptureFrame, region: Option<Rect>) -> Result<Rect> {
-    let region = region.unwrap_or_else(|| Rect::new(0, 0, frame.width, frame.height));
+    comparison_region_for_dimensions(frame.width, frame.height, region)
+}
+
+fn comparison_region_for_dimensions(width: u32, height: u32, region: Option<Rect>) -> Result<Rect> {
+    let region = region.unwrap_or_else(|| Rect::new(0, 0, width, height));
     if region.width == 0 || region.height == 0 {
         return Err(PeekabooXError::new(
             "visual comparison region must be non-empty",
@@ -1848,13 +1947,130 @@ fn comparison_region(frame: &CaptureFrame, region: Option<Rect>) -> Result<Rect>
 
     let right = i64::from(region.x) + i64::from(region.width);
     let bottom = i64::from(region.y) + i64::from(region.height);
-    if right > i64::from(frame.width) || bottom > i64::from(frame.height) {
+    if right > i64::from(width) || bottom > i64::from(height) {
         return Err(PeekabooXError::new(
             "visual comparison region exceeds frame bounds",
         ));
     }
 
     Ok(region)
+}
+
+struct PreparedVisualFrames {
+    expected: CaptureFrame,
+    actual: CaptureFrame,
+    region: Rect,
+}
+
+fn validate_visual_compare_options(options: &VisualCompareOptions) -> Result<()> {
+    if !options.max_changed_ratio.is_finite() || !(0.0..=1.0).contains(&options.max_changed_ratio) {
+        return Err(PeekabooXError::new(
+            "max_changed_ratio must be a finite value between 0.0 and 1.0",
+        ));
+    }
+    if options
+        .max_mean_absolute_error
+        .is_some_and(|value| !value.is_finite() || !(0.0..=255.0).contains(&value))
+    {
+        return Err(PeekabooXError::new(
+            "max_mean_absolute_error must be a finite value between 0.0 and 255.0",
+        ));
+    }
+
+    Ok(())
+}
+
+fn prepare_visual_frames(
+    expected: &CaptureFrame,
+    actual: &CaptureFrame,
+    options: &VisualCompareOptions,
+) -> Result<PreparedVisualFrames> {
+    match options.size_policy {
+        VisualSizePolicy::Error => {
+            if expected.width != actual.width || expected.height != actual.height {
+                return Err(PeekabooXError::new(format!(
+                    "visual comparison requires matching frame dimensions, got expected {}x{} and actual {}x{}",
+                    expected.width, expected.height, actual.width, actual.height
+                )));
+            }
+            Ok(PreparedVisualFrames {
+                expected: expected.clone(),
+                actual: actual.clone(),
+                region: comparison_region(expected, options.region)?,
+            })
+        }
+        VisualSizePolicy::CommonRegion => {
+            let common_width = expected.width.min(actual.width);
+            let common_height = expected.height.min(actual.height);
+            let region = if let Some(region) = options.region {
+                comparison_region_for_dimensions(expected.width, expected.height, Some(region))?;
+                comparison_region_for_dimensions(actual.width, actual.height, Some(region))?
+            } else {
+                comparison_region_for_dimensions(common_width, common_height, None)?
+            };
+            Ok(PreparedVisualFrames {
+                expected: expected.clone(),
+                actual: actual.clone(),
+                region,
+            })
+        }
+        VisualSizePolicy::ResizeActual => {
+            let actual = resize_frame(actual, expected.width, expected.height)?;
+            Ok(PreparedVisualFrames {
+                expected: expected.clone(),
+                actual,
+                region: comparison_region(expected, options.region)?,
+            })
+        }
+    }
+}
+
+fn resize_frame(frame: &CaptureFrame, width: u32, height: u32) -> Result<CaptureFrame> {
+    if frame.width == width && frame.height == height {
+        return Ok(frame.clone());
+    }
+    let source = rgba_image_from_frame(frame)?;
+    let resized = imageops::resize(&source, width, height, imageops::FilterType::Nearest);
+
+    Ok(CaptureFrame {
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Rgba8,
+        data: resized.into_raw(),
+    })
+}
+
+fn rgba_image_from_frame(frame: &CaptureFrame) -> Result<RgbaImage> {
+    let mut image = RgbaImage::new(frame.width, frame.height);
+    for y in 0..frame.height {
+        for x in 0..frame.width {
+            image.put_pixel(x, y, Rgba(pixel_rgba(frame, x, y)?));
+        }
+    }
+    Ok(image)
+}
+
+fn validate_ignore_regions(ignore_regions: &[Rect], compared_region: Rect) -> Result<()> {
+    for region in ignore_regions {
+        if region.width == 0 || region.height == 0 {
+            return Err(PeekabooXError::new(
+                "visual comparison ignore regions must be non-empty",
+            ));
+        }
+        if region.x < 0 || region.y < 0 {
+            return Err(PeekabooXError::new(
+                "visual comparison ignore regions must not use negative coordinates",
+            ));
+        }
+        region_end_i32(region.x, region.width)?;
+        region_end_i32(region.y, region.height)?;
+        if !rects_intersect(*region, compared_region) {
+            continue;
+        }
+    }
+
+    Ok(())
 }
 
 fn frame_region_patch(frame: &CaptureFrame, region: Rect) -> Result<(u32, Vec<u8>)> {
@@ -1898,7 +2114,20 @@ fn frame_region_patch(frame: &CaptureFrame, region: Rect) -> Result<(u32, Vec<u8
     Ok((patch_stride, data))
 }
 
-fn pixel_rgb(frame: &CaptureFrame, x: u32, y: u32) -> Result<[u8; 3]> {
+fn pixel_compare_channels(
+    frame: &CaptureFrame,
+    x: u32,
+    y: u32,
+    alpha_mode: VisualAlphaMode,
+) -> Result<[u8; 4]> {
+    let pixel = pixel_rgba(frame, x, y)?;
+    Ok(match alpha_mode {
+        VisualAlphaMode::Ignore => [pixel[0], pixel[1], pixel[2], 0],
+        VisualAlphaMode::Compare => pixel,
+    })
+}
+
+fn pixel_rgba(frame: &CaptureFrame, x: u32, y: u32) -> Result<[u8; 4]> {
     let bytes_per_pixel = bytes_per_pixel(frame.format);
     let offset = usize::try_from(y)
         .ok()
@@ -1916,9 +2145,15 @@ fn pixel_rgb(frame: &CaptureFrame, x: u32, y: u32) -> Result<[u8; 3]> {
         .ok_or_else(|| PeekabooXError::new("pixel offset exceeds frame data"))?;
 
     Ok(match frame.format {
-        PixelFormat::Bgra8 => [pixel[2], pixel[1], pixel[0]],
-        PixelFormat::Rgba8 | PixelFormat::Rgb8 => [pixel[0], pixel[1], pixel[2]],
+        PixelFormat::Bgra8 => [pixel[2], pixel[1], pixel[0], pixel[3]],
+        PixelFormat::Rgba8 => [pixel[0], pixel[1], pixel[2], pixel[3]],
+        PixelFormat::Rgb8 => [pixel[0], pixel[1], pixel[2], 255],
     })
+}
+
+fn pixel_rgb(frame: &CaptureFrame, x: u32, y: u32) -> Result<[u8; 3]> {
+    let pixel = pixel_rgba(frame, x, y)?;
+    Ok([pixel[0], pixel[1], pixel[2]])
 }
 
 fn bytes_per_pixel(format: PixelFormat) -> usize {
@@ -1931,6 +2166,22 @@ fn bytes_per_pixel(format: PixelFormat) -> usize {
 fn region_end_i32(origin: i32, length: u32) -> Result<i32> {
     i32::try_from(i64::from(origin) + i64::from(length))
         .map_err(|_| PeekabooXError::new("visual comparison region overflows i32"))
+}
+
+fn point_is_ignored(ignore_regions: &[Rect], x: i32, y: i32) -> Result<bool> {
+    for region in ignore_regions {
+        if rect_contains_point(*region, x, y)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn rect_contains_point(region: Rect, x: i32, y: i32) -> Result<bool> {
+    let right = region_end_i32(region.x, region.width)?;
+    let bottom = region_end_i32(region.y, region.height)?;
+
+    Ok(x >= region.x && x < right && y >= region.y && y < bottom)
 }
 
 fn capture_to_temp_file(path: &Path) -> Result<()> {
@@ -1985,10 +2236,11 @@ mod tests {
     use super::{
         HeuristicVisionBackend, IncrementalCaptureOptions, OcrBackend, OcrOptions,
         TesseractOcrBackend, UiElementDetectionOptions, UiStateKind, UiStateOptions, VisionBackend,
-        VisualCompareOptions, compare_frames, compare_image_files, detect_ui_elements,
-        detect_ui_elements_from_image_file, detect_ui_state, detect_ui_state_from_image_files,
-        incremental_capture_delta, load_image_file, rect_union, rects_intersect, tesseract_args,
-        tesseract_result_from_tsv,
+        VisualAlphaMode, VisualCompareOptions, VisualSizePolicy, compare_frames,
+        compare_image_files, detect_ui_elements, detect_ui_elements_from_image_file,
+        detect_ui_state, detect_ui_state_from_image_files, incremental_capture_delta,
+        load_image_file, rect_union, rects_intersect, tesseract_args, tesseract_result_from_tsv,
+        write_visual_diff_image_file,
     };
     use peekaboox_core::{CaptureFrame, PixelFormat, Rect};
 
@@ -2173,6 +2425,123 @@ mod tests {
         let diff =
             compare_image_files(&baseline, &changed, &VisualCompareOptions::default()).unwrap();
         assert_eq!(diff.changed_pixels, 2);
+    }
+
+    #[test]
+    fn visual_compare_ignores_repeated_regions() {
+        let baseline = load_fixture_ppm("baseline.ppm");
+        let changed = load_fixture_ppm("changed.ppm");
+        let options = VisualCompareOptions {
+            ignore_regions: vec![Rect::new(1, 1, 1, 1), Rect::new(2, 1, 1, 1)],
+            ..VisualCompareOptions::default()
+        };
+
+        let diff = compare_frames(&baseline, &changed, &options).unwrap();
+
+        assert!(diff.matches);
+        assert_eq!(diff.compared_pixels, 10);
+        assert_eq!(diff.changed_pixels, 0);
+        assert_eq!(diff.changed_bounds, None);
+    }
+
+    #[test]
+    fn visual_compare_applies_absolute_and_metric_gates() {
+        let expected = rgb_frame(1, 1, &[[0, 0, 0]]);
+        let actual = rgb_frame(1, 1, &[[9, 0, 0]]);
+        let options = VisualCompareOptions {
+            max_changed_ratio: 1.0,
+            max_changed_pixels: Some(0),
+            max_mean_absolute_error: Some(1.0),
+            max_channel_delta: Some(8),
+            ..VisualCompareOptions::default()
+        };
+
+        let diff = compare_frames(&expected, &actual, &options).unwrap();
+
+        assert!(!diff.matches);
+        assert_eq!(diff.changed_pixels, 1);
+        assert_eq!(diff.mean_absolute_error, 3.0);
+        assert_eq!(diff.max_channel_delta, 9);
+    }
+
+    #[test]
+    fn visual_compare_can_compare_or_ignore_alpha() {
+        let expected = rgba_frame(1, 1, &[[10, 20, 30, 255]]);
+        let actual = rgba_frame(1, 1, &[[10, 20, 30, 0]]);
+
+        let ignored = compare_frames(&expected, &actual, &VisualCompareOptions::default()).unwrap();
+        let compared = compare_frames(
+            &expected,
+            &actual,
+            &VisualCompareOptions {
+                alpha_mode: VisualAlphaMode::Compare,
+                ..VisualCompareOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert!(ignored.matches);
+        assert_eq!(ignored.changed_pixels, 0);
+        assert!(!compared.matches);
+        assert_eq!(compared.changed_pixels, 1);
+        assert_eq!(compared.max_channel_delta, 255);
+    }
+
+    #[test]
+    fn visual_compare_supports_common_region_size_policy() {
+        let expected = rgb_frame(2, 1, &[[0, 0, 0], [255, 0, 0]]);
+        let actual = rgb_frame(1, 1, &[[0, 0, 0]]);
+        let options = VisualCompareOptions {
+            size_policy: VisualSizePolicy::CommonRegion,
+            ..VisualCompareOptions::default()
+        };
+
+        let diff = compare_frames(&expected, &actual, &options).unwrap();
+
+        assert!(diff.matches);
+        assert_eq!(diff.compared_region, Rect::new(0, 0, 1, 1));
+        assert_eq!(diff.compared_pixels, 1);
+    }
+
+    #[test]
+    fn visual_compare_supports_resize_actual_size_policy() {
+        let expected = solid_rgb_frame(2, 2, [0, 0, 0]);
+        let actual = rgb_frame(1, 1, &[[0, 0, 0]]);
+        let options = VisualCompareOptions {
+            size_policy: VisualSizePolicy::ResizeActual,
+            ..VisualCompareOptions::default()
+        };
+
+        let diff = compare_frames(&expected, &actual, &options).unwrap();
+
+        assert!(diff.matches);
+        assert_eq!(diff.compared_pixels, 4);
+    }
+
+    #[test]
+    fn visual_compare_writes_diff_image() {
+        let baseline = fixture_path("baseline.ppm");
+        let changed = fixture_path("changed.ppm");
+        let output = std::env::temp_dir().join(format!(
+            "peekaboox-vision-diff-{}-{}.png",
+            std::process::id(),
+            super::monotonic_ms()
+        ));
+
+        let diff = write_visual_diff_image_file(
+            &baseline,
+            &changed,
+            &output,
+            &VisualCompareOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(diff.changed_pixels, 2);
+        assert!(output.is_file());
+        let decoded = load_image_file(&output).unwrap();
+        assert_eq!(decoded.width, 4);
+        assert_eq!(decoded.height, 3);
+        let _ = std::fs::remove_file(output);
     }
 
     #[test]
@@ -2526,6 +2895,17 @@ mod tests {
             height,
             stride: width * 3,
             format: PixelFormat::Rgb8,
+            data: pixels.iter().flatten().copied().collect(),
+        }
+    }
+
+    fn rgba_frame(width: u32, height: u32, pixels: &[[u8; 4]]) -> CaptureFrame {
+        assert_eq!(pixels.len(), (width * height) as usize);
+        CaptureFrame {
+            width,
+            height,
+            stride: width * 4,
+            format: PixelFormat::Rgba8,
             data: pixels.iter().flatten().copied().collect(),
         }
     }

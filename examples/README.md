@@ -9,6 +9,7 @@ local smoke tests and CI:
 
 ```bash
 bash examples/cli/vision-smoke.sh
+bash examples/cli/compare_visual_regression.sh
 bash examples/cli/ocr-smoke.sh
 bash examples/cli/agent-preflight-smoke.sh
 PYTHONPATH=python/src python3 examples/python/runtime_smoke.py
@@ -28,6 +29,12 @@ cargo run -q -p peekaboox-cli -- doctor --json
 `examples/cli/vision-smoke.sh` uses the deterministic image fixtures under
 `tests/fixtures/vision`. Set `PEEKABOOX_BIN=/path/to/peekaboox` to test an
 installed or packaged binary instead of the local Cargo fallback.
+
+`examples/cli/compare_visual_regression.sh` exercises the visual regression
+surface on deterministic fixtures: strict failures, tolerated changed-pixel and
+MAE gates, repeatable ignore regions, region-only comparisons, size policies,
+JSON reports, diff-mask output, and `--no-fail` report mode. It writes artifacts
+under `target/examples/compare-visual-regression`.
 
 `examples/cli/ocr-smoke.sh` uses `tests/fixtures/ocr/ocr_sample.png` to test
 Tesseract-backed OCR over an image file, region OCR, JSON block metadata, and

@@ -39,7 +39,8 @@ use peekaboox_ipc::{
 use peekaboox_vision::{
     IncrementalCaptureDelta, IncrementalCaptureOptions, OcrConfig, OcrOptions,
     OcrPreprocessingOptions, OcrResult, TesseractOcrBackend, UiElementDetectionOptions,
-    UiStateKind, UiStateOptions, UiStateResult, VisualCompareOptions, VisualDiffResult,
+    UiStateKind, UiStateOptions, UiStateResult, VisualAlphaMode, VisualCompareOptions,
+    VisualDiffResult, VisualSizePolicy,
 };
 use serde_json::json;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
@@ -1799,18 +1800,39 @@ fn dispatch_request(
             expected_path,
             actual_path,
             region,
+            ignore_regions,
             per_channel_threshold,
             max_changed_ratio,
+            max_changed_pixels,
+            max_mean_absolute_error,
+            max_channel_delta,
+            size_policy,
+            alpha_mode,
+            diff_output,
         } => {
-            let options = visual_compare_options(
-                region.map(Rect::from),
-                u32::from(per_channel_threshold),
-                Some(max_changed_ratio),
-            )
+            let options = visual_compare_options(VisualCompareRequestOptions {
+                region: region.map(Rect::from),
+                ignore_regions: ignore_regions.into_iter().map(Rect::from).collect(),
+                per_channel_threshold: u32::from(per_channel_threshold),
+                max_changed_ratio: Some(max_changed_ratio),
+                max_changed_pixels,
+                max_mean_absolute_error,
+                max_channel_delta: max_channel_delta.map(u32::from),
+                size_policy: Some(size_policy.as_str()),
+                alpha_mode: Some(alpha_mode.as_str()),
+            })
             .map_err(|status| status.message().to_owned())?;
-            let result =
+            let result = if let Some(diff_output) = diff_output {
+                peekaboox_vision::write_visual_diff_image_file(
+                    &expected_path,
+                    &actual_path,
+                    diff_output,
+                    &options,
+                )
+            } else {
                 peekaboox_vision::compare_image_files(&expected_path, &actual_path, &options)
-                    .map_err(|error| error.to_string())?;
+            }
+            .map_err(|error| error.to_string())?;
             Ok(ApiResult::VisualDiff(visual_diff_dto(&result)))
         }
         ApiRequest::DetectUiState {
@@ -2636,6 +2658,7 @@ fn capture_delta_data(
             region: None,
             per_channel_threshold,
             max_changed_ratio: 0.0,
+            ..VisualCompareOptions::default()
         },
     };
     let mut state = incremental_capture_state
@@ -3930,11 +3953,21 @@ fn grpc_compare_images(
         ));
     }
 
-    let options = visual_compare_options(
-        request.region.map(rect_from_proto),
-        request.per_channel_threshold.unwrap_or_default(),
-        request.max_changed_ratio,
-    )?;
+    let options = visual_compare_options(VisualCompareRequestOptions {
+        region: request.region.map(rect_from_proto),
+        ignore_regions: request
+            .ignore_regions
+            .into_iter()
+            .map(rect_from_proto)
+            .collect(),
+        per_channel_threshold: request.per_channel_threshold.unwrap_or_default(),
+        max_changed_ratio: request.max_changed_ratio,
+        max_changed_pixels: request.max_changed_pixels,
+        max_mean_absolute_error: request.max_mean_absolute_error,
+        max_channel_delta: request.max_channel_delta,
+        size_policy: request.size_policy.as_deref(),
+        alpha_mode: request.alpha.as_deref(),
+    })?;
     let result = peekaboox_vision::compare_image_bytes(
         &request.expected_image,
         &request.actual_image,
@@ -4217,24 +4250,75 @@ fn grpc_desktop_assert(
     Ok(proto_desktop_action_response(result))
 }
 
-fn visual_compare_options(
+struct VisualCompareRequestOptions<'a> {
     region: Option<Rect>,
+    ignore_regions: Vec<Rect>,
     per_channel_threshold: u32,
     max_changed_ratio: Option<f32>,
+    max_changed_pixels: Option<u64>,
+    max_mean_absolute_error: Option<f32>,
+    max_channel_delta: Option<u32>,
+    size_policy: Option<&'a str>,
+    alpha_mode: Option<&'a str>,
+}
+
+fn visual_compare_options(
+    input: VisualCompareRequestOptions<'_>,
 ) -> Result<VisualCompareOptions, Status> {
-    let per_channel_threshold = u8::try_from(per_channel_threshold)
+    let per_channel_threshold = u8::try_from(input.per_channel_threshold)
         .map_err(|_| Status::invalid_argument("per_channel_threshold must be between 0 and 255"))?;
-    let max_changed_ratio = max_changed_ratio.unwrap_or_default();
+    let max_channel_delta = input
+        .max_channel_delta
+        .map(|value| {
+            u8::try_from(value).map_err(|_| {
+                Status::invalid_argument("max_channel_delta must be between 0 and 255")
+            })
+        })
+        .transpose()?;
+    let max_changed_ratio = input.max_changed_ratio.unwrap_or_default();
     if !max_changed_ratio.is_finite() || !(0.0..=1.0).contains(&max_changed_ratio) {
         return Err(Status::invalid_argument(
             "max_changed_ratio must be between 0.0 and 1.0",
         ));
     }
+    if input
+        .max_mean_absolute_error
+        .is_some_and(|value| !value.is_finite() || !(0.0..=255.0).contains(&value))
+    {
+        return Err(Status::invalid_argument(
+            "max_mean_absolute_error must be between 0.0 and 255.0",
+        ));
+    }
+    let size_policy = match input.size_policy.unwrap_or("error") {
+        "error" => VisualSizePolicy::Error,
+        "common-region" => VisualSizePolicy::CommonRegion,
+        "resize-actual" => VisualSizePolicy::ResizeActual,
+        value => {
+            return Err(Status::invalid_argument(format!(
+                "size_policy must be error, common-region, or resize-actual, got {value:?}"
+            )));
+        }
+    };
+    let alpha_mode = match input.alpha_mode.unwrap_or("ignore") {
+        "ignore" => VisualAlphaMode::Ignore,
+        "compare" => VisualAlphaMode::Compare,
+        value => {
+            return Err(Status::invalid_argument(format!(
+                "alpha must be ignore or compare, got {value:?}"
+            )));
+        }
+    };
 
     Ok(VisualCompareOptions {
-        region,
+        region: input.region,
+        ignore_regions: input.ignore_regions,
         per_channel_threshold,
         max_changed_ratio,
+        max_changed_pixels: input.max_changed_pixels,
+        max_mean_absolute_error: input.max_mean_absolute_error,
+        max_channel_delta,
+        size_policy,
+        alpha_mode,
     })
 }
 
@@ -5733,15 +5817,29 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             expected_path,
             actual_path,
             region,
+            ignore_regions,
             per_channel_threshold,
             max_changed_ratio,
+            max_changed_pixels,
+            max_mean_absolute_error,
+            max_channel_delta,
+            size_policy,
+            alpha_mode,
+            diff_output,
         } => {
             json!({
                 "expected_path": expected_path,
                 "actual_path": actual_path,
                 "has_region": region.is_some(),
+                "ignore_region_count": ignore_regions.len(),
                 "per_channel_threshold": per_channel_threshold,
-                "max_changed_ratio": max_changed_ratio
+                "max_changed_ratio": max_changed_ratio,
+                "max_changed_pixels": max_changed_pixels,
+                "max_mean_absolute_error": max_mean_absolute_error,
+                "max_channel_delta": max_channel_delta,
+                "size_policy": size_policy,
+                "alpha_mode": alpha_mode,
+                "has_diff_output": diff_output.is_some()
             })
         }
         ApiRequest::DetectUiState {

@@ -298,6 +298,12 @@ message CompareImagesRequest {
   optional Rect region = 3;
   optional uint32 per_channel_threshold = 4;
   optional float max_changed_ratio = 5;
+  repeated Rect ignore_regions = 6;
+  optional uint64 max_changed_pixels = 7;
+  optional float max_mean_absolute_error = 8;
+  optional uint32 max_channel_delta = 9;
+  optional string size_policy = 10;
+  optional string alpha = 11;
 }
 
 message VisualDiffResponse {

@@ -22,8 +22,8 @@ use peekaboox_ipc::{
 };
 use peekaboox_vision::{
     OcrConfig, OcrOptions, OcrPreprocessingOptions, OcrResult, TesseractOcrBackend,
-    UiElementDetectionOptions, UiStateOptions, UiStateResult, VisualCompareOptions,
-    VisualDiffResult,
+    UiElementDetectionOptions, UiStateOptions, UiStateResult, VisualAlphaMode,
+    VisualCompareOptions, VisualDiffResult, VisualSizePolicy,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -465,8 +465,17 @@ struct CompareArgs {
     expected: PathBuf,
     actual: PathBuf,
     region: Option<Rect>,
+    ignore_regions: Vec<Rect>,
     per_channel_threshold: u8,
     max_changed_ratio: f32,
+    max_changed_pixels: Option<u64>,
+    max_mean_absolute_error: Option<f32>,
+    max_channel_delta: Option<u8>,
+    size_policy: VisualSizePolicy,
+    alpha_mode: VisualAlphaMode,
+    diff_output: Option<PathBuf>,
+    report: Option<PathBuf>,
+    no_fail: bool,
     json: bool,
 }
 
@@ -3332,8 +3341,23 @@ fn compare(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 expected_path: args.expected.display().to_string(),
                 actual_path: args.actual.display().to_string(),
                 region: args.region.map(RectDto::from),
+                ignore_regions: args
+                    .ignore_regions
+                    .iter()
+                    .copied()
+                    .map(RectDto::from)
+                    .collect(),
                 per_channel_threshold: args.per_channel_threshold,
                 max_changed_ratio: args.max_changed_ratio,
+                max_changed_pixels: args.max_changed_pixels,
+                max_mean_absolute_error: args.max_mean_absolute_error,
+                max_channel_delta: args.max_channel_delta,
+                size_policy: visual_size_policy_name(args.size_policy).to_owned(),
+                alpha_mode: visual_alpha_mode_name(args.alpha_mode).to_owned(),
+                diff_output: args
+                    .diff_output
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
             },
         )?;
         let ApiResult::VisualDiff(result) = result else {
@@ -3346,26 +3370,59 @@ fn compare(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         } else {
             print_visual_diff_dto(&result);
         }
-        return visual_diff_exit_status(result.matches);
+        if let Some(report) = &args.report {
+            write_json_pretty_file(report, &result)?;
+        }
+        return if args.no_fail {
+            Ok(())
+        } else {
+            visual_diff_exit_status(result.matches)
+        };
     }
 
     let options = visual_compare_options(&args);
-    let result = peekaboox_vision::compare_image_files(&args.expected, &args.actual, &options)
-        .map_err(|error| CliError::Failure(error.to_string()))?;
+    let result = if let Some(diff_output) = &args.diff_output {
+        peekaboox_vision::write_visual_diff_image_file(
+            &args.expected,
+            &args.actual,
+            diff_output,
+            &options,
+        )
+    } else {
+        peekaboox_vision::compare_image_files(&args.expected, &args.actual, &options)
+    }
+    .map_err(|error| CliError::Failure(error.to_string()))?;
+    let result_dto = visual_diff_dto(&result);
     if args.json {
-        print_json_pretty(&visual_diff_dto(&result))?;
+        print_json_pretty(&result_dto)?;
     } else {
         print_visual_diff(&result);
     }
-    visual_diff_exit_status(result.matches)
+    if let Some(report) = &args.report {
+        write_json_pretty_file(report, &result_dto)?;
+    }
+    if args.no_fail {
+        Ok(())
+    } else {
+        visual_diff_exit_status(result.matches)
+    }
 }
 
 fn parse_compare_args(args: Vec<String>) -> Result<CompareCommand, CliError> {
     let mut expected = None;
     let mut actual = None;
     let mut region = None;
+    let mut ignore_regions = Vec::new();
     let mut per_channel_threshold = 0_u8;
     let mut max_changed_ratio = 0.0_f32;
+    let mut max_changed_pixels = None;
+    let mut max_mean_absolute_error = None;
+    let mut max_channel_delta = None;
+    let mut size_policy = VisualSizePolicy::Error;
+    let mut alpha_mode = VisualAlphaMode::Ignore;
+    let mut diff_output = None;
+    let mut report = None;
+    let mut no_fail = false;
     let mut json = false;
     let mut positional = Vec::new();
     let mut index = 0;
@@ -3393,6 +3450,15 @@ fn parse_compare_args(args: Vec<String>) -> Result<CompareCommand, CliError> {
                 };
                 region = Some(parse_rect("--region", value)?);
             }
+            "--ignore-region" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --ignore-region".to_owned(),
+                    ));
+                };
+                ignore_regions.push(parse_rect("--ignore-region", value)?);
+            }
             "--threshold" | "-t" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -3411,6 +3477,64 @@ fn parse_compare_args(args: Vec<String>) -> Result<CompareCommand, CliError> {
                 };
                 max_changed_ratio = parse_unit_f32("--max-changed-ratio", value)?;
             }
+            "--max-changed-pixels" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --max-changed-pixels".to_owned(),
+                    ));
+                };
+                max_changed_pixels = Some(parse_u64("--max-changed-pixels", value)?);
+            }
+            "--max-mae" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --max-mae".to_owned()));
+                };
+                max_mean_absolute_error = Some(parse_visual_mae("--max-mae", value)?);
+            }
+            "--max-channel-delta" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --max-channel-delta".to_owned(),
+                    ));
+                };
+                max_channel_delta = Some(parse_u8("--max-channel-delta", value)?);
+            }
+            "--size-policy" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --size-policy".to_owned(),
+                    ));
+                };
+                size_policy = parse_visual_size_policy(value)?;
+            }
+            "--alpha" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --alpha".to_owned()));
+                };
+                alpha_mode = parse_visual_alpha_mode(value)?;
+            }
+            "--diff-output" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --diff-output".to_owned(),
+                    ));
+                };
+                diff_output = Some(PathBuf::from(value));
+            }
+            "--report" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --report".to_owned()));
+                };
+                report = Some(PathBuf::from(value));
+            }
+            "--no-fail" => no_fail = true,
             "--json" => json = true,
             "--help" | "-h" => return Ok(CompareCommand::Help),
             value if value.starts_with('-') => {
@@ -3452,8 +3576,17 @@ fn parse_compare_args(args: Vec<String>) -> Result<CompareCommand, CliError> {
         expected,
         actual,
         region,
+        ignore_regions,
         per_channel_threshold,
         max_changed_ratio,
+        max_changed_pixels,
+        max_mean_absolute_error,
+        max_channel_delta,
+        size_policy,
+        alpha_mode,
+        diff_output,
+        report,
+        no_fail,
         json,
     }))
 }
@@ -3461,8 +3594,14 @@ fn parse_compare_args(args: Vec<String>) -> Result<CompareCommand, CliError> {
 fn visual_compare_options(args: &CompareArgs) -> VisualCompareOptions {
     VisualCompareOptions {
         region: args.region,
+        ignore_regions: args.ignore_regions.clone(),
         per_channel_threshold: args.per_channel_threshold,
         max_changed_ratio: args.max_changed_ratio,
+        max_changed_pixels: args.max_changed_pixels,
+        max_mean_absolute_error: args.max_mean_absolute_error,
+        max_channel_delta: args.max_channel_delta,
+        size_policy: args.size_policy,
+        alpha_mode: args.alpha_mode,
     }
 }
 
@@ -6107,6 +6246,55 @@ fn parse_unit_f32(name: &str, value: &str) -> Result<f32, CliError> {
     Ok(parsed)
 }
 
+fn parse_visual_mae(name: &str, value: &str) -> Result<f32, CliError> {
+    let parsed = value
+        .parse::<f32>()
+        .map_err(|_| CliError::Failure(format!("{name} must be a float, got {value:?}")))?;
+    if !parsed.is_finite() || !(0.0..=255.0).contains(&parsed) {
+        return Err(CliError::Failure(format!(
+            "{name} must be between 0.0 and 255.0, got {value:?}"
+        )));
+    }
+
+    Ok(parsed)
+}
+
+fn parse_visual_size_policy(value: &str) -> Result<VisualSizePolicy, CliError> {
+    match value {
+        "error" => Ok(VisualSizePolicy::Error),
+        "common-region" => Ok(VisualSizePolicy::CommonRegion),
+        "resize-actual" => Ok(VisualSizePolicy::ResizeActual),
+        _ => Err(CliError::Failure(format!(
+            "--size-policy must be error, common-region, or resize-actual, got {value:?}"
+        ))),
+    }
+}
+
+fn parse_visual_alpha_mode(value: &str) -> Result<VisualAlphaMode, CliError> {
+    match value {
+        "ignore" => Ok(VisualAlphaMode::Ignore),
+        "compare" => Ok(VisualAlphaMode::Compare),
+        _ => Err(CliError::Failure(format!(
+            "--alpha must be ignore or compare, got {value:?}"
+        ))),
+    }
+}
+
+fn visual_size_policy_name(policy: VisualSizePolicy) -> &'static str {
+    match policy {
+        VisualSizePolicy::Error => "error",
+        VisualSizePolicy::CommonRegion => "common-region",
+        VisualSizePolicy::ResizeActual => "resize-actual",
+    }
+}
+
+fn visual_alpha_mode_name(mode: VisualAlphaMode) -> &'static str {
+    match mode {
+        VisualAlphaMode::Ignore => "ignore",
+        VisualAlphaMode::Compare => "compare",
+    }
+}
+
 fn parse_ratio_pair(name: &str, value: &str) -> Result<(f32, f32), CliError> {
     let parts = value
         .split([',', ':', ';', '/'])
@@ -6268,6 +6456,21 @@ fn print_json_pretty(value: &impl serde::Serialize) -> Result<(), CliError> {
     Ok(())
 }
 
+fn write_json_pretty_file(path: &Path, value: &impl serde::Serialize) -> Result<(), CliError> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            CliError::Failure(format!("failed to create {}: {error}", parent.display()))
+        })?;
+    }
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    std::fs::write(path, format!("{json}\n"))
+        .map_err(|error| CliError::Failure(format!("failed to write {}: {error}", path.display())))
+}
+
 fn print_usage() {
     println!(
         "Usage: peekaboox [--daemon] [--socket <path>] <capture|capture-delta|capture-backends|capture-dmabuf|plugins|plugin-call|windows|elements|ocr|compare|state|vision-elements|desktop|doctor|click|move|drag|type|paste|hotkey>"
@@ -6350,7 +6553,7 @@ fn print_ocr_usage() {
 
 fn print_compare_usage() {
     println!(
-        "Usage: peekaboox compare [--expected <path>] [--actual <path>] [--region x,y,width,height] [--threshold 0..255] [--max-changed-ratio 0.0..1.0] [--json]"
+        "Usage: peekaboox compare [--expected <path>] [--actual <path>] [--region x,y,width,height] [--ignore-region x,y,width,height]... [--threshold 0..255] [--max-changed-ratio 0.0..1.0] [--max-changed-pixels <n>] [--max-mae 0..255] [--max-channel-delta 0..255] [--size-policy error|common-region|resize-actual] [--alpha ignore|compare] [--diff-output <path>] [--report <path>] [--no-fail] [--json]"
     );
     println!("       peekaboox compare <expected-path> <actual-path>");
 }
@@ -6447,7 +6650,7 @@ mod tests {
     };
     use peekaboox_core::{Point, Rect};
     use peekaboox_desktop::DesktopAssertion;
-    use peekaboox_vision::{OcrConfig, OcrPreprocessingOptions};
+    use peekaboox_vision::{OcrConfig, OcrPreprocessingOptions, VisualAlphaMode, VisualSizePolicy};
 
     #[test]
     fn capture_defaults_to_screenshot_png() {
@@ -7232,9 +7435,70 @@ mod tests {
                 expected: PathBuf::from("before.png"),
                 actual: PathBuf::from("after.png"),
                 region: Some(Rect::new(10, 20, 300, 80)),
+                ignore_regions: Vec::new(),
                 per_channel_threshold: 4,
                 max_changed_ratio: 0.01,
+                max_changed_pixels: None,
+                max_mean_absolute_error: None,
+                max_channel_delta: None,
+                size_policy: VisualSizePolicy::Error,
+                alpha_mode: VisualAlphaMode::Ignore,
+                diff_output: None,
+                report: None,
+                no_fail: false,
                 json: false
+            })
+        );
+    }
+
+    #[test]
+    fn compare_accepts_visual_regression_options() {
+        let command = parse_compare_args(vec![
+            "--expected".to_owned(),
+            "before.png".to_owned(),
+            "--actual".to_owned(),
+            "after.png".to_owned(),
+            "--ignore-region".to_owned(),
+            "1,2,3,4".to_owned(),
+            "--ignore-region".to_owned(),
+            "5,6,7,8".to_owned(),
+            "--max-changed-pixels".to_owned(),
+            "12".to_owned(),
+            "--max-mae".to_owned(),
+            "3.5".to_owned(),
+            "--max-channel-delta".to_owned(),
+            "9".to_owned(),
+            "--size-policy".to_owned(),
+            "common-region".to_owned(),
+            "--alpha".to_owned(),
+            "compare".to_owned(),
+            "--diff-output".to_owned(),
+            "diff.png".to_owned(),
+            "--report".to_owned(),
+            "report.json".to_owned(),
+            "--no-fail".to_owned(),
+            "--json".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            CompareCommand::Run(CompareArgs {
+                expected: PathBuf::from("before.png"),
+                actual: PathBuf::from("after.png"),
+                region: None,
+                ignore_regions: vec![Rect::new(1, 2, 3, 4), Rect::new(5, 6, 7, 8)],
+                per_channel_threshold: 0,
+                max_changed_ratio: 0.0,
+                max_changed_pixels: Some(12),
+                max_mean_absolute_error: Some(3.5),
+                max_channel_delta: Some(9),
+                size_policy: VisualSizePolicy::CommonRegion,
+                alpha_mode: VisualAlphaMode::Compare,
+                diff_output: Some(PathBuf::from("diff.png")),
+                report: Some(PathBuf::from("report.json")),
+                no_fail: true,
+                json: true
             })
         );
     }

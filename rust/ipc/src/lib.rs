@@ -8,6 +8,14 @@ use serde::{Deserialize, Serialize};
 pub const API_VERSION: &str = "peekaboox.v1";
 pub const DEFAULT_SOCKET_NAME: &str = "peekabooxd.sock";
 
+fn default_visual_size_policy() -> String {
+    "error".to_owned()
+}
+
+fn default_visual_alpha_mode() -> String {
+    "ignore".to_owned()
+}
+
 pub mod proto {
     tonic::include_proto!("peekaboox.v1");
 }
@@ -247,9 +255,24 @@ pub enum ApiRequest {
     CompareImages {
         expected_path: String,
         actual_path: String,
+        #[serde(default)]
         region: Option<RectDto>,
+        #[serde(default)]
+        ignore_regions: Vec<RectDto>,
         per_channel_threshold: u8,
         max_changed_ratio: f32,
+        #[serde(default)]
+        max_changed_pixels: Option<u64>,
+        #[serde(default)]
+        max_mean_absolute_error: Option<f32>,
+        #[serde(default)]
+        max_channel_delta: Option<u8>,
+        #[serde(default = "default_visual_size_policy")]
+        size_policy: String,
+        #[serde(default = "default_visual_alpha_mode")]
+        alpha_mode: String,
+        #[serde(default)]
+        diff_output: Option<String>,
     },
     DetectUiState {
         image_paths: Vec<String>,
@@ -1283,8 +1306,20 @@ mod tests {
                 width: 100,
                 height: 40,
             }),
+            ignore_regions: vec![super::RectDto {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4,
+            }],
             per_channel_threshold: 2,
             max_changed_ratio: 0.01,
+            max_changed_pixels: Some(12),
+            max_mean_absolute_error: Some(2.5),
+            max_channel_delta: Some(16),
+            size_policy: "common-region".to_owned(),
+            alpha_mode: "compare".to_owned(),
+            diff_output: Some("diff.png".to_owned()),
         });
         let payload = serde_json::to_string(&request).unwrap();
 

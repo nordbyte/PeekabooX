@@ -848,16 +848,28 @@ class AgentRuntime:
         expected_image: bytes,
         actual_image: bytes,
         region: Rect | None = None,
+        ignore_regions: Sequence[Rect] | None = None,
         per_channel_threshold: int | None = None,
         max_changed_ratio: float | None = None,
+        max_changed_pixels: int | None = None,
+        max_mean_absolute_error: float | None = None,
+        max_channel_delta: int | None = None,
+        size_policy: str | None = None,
+        alpha: str | None = None,
     ) -> VisualDiffResult:
         self._require_capability(Capability.VISION, "compare_images")
         return self._require_client().compare_images(
-            expected_image,
-            actual_image,
-            region,
-            per_channel_threshold,
-            max_changed_ratio,
+            expected_image=expected_image,
+            actual_image=actual_image,
+            region=region,
+            ignore_regions=ignore_regions,
+            per_channel_threshold=per_channel_threshold,
+            max_changed_ratio=max_changed_ratio,
+            max_changed_pixels=max_changed_pixels,
+            max_mean_absolute_error=max_mean_absolute_error,
+            max_channel_delta=max_channel_delta,
+            size_policy=size_policy,
+            alpha=alpha,
         )
 
     def compare_image_files(
@@ -865,8 +877,14 @@ class AgentRuntime:
         expected_path: str,
         actual_path: str,
         region: Rect | None = None,
+        ignore_regions: Sequence[Rect] | None = None,
         per_channel_threshold: int | None = None,
         max_changed_ratio: float | None = None,
+        max_changed_pixels: int | None = None,
+        max_mean_absolute_error: float | None = None,
+        max_channel_delta: int | None = None,
+        size_policy: str | None = None,
+        alpha: str | None = None,
     ) -> VisualDiffResult:
         self._require_capability(
             Capability.VISION,
@@ -875,11 +893,17 @@ class AgentRuntime:
             actual_path=actual_path,
         )
         return self._require_client().compare_image_files(
-            expected_path,
-            actual_path,
-            region,
-            per_channel_threshold,
-            max_changed_ratio,
+            expected_path=expected_path,
+            actual_path=actual_path,
+            region=region,
+            ignore_regions=ignore_regions,
+            per_channel_threshold=per_channel_threshold,
+            max_changed_ratio=max_changed_ratio,
+            max_changed_pixels=max_changed_pixels,
+            max_mean_absolute_error=max_mean_absolute_error,
+            max_channel_delta=max_channel_delta,
+            size_policy=size_policy,
+            alpha=alpha,
         )
 
     def detect_ui_state(

@@ -236,12 +236,23 @@ Tesseract tuning and preprocessing are exposed through `--psm <0-13>`,
 `--grayscale`, `--threshold <0-255>`, `--invert`, `--contrast`, and
 `--deskew`.
 
-Visual comparison primitives support region diffing and action verification:
+Visual comparison primitives support region diffing, visual-regression gates,
+ignore masks, size policies, and action verification:
 
 ```bash
 peekaboox compare before.png after.png --max-changed-ratio 0.01
-peekaboox --daemon compare --expected before.png --actual after.png --threshold 3
+peekaboox compare before.png after.png --ignore-region 10,20,80,24 --max-changed-pixels 100 --diff-output diff.png --report diff.json
+peekaboox --daemon compare --expected before.png --actual after.png --threshold 3 --size-policy common-region
 ```
+
+`compare` accepts `--region`, repeated `--ignore-region`, `--threshold`,
+`--max-changed-ratio`, `--max-changed-pixels`, `--max-mae`,
+`--max-channel-delta`, `--size-policy error|common-region|resize-actual`,
+`--alpha ignore|compare`, `--diff-output <path>`, `--report <path>`,
+`--no-fail`, and `--json`. The default size policy rejects mismatched image
+dimensions; `common-region` compares the shared top-left area, and
+`resize-actual` scales the actual image to the expected image dimensions before
+comparison.
 
 UI-state detection classifies a sampled screen sequence as stable, loading, or
 changing:

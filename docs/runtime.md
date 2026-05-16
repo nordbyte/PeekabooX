@@ -38,7 +38,14 @@ print(
     ).changed_bounds
 )
 print(runtime.capture_backends(output="screen.png", diagnose=True, probe="frame").probes)
-print(runtime.compare_image_files("before.png", "after.png").matches)
+print(
+    runtime.compare_image_files(
+        "before.png",
+        "after.png",
+        max_changed_ratio=0.01,
+        ignore_regions=[Rect(x=10, y=20, width=80, height=24)],
+    ).matches
+)
 print(runtime.detect_ui_state_from_image_files(["frame1.png", "frame2.png"]).state)
 print(runtime.detect_ui_elements_from_image_file("screenshot.png").elements)
 print(runtime.desktop_locate("telegram", "search-input"))
