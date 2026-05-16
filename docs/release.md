@@ -6,6 +6,7 @@ and Python import metadata:
 - `Cargo.toml` `workspace.package.version`
 - `python/pyproject.toml` `project.version`
 - `python/src/peekaboox/__init__.py` `__version__`
+- `python/src/peekaboox/mcp/server.py` `SERVER_VERSION`
 
 The release tag format is `vVERSION`, for example `v1.0.0`. Each release also
 requires a `CHANGELOG.md` entry using `## VERSION - YYYY-MM-DD`.

@@ -4,6 +4,57 @@ All notable PeekabooX changes are recorded here.
 
 Release entries use `## VERSION - YYYY-MM-DD`. Git tags use `vVERSION`.
 
+## 1.1.0 - 2026-05-16
+
+- 22ee6bc Refresh example smoke coverage list
+- 082d982 Add capture DMA-BUF examples
+- f6ca34f Add Plugin SDK examples
+- 27e9db3 Expand hotkey command surface
+- 3eced4f Expand paste command surface
+- d2e9105 Prefer exact text fallback for type
+- 43431c3 Expand type command surface
+- e2248ea Stabilize click calculator example
+- c98057a Expand click command surface
+- 9234bae Expand drag command surface
+- b9a4608 Fix clippy warnings in input and daemon
+- d0d11fb Add desktop profile daemon parity example
+- 7e9bc78 Expand desktop profile registry API
+- d29c57c Expand move command targets and API surface
+- 3db4930 Expand vision elements options
+- d82d3d2 Expand UI state detection options
+- c8cd4d6 Expand visual compare regression tooling
+- 5c6330b Fix clippy response enum size
+- 720e817 Add capture daemon MCP parity example
+- b02d7cd Expand capture targeting and metadata
+- 568eb82 Complete MCP protocol surface
+- d146195 Add MCP preflight error client example
+- e201be7 Expose preflight MCP error details
+- 21989a0 Audit preflight decisions
+- ad18198 Add agent preflight smoke example
+- 52c620f Expose preflight startup flags
+- 7a652e8 Add doctor preflight gating
+- bdfb495 Categorize doctor diagnostics
+- 3d10c13 Expose doctor diagnostics in runtime MCP
+- d96d5b8 Expose capture backend diagnostics in runtime MCP
+- dd0ef10 Add runtime MCP capture delta examples
+- a1fb296 Add capture delta stream example
+- a780c61 Enhance capture backend diagnostics
+- ba72419 Add windows live smoke example
+- f5c4aac Expose window filters in agent and MCP
+- 837f8d2 Fix windows clippy warnings
+- d5055ea Expand windows query and diagnostics
+- 04960cf Fix Calculator dry-run validation
+- be91538 Add semantic click dry-run to Calculator example
+- fed6230 Add real Calculator elements example
+- 7cc6a3a Avoid AT-SPI extents on non-components
+- 3bf7d7d Expand elements lookup controls
+- 91686a5 Add desktop OCR example
+- f4059d0 Relax OCR smoke heading match
+- 283251e Expand OCR controls and examples
+- f8d8f29 Separate README badges from intro text
+- a6e7676 Add README banner and MIT license
+- d756343 Reorganize README and move usage docs
+
 ## 1.0.1 - 2026-05-15
 
 - e6f3742 Add desktop scoping, verification, and diagnostics

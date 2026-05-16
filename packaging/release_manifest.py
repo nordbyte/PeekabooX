@@ -28,6 +28,7 @@ class VersionSet:
     cargo: str
     python_project: str
     python_package: str
+    mcp_server: str
 
     @property
     def values(self) -> dict[str, str]:
@@ -35,6 +36,7 @@ class VersionSet:
             "cargo_workspace": self.cargo,
             "python_project": self.python_project,
             "python_package": self.python_package,
+            "mcp_server": self.mcp_server,
         }
 
     @property
@@ -138,7 +140,13 @@ def read_versions() -> VersionSet:
     cargo = read_cargo_workspace_version()
     python_project = read_pyproject_version()
     python_package = read_python_package_version()
-    return VersionSet(cargo=cargo, python_project=python_project, python_package=python_package)
+    mcp_server = read_mcp_server_version()
+    return VersionSet(
+        cargo=cargo,
+        python_project=python_project,
+        python_package=python_package,
+        mcp_server=mcp_server,
+    )
 
 
 def read_cargo_workspace_version() -> str:
@@ -166,6 +174,18 @@ def read_python_package_version() -> str:
     )
     if match is None:
         raise ValueError("missing __version__ in python/src/peekaboox/__init__.py")
+    return match.group(1)
+
+
+def read_mcp_server_version() -> str:
+    server = REPO_ROOT / "python" / "src" / "peekaboox" / "mcp" / "server.py"
+    match = re.search(
+        r'^SERVER_VERSION\s*=\s*["\']([^"\']+)["\']',
+        server.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if match is None:
+        raise ValueError("missing SERVER_VERSION in python/src/peekaboox/mcp/server.py")
     return match.group(1)
 
 
