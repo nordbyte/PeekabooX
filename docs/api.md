@@ -136,8 +136,10 @@ Current gRPC method coverage:
   returns `schema_version`, `count`, aliases, desktop ids, full launch commands
   with arguments, per-target capabilities, and optional availability fields.
   The action helpers accept optional `window_title` or `window_id` scoping;
-  mutating helper actions also accept `verify` to run a post-action guard
-  before returning.
+  live `DesktopClick`, `DesktopDrag`, and `DesktopTypeInto` requests focus the
+  scoped app/window before resolving coordinates unless `dry_run` or an offline
+  image is used. Mutating helper actions also accept `verify` to run a
+  post-action guard before returning.
 
 Supported `FindElement` selector forms:
 

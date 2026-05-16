@@ -84,6 +84,10 @@ runtime.hotkey(
 )
 ```
 
+Live desktop helper actions focus the target app/window before resolving target
+coordinates. `dry_run=True` and offline image-based calls skip that focus step so
+preview and screenshot-analysis workflows stay side-effect free.
+
 The Python runtime and MCP tool surface share granular capability profiles:
 `observe`, `plan`, `assist`, and `operator`. Denied capabilities raise
 `CapabilityDeniedError` in Python and return MCP tool errors for JSON-RPC

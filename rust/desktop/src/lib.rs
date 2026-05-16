@@ -12,6 +12,7 @@ use peekaboox_input::MouseButton;
 
 const DEFAULT_FOCUS_WAIT_MS: u64 = 1_000;
 const DEFAULT_OVERVIEW_WAIT_MS: u64 = 800;
+const ACTION_FOCUS_OVERVIEW_WAIT_MS: u64 = 1_000;
 const TELEGRAM_PROFILE_ID: &str = "telegram";
 const TELEGRAM_SEARCH_NAME: &str = "Telegram";
 const TELEGRAM_DESKTOP_IDS: &[&str] = &[
@@ -739,6 +740,21 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
             last_result = Some(unconfirmed_focus_result(result, profile, window_scope));
         }
 
+        if let Ok(detail) = focus_from_gnome_dock(profile) {
+            let result = DesktopActionResult {
+                app: profile.id.to_owned(),
+                action: "focus".to_owned(),
+                detail,
+                backend_name: "gnome-dock".to_owned(),
+                verified: false,
+                verification_detail: None,
+            };
+            if let Some(result) = confirmed_focus_result(&result, options, profile, window_scope) {
+                return Ok(result);
+            }
+            last_result = Some(unconfirmed_focus_result(result, profile, window_scope));
+        }
+
         if options.use_gnome_overview && focus_from_gnome_overview(profile, options).is_ok() {
             let result = DesktopActionResult {
                 app: profile.id.to_owned(),
@@ -880,6 +896,7 @@ pub fn click_target(
     target: &str,
     options: &ClickOptions,
 ) -> Result<DesktopActionResult> {
+    let focus = focus_before_live_action(app, &options.locate, options.dry_run)?;
     let resolved = locate_target(app, target, &options.locate)?;
     if options.dry_run {
         return Ok(DesktopActionResult {
@@ -902,12 +919,15 @@ pub fn click_target(
     let result = DesktopActionResult {
         app: resolved.app,
         action: "click".to_owned(),
-        detail: format!(
-            "clicked {} at {},{} via {}",
-            resolved.target,
-            resolved.point.x,
-            resolved.point.y,
-            resolved.source.label()
+        detail: action_detail_with_focus(
+            focus.as_ref(),
+            format!(
+                "clicked {} at {},{} via {}",
+                resolved.target,
+                resolved.point.x,
+                resolved.point.y,
+                resolved.source.label()
+            ),
         ),
         backend_name: metadata.backend_name,
         verified: false,
@@ -931,6 +951,7 @@ pub fn drag_target(
     target: &str,
     options: &DesktopDragOptions,
 ) -> Result<DesktopActionResult> {
+    let focus = focus_before_live_action(app, &options.locate, options.dry_run)?;
     let resolved = locate_target(app, target, &options.locate)?;
     let rect = resolved.rect.ok_or_else(|| {
         PeekabooXError::new(format!(
@@ -963,14 +984,17 @@ pub fn drag_target(
     let result = DesktopActionResult {
         app: resolved.app,
         action: "drag".to_owned(),
-        detail: format!(
-            "dragged {} from {},{} to {},{} via {}",
-            resolved.target,
-            from.x,
-            from.y,
-            to.x,
-            to.y,
-            resolved.source.label()
+        detail: action_detail_with_focus(
+            focus.as_ref(),
+            format!(
+                "dragged {} from {},{} to {},{} via {}",
+                resolved.target,
+                from.x,
+                from.y,
+                to.x,
+                to.y,
+                resolved.source.label()
+            ),
         ),
         backend_name: metadata.backend_name,
         verified: false,
@@ -996,6 +1020,7 @@ pub fn type_into_target(
     options: &TypeIntoOptions,
 ) -> Result<DesktopActionResult> {
     let profile = resolve_profile(app)?;
+    let focus = focus_before_live_action(app, &options.locate, options.dry_run)?;
     let resolved = locate_target(app, target, &options.locate)?;
     if options.dry_run {
         return Ok(DesktopActionResult {
@@ -1024,7 +1049,7 @@ pub fn type_into_target(
     let result = DesktopActionResult {
         app: resolved.app,
         action: "type-into".to_owned(),
-        detail: format!("typed into {}", resolved.target),
+        detail: action_detail_with_focus(focus.as_ref(), format!("typed into {}", resolved.target)),
         backend_name: metadata.backend_name,
         verified: false,
         verification_detail: None,
@@ -1163,6 +1188,41 @@ fn maybe_verify_action(
     Ok(result)
 }
 
+fn focus_before_live_action(
+    app: &str,
+    locate: &LocateOptions,
+    dry_run: bool,
+) -> Result<Option<DesktopActionResult>> {
+    if !should_focus_before_live_action(locate, dry_run) {
+        return Ok(None);
+    }
+    focus_app(app, &focus_options_for_live_action(locate)).map(Some)
+}
+
+fn should_focus_before_live_action(locate: &LocateOptions, dry_run: bool) -> bool {
+    !dry_run && locate.image.is_none()
+}
+
+fn focus_options_for_live_action(locate: &LocateOptions) -> FocusOptions {
+    FocusOptions {
+        overview_wait_ms: ACTION_FOCUS_OVERVIEW_WAIT_MS,
+        window_title: locate.window_title.clone(),
+        window_id: locate.window_id.clone(),
+        verify: true,
+        ..Default::default()
+    }
+}
+
+fn action_detail_with_focus(focus: Option<&DesktopActionResult>, action_detail: String) -> String {
+    match focus {
+        Some(focus) => format!(
+            "{action_detail}; focus {} via {}",
+            focus.detail, focus.backend_name
+        ),
+        None => action_detail,
+    }
+}
+
 fn confirmed_focus_result(
     result: &DesktopActionResult,
     options: &FocusOptions,
@@ -1263,6 +1323,70 @@ fn focus_window_via_accessibility(window: &WindowInfo) -> Result<String> {
             format!(": {}", errors.join("; "))
         }
     )))
+}
+
+fn focus_from_gnome_dock(profile: &AppProfile) -> Result<String> {
+    let metadata = peekaboox_accessibility::semantic_tree()?;
+    let Some((label, point)) = gnome_dock_focus_candidate(profile, &metadata.elements) else {
+        return Err(PeekabooXError::new(format!(
+            "could not find GNOME dock entry for {}",
+            profile.id
+        )));
+    };
+    let input = peekaboox_input::click(point, MouseButton::Left)?;
+    Ok(format!(
+        "clicked GNOME dock entry {} at {},{} via {}",
+        label, point.x, point.y, input.backend_name
+    ))
+}
+
+fn gnome_dock_focus_candidate(
+    profile: &AppProfile,
+    elements: &[UiElement],
+) -> Option<(String, Point)> {
+    elements
+        .iter()
+        .filter(|element| {
+            element
+                .app_id
+                .as_deref()
+                .is_some_and(|app_id| app_id.eq_ignore_ascii_case("gnome-shell"))
+                && element.role.eq_ignore_ascii_case("label")
+        })
+        .filter_map(|element| {
+            let label = element.label.as_deref()?;
+            if !profile_matches_dock_label(profile, label) {
+                return None;
+            }
+            gnome_dock_icon_point_from_label(element.bounds).map(|point| (label.to_owned(), point))
+        })
+        .min_by_key(|(_, point)| (point.x, point.y))
+}
+
+fn profile_matches_dock_label(profile: &AppProfile, label: &str) -> bool {
+    contains_case_insensitive(label, profile.search_name)
+        || profile
+            .aliases
+            .iter()
+            .chain(profile.desktop_ids.iter())
+            .any(|alias| contains_case_insensitive(label, alias))
+}
+
+fn gnome_dock_icon_point_from_label(label: Rect) -> Option<Point> {
+    if label.width == 0 || label.height == 0 {
+        return None;
+    }
+
+    // Ubuntu Dock exposes a text label just to the right of the left-side icon.
+    // The label's vertical center aligns with the icon center.
+    if (48..=240).contains(&label.x) {
+        return Some(Point::new(
+            (label.x / 2).clamp(16, 48),
+            label.y + i32::try_from(label.height / 2).ok()?,
+        ));
+    }
+
+    None
 }
 
 fn accessibility_focus_candidate_ids(window: &WindowInfo, elements: &[UiElement]) -> Vec<String> {
@@ -2684,6 +2808,114 @@ mod tests {
         .unwrap();
 
         assert_eq!(selected.id, "second");
+    }
+
+    #[test]
+    fn live_actions_focus_before_locating_only_for_real_screen_actions() {
+        let locate = LocateOptions::default();
+        assert!(should_focus_before_live_action(&locate, false));
+        assert!(!should_focus_before_live_action(&locate, true));
+
+        let image_locate = LocateOptions {
+            image: Some(PathBuf::from("screen.png")),
+            ..Default::default()
+        };
+        assert!(!should_focus_before_live_action(&image_locate, false));
+    }
+
+    #[test]
+    fn live_action_focus_options_preserve_window_scope_and_verify() {
+        let locate = LocateOptions {
+            window_title: Some("draft.txt".to_owned()),
+            window_id: Some("window-42".to_owned()),
+            ..Default::default()
+        };
+
+        let options = focus_options_for_live_action(&locate);
+
+        assert!(options.use_gnome_overview);
+        assert!(options.launch_if_needed);
+        assert!(options.verify);
+        assert_eq!(options.overview_wait_ms, ACTION_FOCUS_OVERVIEW_WAIT_MS);
+        assert_eq!(options.window_title.as_deref(), Some("draft.txt"));
+        assert_eq!(options.window_id.as_deref(), Some("window-42"));
+    }
+
+    #[test]
+    fn action_detail_includes_focus_context_when_available() {
+        let detail = action_detail_with_focus(
+            Some(&DesktopActionResult {
+                app: "text-editor".to_owned(),
+                action: "focus".to_owned(),
+                detail: "already focused".to_owned(),
+                backend_name: "at-spi".to_owned(),
+                verified: true,
+                verification_detail: Some("window focused".to_owned()),
+            }),
+            "typed into document".to_owned(),
+        );
+
+        assert_eq!(
+            detail,
+            "typed into document; focus already focused via at-spi"
+        );
+        assert_eq!(
+            action_detail_with_focus(None, "clicked target".to_owned()),
+            "clicked target"
+        );
+    }
+
+    #[test]
+    fn gnome_dock_focus_candidate_maps_left_dock_label_to_icon_center() {
+        let elements = vec![
+            UiElement {
+                id: "chrome-label".to_owned(),
+                role: "label".to_owned(),
+                label: Some("Google Chrome".to_owned()),
+                bounds: Rect::new(69, 250, 130, 32),
+                center: Some(Point::new(134, 266)),
+                confidence: 1.0,
+                states: Vec::new(),
+                window_id: Some("gnome-shell".to_owned()),
+                window_title: None,
+                app_id: Some("gnome-shell".to_owned()),
+                parent_id: None,
+                child_ids: Vec::new(),
+            },
+            UiElement {
+                id: "text-editor-label".to_owned(),
+                role: "label".to_owned(),
+                label: Some("Text Editor".to_owned()),
+                bounds: Rect::new(69, 573, 99, 32),
+                center: Some(Point::new(118, 589)),
+                confidence: 1.0,
+                states: Vec::new(),
+                window_id: Some("gnome-shell".to_owned()),
+                window_title: None,
+                app_id: Some("gnome-shell".to_owned()),
+                parent_id: None,
+                child_ids: Vec::new(),
+            },
+            UiElement {
+                id: "menu-label".to_owned(),
+                role: "label".to_owned(),
+                label: Some("Open Text Editor".to_owned()),
+                bounds: Rect::new(1_633, 54, 120, 18),
+                center: Some(Point::new(1_693, 63)),
+                confidence: 1.0,
+                states: vec!["visible".to_owned()],
+                window_id: Some("gnome-shell".to_owned()),
+                window_title: None,
+                app_id: Some("gnome-shell".to_owned()),
+                parent_id: None,
+                child_ids: Vec::new(),
+            },
+        ];
+
+        assert_eq!(
+            gnome_dock_focus_candidate(&TEXT_EDITOR_PROFILE, &elements),
+            Some(("Text Editor".to_owned(), Point::new(34, 589)))
+        );
     }
 
     #[test]

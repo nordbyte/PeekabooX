@@ -215,14 +215,17 @@ Text Editor's `document`.
 Pass `--window-id <id>` or `--window-title <text>` to `desktop focus`,
 `locate`, `click`, `drag`, `type-into`, or `assert` when an action must target
 one specific window instead of the currently focused matching app. Mutating
-desktop helper actions accept `--verify` to run a postcondition check after the
-action. `desktop profiles --json` exposes the built-in app/target registry for
-scripts and plugin authors, including `schema_version`, `count`, full launch
-commands with arguments, per-target capability metadata, and optional
-availability checks. Filter it with `--app`, `--target`, `--command`,
-`--desktop-id`, `--supports`, `--installed`, or `--available`; use
-`--availability`/`--check` to annotate commands and desktop ids without
-filtering.
+desktop helper actions (`click`, `drag`, and `type-into`) first focus the
+target app/window through the same safe focus path before resolving live
+coordinates. `--dry-run` and `--image` keep this focus step disabled so previews
+and offline screenshot analysis remain side-effect free. Mutating desktop
+helper actions accept `--verify` to run a postcondition check after the action.
+`desktop profiles --json` exposes the built-in app/target registry for scripts
+and plugin authors, including `schema_version`, `count`, full launch commands
+with arguments, per-target capability metadata, and optional availability
+checks. Filter it with `--app`, `--target`, `--command`, `--desktop-id`,
+`--supports`, `--installed`, or `--available`; use `--availability`/`--check` to
+annotate commands and desktop ids without filtering.
 
 The same desktop-helper surface is exposed through daemon JSON IPC, gRPC,
 `PeekabooXClient`, `AgentRuntime`, and MCP tools: `desktop_focus`,
