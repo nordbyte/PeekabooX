@@ -381,6 +381,7 @@ Plugins use the declarative SDK manifest `peekaboox.plugin.json`:
 peekaboox plugins --path examples/plugins
 peekaboox plugins --path examples/plugins --json
 peekaboox plugin-call org.peekaboox.examples.system-info system_info.uname --path examples/plugins --json
+examples/cli/plugins_system_info.sh
 ```
 
 See [docs/plugins.md](plugins.md) and `examples/plugins/system-info`.

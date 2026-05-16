@@ -51,6 +51,7 @@ directory, or a directory containing multiple plugin directories.
 peekaboox plugins --path examples/plugins
 peekaboox plugins --path examples/plugins --json
 peekaboox plugin-call org.peekaboox.examples.system-info system_info.uname --path examples/plugins --json
+examples/cli/plugins_system_info.sh
 peekabooxd run --plugin-path examples/plugins
 peekaboox --daemon plugins
 peekaboox --daemon plugin-call org.peekaboox.examples.system-info system_info.uname
@@ -73,6 +74,9 @@ MCP exposes `list_plugins` with an optional `paths` array. It also exposes
 `call_plugin_tool` with `plugin_id`, `tool`, optional `arguments`, optional
 `paths`, optional `timeout_seconds`, and optional `max_output_bytes`. Python and
 MCP execution is gated by the `plugin_execute` runtime capability.
+Use `examples/python/plugins_runtime.py` and `examples/mcp/jsonrpc_plugins.sh`
+to validate the same discovery and execution path through the Python runtime
+and MCP JSON-RPC.
 
 ## Execution Safety
 
@@ -90,3 +94,5 @@ stdout/stderr are truncated to `max_output_bytes` before being surfaced.
 `plugin.py` demonstrates the process contract: JSON request on stdin, JSON
 response on stdout, and non-zero exit code on tool errors. The request includes
 `schema_version`, `plugin_id`, `tool`, and `arguments`.
+The dedicated CLI, Python, and MCP examples exercise this plugin end to end
+without mutating the desktop.

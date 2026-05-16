@@ -68,6 +68,12 @@ hotkey backend, delay, restore delay, and restore-policy options.
 mode with backend selection, timing, repeats, modifier release, JSON output,
 alias normalization, and the `--` separator for dash-prefixed key names.
 
+`examples/cli/plugins_system_info.sh` validates the Plugin SDK CLI surface. It
+discovers `examples/plugins/system-info` from both the plugin directory and the
+manifest path, checks the declared tool schema, executes
+`system_info.uname` through `peekaboox plugin-call`, and writes JSON artifacts
+under `target/examples/plugins-system-info`.
+
 `examples/python/doctor_runtime.py` and `examples/mcp/jsonrpc_doctor.sh` run the
 same structured environment diagnostics through `AgentRuntime.doctor(...)` and
 MCP JSON-RPC `tools/call`. They validate per-check categories, severities, and
@@ -80,6 +86,9 @@ client and `dry_run=True`.
 `examples/python/hotkey_runtime.py` checks the Python runtime and workflow
 surface for `hotkey`, including normalized aliases, dry-runs, backend/timing
 options, repeats, and modifier release flags.
+`examples/python/plugins_runtime.py` checks Plugin SDK discovery and execution
+through `AgentRuntime.list_plugins(...)` and `AgentRuntime.call_plugin_tool(...)`
+with explicit plugin paths and bounded output.
 `examples/mcp/jsonrpc_preflight.sh` uses those Doctor categories through the MCP
 `preflight` tool before a capture-style operation.
 `examples/mcp/jsonrpc_preflight_error_client.sh` injects a deterministic Doctor
@@ -97,6 +106,9 @@ policy fields, with an optional live dry-run call when
 `PEEKABOOX_MCP_PASTE_LIVE=1`. `jsonrpc_hotkey.sh` verifies the MCP `hotkey`
 schema for backend selection, timing, repeats, dry-run, and modifier release
 fields, with an optional dry-run daemon call when `PEEKABOOX_MCP_HOTKEY_LIVE=1`.
+`jsonrpc_plugins.sh` validates the MCP `list_plugins` and `call_plugin_tool`
+schemas, discovers the system-info example plugin, and executes its read-only
+tool through JSON-RPC.
 
 ## Live desktop examples
 
