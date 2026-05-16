@@ -18,7 +18,7 @@ from peekaboox.agent.runtime import (
     WINDOW_BACKEND_CHOICES,
     WINDOW_SORT_CHOICES,
 )
-from peekaboox.client import Rect
+from peekaboox.client import DEFAULT_GRPC_TIMEOUT_SECONDS, Rect
 from peekaboox.security import (
     KNOWN_CAPABILITY_PROFILES,
     CapabilityPolicy,
@@ -3299,6 +3299,7 @@ def create_server(
     plugin_paths: tuple[str | os.PathLike[str], ...] = (),
     preflight_mode: str | None = None,
     preflight_timeout_seconds: float = 30.0,
+    client_timeout_seconds: float | None = None,
 ) -> McpServer:
     runtime = None
     if connect:
@@ -3312,6 +3313,7 @@ def create_server(
             plugin_paths=plugin_paths,
             preflight_mode=preflight_mode,
             preflight_timeout_seconds=preflight_timeout_seconds,
+            client_timeout_seconds=client_timeout_seconds,
         )
     else:
         audit_logger = (
@@ -3393,6 +3395,12 @@ def main() -> None:
         help="maximum seconds to wait for preflight Doctor checks",
     )
     parser.add_argument(
+        "--grpc-timeout",
+        type=_positive_float,
+        default=_env_positive_float("PEEKABOOX_GRPC_TIMEOUT", DEFAULT_GRPC_TIMEOUT_SECONDS),
+        help="maximum seconds to wait for each daemon gRPC call",
+    )
+    parser.add_argument(
         "--plugin-path",
         action="append",
         default=[],
@@ -3409,6 +3417,7 @@ def main() -> None:
             plugin_paths=tuple(args.plugin_path),
             preflight_mode=args.preflight_mode,
             preflight_timeout_seconds=args.preflight_timeout,
+            client_timeout_seconds=args.grpc_timeout,
         )
     except ImportError:
         server = create_server(
@@ -3419,6 +3428,7 @@ def main() -> None:
             plugin_paths=tuple(args.plugin_path),
             preflight_mode=args.preflight_mode,
             preflight_timeout_seconds=args.preflight_timeout,
+            client_timeout_seconds=args.grpc_timeout,
         )
     if args.list_tools:
         print("peekaboox-mcp tools:", ", ".join(tool["name"] for tool in server.list_tools()))

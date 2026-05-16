@@ -457,6 +457,7 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --audit-log runtime-audit.jsonl
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --capability-profile observe
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --preflight-mode strict
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --grpc-timeout 15
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport http --port 47778
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport sse --port 47778
 ```
@@ -495,6 +496,8 @@ checks for MCP sessions. Set `--capability-profile`,
 reusable runtime allowlist to MCP tool calls.
 Set `--preflight-mode off|warn|strict` and `--preflight-timeout <seconds>` to
 enable Doctor-backed preflight checks directly at MCP server startup.
+Set `--grpc-timeout` or `PEEKABOOX_GRPC_TIMEOUT` when desktop focus or launch
+actions need more time than the default daemon RPC deadline.
 
 MCP resources expose server state, tool descriptors, desktop profile metadata,
 latest Doctor/preflight state, desktop graph status/snapshots, plugin discovery,

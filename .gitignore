@@ -23,6 +23,7 @@ venv/
 .env.*
 .direnv/
 .nordrelay/
+.clawpatch/
 
 *.log
 *.tmp

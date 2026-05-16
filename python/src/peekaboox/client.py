@@ -9,6 +9,7 @@ from typing import Any, Iterable, Sequence
 
 
 DEFAULT_GRPC_TARGET = "127.0.0.1:47777"
+DEFAULT_GRPC_TIMEOUT_SECONDS = 15.0
 
 
 class MissingGrpcDependencyError(ImportError):
@@ -385,7 +386,7 @@ class PeekabooXClient:
     """Synchronous Python client for the local PeekabooX daemon gRPC API."""
 
     target: str = DEFAULT_GRPC_TARGET
-    timeout_seconds: float = 5.0
+    timeout_seconds: float = DEFAULT_GRPC_TIMEOUT_SECONDS
     max_receive_message_bytes: int = 64 * 1024 * 1024
     max_send_message_bytes: int = 64 * 1024 * 1024
     stub: Any | None = field(default=None, repr=False)
@@ -394,6 +395,8 @@ class PeekabooXClient:
     _channel: Any | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
         if self.stub is not None and self.messages is not None:
             return
 

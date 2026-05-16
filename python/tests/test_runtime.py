@@ -3919,6 +3919,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(server.runtime.preflight_mode, "warn")
         self.assertEqual(server.runtime.preflight_timeout_seconds, 4.5)
 
+    def test_mcp_create_server_passes_client_timeout_to_runtime(self) -> None:
+        runtime = AgentRuntime(client=FakeClient())
+        with patch(
+            "peekaboox.mcp.server.AgentRuntime.connect",
+            return_value=runtime,
+        ) as connect:
+            server = create_server(
+                "127.0.0.1:47777",
+                client_timeout_seconds=12.5,
+            )
+
+        self.assertIs(server.runtime, runtime)
+        self.assertEqual(connect.call_args.kwargs["client_timeout_seconds"], 12.5)
+
     def test_mcp_server_reports_confirmation_requirements_as_tool_errors(self) -> None:
         runtime = AgentRuntime(
             client=FakeClient(),

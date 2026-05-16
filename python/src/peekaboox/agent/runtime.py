@@ -13,6 +13,7 @@ from peekaboox.client import (
     CaptureBackendsResult,
     CaptureDeltaResult,
     CaptureScreenResult,
+    DEFAULT_GRPC_TIMEOUT_SECONDS,
     DetectUiElementsResult,
     DesktopActionResult,
     DesktopLocateResult,
@@ -184,9 +185,12 @@ class AgentRuntime:
         plugin_paths: tuple[str | Path, ...] = (),
         preflight_mode: str | None = None,
         preflight_timeout_seconds: float = 30.0,
+        client_timeout_seconds: float | None = None,
     ) -> "AgentRuntime":
         if capability_policy is not None and capability_profile is not None:
             raise ValueError("use either capability_policy or capability_profile, not both")
+        if client_timeout_seconds is not None and client_timeout_seconds <= 0:
+            raise ValueError("client_timeout_seconds must be greater than zero")
         memory = SQLiteMemoryStore(memory_path) if memory_path is not None else MemoryStore()
         audit_logger = (
             JsonlAuditLogger(audit_log_path, source=audit_source)
@@ -200,7 +204,14 @@ class AgentRuntime:
                 else CapabilityPolicy.from_env(audit_logger=audit_logger)
             )
         return cls(
-            client=PeekabooXClient(target=target),
+            client=PeekabooXClient(
+                target=target,
+                timeout_seconds=(
+                    client_timeout_seconds
+                    if client_timeout_seconds is not None
+                    else DEFAULT_GRPC_TIMEOUT_SECONDS
+                ),
+            ),
             memory=memory,
             capability_policy=capability_policy,
             confirmation_policy=confirmation_policy or ConfirmationPolicy.disabled(),
