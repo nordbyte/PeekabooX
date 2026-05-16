@@ -11,7 +11,9 @@ local smoke tests and CI:
 bash examples/cli/vision-smoke.sh
 bash examples/cli/ocr-smoke.sh
 PYTHONPATH=python/src python3 examples/python/runtime_smoke.py
+PYTHONPATH=python/src python3 examples/python/doctor_runtime.py
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_list_tools.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_doctor.sh
 cargo run -q -p peekaboox-cli -- doctor --json
 ```
 
@@ -22,6 +24,12 @@ installed or packaged binary instead of the local Cargo fallback.
 `examples/cli/ocr-smoke.sh` uses `tests/fixtures/ocr/ocr_sample.png` to test
 Tesseract-backed OCR over an image file, region OCR, JSON block metadata, and
 word-level output. It skips cleanly when `tesseract` is not installed.
+
+`examples/python/doctor_runtime.py` and `examples/mcp/jsonrpc_doctor.sh` run the
+same structured environment diagnostics through `AgentRuntime.doctor(...)` and
+MCP JSON-RPC `tools/call`. They validate the result shape and write JSON under
+`target/examples/python-doctor` or `target/examples/mcp-doctor`. Set
+`PEEKABOOX_BIN` to test an installed binary instead of the local Cargo fallback.
 
 ## Live desktop examples
 

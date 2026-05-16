@@ -26,6 +26,7 @@ from peekaboox.client import (
     WindowInfo,
 )
 from peekaboox.client import DEFAULT_GRPC_TARGET
+from peekaboox.doctor import DoctorResult, run_doctor
 from peekaboox.memory import (
     DesktopGraphSnapshot,
     DesktopGraphStatus,
@@ -217,6 +218,15 @@ class AgentRuntime:
 
     def confirmation_audit(self) -> tuple[ConfirmationAuditEvent, ...]:
         return tuple(self.confirmation_policy.audit_events)
+
+    def doctor(
+        self,
+        *,
+        strict: bool = False,
+        timeout_seconds: float = 30.0,
+    ) -> DoctorResult:
+        self._require_capability(Capability.OBSERVE, "doctor", strict=strict)
+        return run_doctor(strict=strict, timeout_seconds=timeout_seconds)
 
     def generate_workflow(
         self,
@@ -1778,6 +1788,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     subparsers.add_parser("desktop-state", help="print daemon desktop state")
     plugins_parser = subparsers.add_parser("plugins", help="discover local plugins")
     plugins_parser.add_argument("--path", action="append", default=[], help="plugin search path")
+    doctor_parser = subparsers.add_parser("doctor", help="run environment diagnostics")
+    doctor_parser.add_argument("--strict", action="store_true", help="preserve strict doctor exit code")
+    doctor_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="maximum seconds to wait for the doctor command",
+    )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.version:
@@ -1793,6 +1811,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime = _local_runtime(args.profile, args.audit_log, paths)
             _print_json(runtime.list_plugins())
             return 0
+        if args.command == "doctor":
+            runtime = _local_runtime(
+                args.profile,
+                args.audit_log,
+                tuple(Path(path) for path in args.plugin_path),
+            )
+            result = runtime.doctor(strict=args.strict, timeout_seconds=args.timeout)
+            _print_json(result)
+            return 1 if args.strict and result.fail_count else 0
 
         runtime = AgentRuntime.connect(
             target=args.target,

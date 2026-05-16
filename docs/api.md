@@ -200,6 +200,7 @@ windows = runtime.list_windows()
 focused = runtime.list_windows(focused=True, limit=1, sort="focused")
 window_result = runtime.list_windows_result(app="calculator", diagnose=True)
 state = runtime.get_desktop_state()
+doctor = runtime.doctor()
 buttons = runtime.find_element("role=push button", vision_fallback=True)
 text = runtime.ocr_region(Rect(x=10, y=20, width=400, height=120), language="eng")
 delta = runtime.capture_delta(
@@ -399,6 +400,7 @@ The current tool surface includes:
 - `capture_screen`
 - `capture_delta`
 - `capture_backends`
+- `doctor`
 - `probe_dmabuf`
 - `click`
 - `type_text`
@@ -445,7 +447,8 @@ accepts `stream_id`, `reset`, optional `region` or `window_id`,
 `per_channel_threshold`, and `low_bandwidth` for persistent low-bandwidth
 capture streams. `capture_backends` accepts `output`, optional `region`,
 `diagnose`, and `probe` values `none`, `file`, `frame`, `region`, `dmabuf`, or
-`all`.
+`all`. `doctor` accepts optional `strict` and `timeout_seconds` arguments and
+returns the structured `peekaboox doctor --json` health checks.
 The desktop helper tools accept supported app profile names such as `telegram`,
 `paint`, `drawing`, `pinta`, `kolourpaint`, and `text-editor`, plus named
 targets such as Telegram's `search-input`/`message-input`, Paint's `canvas`, or

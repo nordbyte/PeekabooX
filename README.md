@@ -89,6 +89,10 @@ peekaboox --daemon capture-delta --stream agent-loop --low-bandwidth
 # Run the MCP server from a checkout.
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --list-tools
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server
+
+# Run structured runtime/MCP diagnostics examples.
+PYTHONPATH=python/src python3 examples/python/doctor_runtime.py
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_doctor.sh
 ```
 
 Live examples are documented in [examples/README.md](examples/README.md). They

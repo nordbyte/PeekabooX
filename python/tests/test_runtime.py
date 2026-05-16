@@ -35,6 +35,7 @@ from peekaboox.client import (
     WindowListResult,
     ZeroCopyBackend,
 )
+from peekaboox.doctor import DoctorCheck, DoctorResult, run_doctor
 from peekaboox.memory import MemoryStore, SQLiteMemoryStore, SemanticDesktopGraph
 from peekaboox.mcp import McpServer
 from peekaboox.mcp.server import create_server
@@ -673,6 +674,23 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "goal"):
             runtime.plan(" ")
 
+    def test_run_doctor_maps_cli_json(self) -> None:
+        script = (
+            "import json, sys; "
+            "print(json.dumps({'status':'ok','checks':["
+            "{'name':'display-server','status':'ok','detail':'display ready'},"
+            "{'name':'ocr','status':'warn','detail':'tesseract missing'}]}))"
+        )
+
+        result = run_doctor(command=(sys.executable, "-c", script), strict=True)
+
+        self.assertEqual(result.status, "ok")
+        self.assertTrue(result.strict)
+        self.assertEqual(result.ok_count, 1)
+        self.assertEqual(result.warn_count, 1)
+        self.assertEqual(result.fail_count, 0)
+        self.assertEqual(result.checks[0].name, "display-server")
+
     def test_mcp_server_registers_default_tools(self) -> None:
         server = McpServer()
 
@@ -681,6 +699,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("capture_screen", server.tools)
         self.assertIn("capture_delta", server.tools)
         self.assertIn("capture_backends", server.tools)
+        self.assertIn("doctor", server.tools)
         self.assertIn("probe_dmabuf", server.tools)
         self.assertIn("get_desktop_state", server.tools)
         self.assertIn("find_element", server.tools)
@@ -767,6 +786,36 @@ class RuntimeTests(unittest.TestCase):
             runtime.desktop_assert("telegram", "saved-messages").action,
             "assert",
         )
+
+    def test_agent_runtime_runs_doctor_through_observe_capability(self) -> None:
+        runtime = AgentRuntime(client=FakeClient())
+        expected = DoctorResult(
+            status="ok",
+            checks=(
+                DoctorCheck(
+                    name="display-server",
+                    status="ok",
+                    detail="WAYLAND_DISPLAY=wayland-0",
+                ),
+                DoctorCheck(
+                    name="ocr",
+                    status="warn",
+                    detail="tesseract not available",
+                ),
+            ),
+            ok_count=1,
+            warn_count=1,
+            fail_count=0,
+            exit_code=0,
+        )
+
+        with patch("peekaboox.agent.runtime.run_doctor", return_value=expected) as run:
+            result = runtime.doctor(strict=True, timeout_seconds=2.5)
+
+        self.assertEqual(result, expected)
+        run.assert_called_once_with(strict=True, timeout_seconds=2.5)
+        self.assertEqual(runtime.capability_audit()[-1].capability, Capability.OBSERVE)
+        self.assertEqual(runtime.capability_audit()[-1].operation, "doctor")
 
     def test_capability_policy_blocks_direct_runtime_actions_and_audits(self) -> None:
         policy = CapabilityPolicy.allow_only([Capability.OBSERVE])
@@ -1923,6 +1972,40 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sort"):
             server.call_tool("list_windows", {"sort": "unknown"})
 
+    def test_mcp_server_calls_doctor_tool(self) -> None:
+        server = McpServer(runtime=AgentRuntime(client=FakeClient()))
+        server.register_default_tools()
+        expected = DoctorResult(
+            status="fail",
+            checks=(
+                DoctorCheck(
+                    name="display-server",
+                    status="fail",
+                    detail="neither WAYLAND_DISPLAY nor DISPLAY is set",
+                ),
+            ),
+            ok_count=0,
+            warn_count=0,
+            fail_count=1,
+            exit_code=1,
+            strict=True,
+        )
+
+        with patch("peekaboox.agent.runtime.run_doctor", return_value=expected) as run:
+            result = server.call_tool("doctor", {"strict": True, "timeout_seconds": 1.5})
+
+        run.assert_called_once_with(strict=True, timeout_seconds=1.5)
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["fail_count"], 1)
+        self.assertEqual(result["checks"][0]["name"], "display-server")
+
+    def test_mcp_server_validates_doctor_arguments(self) -> None:
+        server = McpServer(runtime=AgentRuntime(client=FakeClient()))
+        server.register_default_tools()
+
+        with self.assertRaisesRegex(ValueError, "timeout_seconds"):
+            server.call_tool("doctor", {"timeout_seconds": 0})
+
     def test_mcp_server_lists_tool_descriptors(self) -> None:
         server = McpServer(runtime=AgentRuntime(client=FakeClient()))
 
@@ -1932,6 +2015,7 @@ class RuntimeTests(unittest.TestCase):
         names = {descriptor["name"] for descriptor in descriptors}
         self.assertIn("capture_screen", names)
         self.assertIn("capture_backends", names)
+        self.assertIn("doctor", names)
         self.assertIn("find_element", names)
         self.assertIn("list_plugins", names)
         self.assertTrue(all("inputSchema" in descriptor for descriptor in descriptors))
@@ -2435,6 +2519,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("capture_screen", names)
         self.assertIn("capture_delta", names)
         self.assertIn("capture_backends", names)
+        self.assertIn("doctor", names)
         capture_screen = next(tool for tool in tool_descriptors if tool["name"] == "capture_screen")
         self.assertIn("inputSchema", capture_screen)
         self.assertIsNone(notification)

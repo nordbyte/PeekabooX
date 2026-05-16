@@ -17,6 +17,7 @@ from peekaboox.security import (
     KNOWN_CAPABILITY_PROFILES,
     CapabilityPolicy,
     ConfirmationPolicy,
+    JsonlAuditLogger,
 )
 from peekaboox.workflows import dump_workflow_text, workflow_from_dict, workflow_to_dict
 
@@ -279,6 +280,17 @@ class McpServer:
                     }
                 ),
                 self._capture_backends,
+            ),
+            self._tool(
+                "doctor",
+                "Run PeekabooX environment diagnostics and return structured health checks.",
+                _schema(
+                    {
+                        "strict": {"type": "boolean", "default": False},
+                        "timeout_seconds": {"type": "number", "minimum": 0.1, "default": 30.0},
+                    }
+                ),
+                self._doctor,
             ),
             self._tool(
                 "probe_dmabuf",
@@ -969,6 +981,17 @@ class McpServer:
             )
         )
 
+    def _doctor(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        timeout = _optional_float(arguments, "timeout_seconds")
+        if timeout is not None and timeout <= 0:
+            raise ValueError("timeout_seconds must be greater than zero")
+        return _to_mcp_value(
+            self._require_runtime().doctor(
+                strict=_optional_bool(arguments, "strict"),
+                timeout_seconds=timeout or 30.0,
+            )
+        )
+
     def _probe_dmabuf(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return _to_mcp_value(
             self._require_runtime().probe_dmabuf(
@@ -1573,6 +1596,23 @@ def create_server(
             audit_log_path=audit_log_path,
             audit_source="mcp",
             plugin_paths=plugin_paths,
+        )
+    else:
+        audit_logger = (
+            JsonlAuditLogger(audit_log_path, source="mcp")
+            if audit_log_path is not None
+            else None
+        )
+        runtime = AgentRuntime(
+            capability_policy=capability_policy
+            or (
+                CapabilityPolicy.from_profile(capability_profile, audit_logger=audit_logger)
+                if capability_profile is not None
+                else CapabilityPolicy.from_env(audit_logger=audit_logger)
+            ),
+            confirmation_policy=confirmation_policy or ConfirmationPolicy.disabled(),
+            audit_logger=audit_logger,
+            plugin_paths=tuple(Path(path) for path in plugin_paths),
         )
     server = McpServer(runtime=runtime)
     server.register_default_tools()
