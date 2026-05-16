@@ -112,6 +112,9 @@ Denied runtime calls raise `CapabilityDeniedError`. MCP JSON-RPC tool calls
 surface the same denial as a tool result with `isError: true`, so clients can
 distinguish policy denial from protocol errors. Every capability check appends
 an in-memory audit event available through `runtime.capability_audit()`.
+Preflight denials are also surfaced as tool results with `isError: true`, but
+include structured `blocked_categories`, `warning_categories`, `next_action`,
+and `preflight` fields so clients do not need to parse the message text.
 
 Pass `audit_log_path` to persist capability, confirmation, and preflight checks
 as JSONL:

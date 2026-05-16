@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
-from peekaboox.agent import AgentRuntime
+from peekaboox.agent import AgentRuntime, PreflightError
 from peekaboox.agent.runtime import WINDOW_BACKEND_CHOICES, WINDOW_SORT_CHOICES
 from peekaboox.client import Rect
 from peekaboox.security import (
@@ -220,6 +220,9 @@ class McpServer:
         try:
             structured = self.call_tool(name, arguments)
             is_error = False
+        except PreflightError as error:
+            structured = _preflight_error_content(error, name)
+            is_error = True
         except Exception as error:
             structured = {
                 "error": type(error).__name__,
@@ -1638,6 +1641,22 @@ def _to_mcp_value(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     return value
+
+
+def _preflight_error_content(error: PreflightError, tool: str) -> dict[str, Any]:
+    preflight = _to_mcp_value(error.result)
+    return {
+        "error": type(error).__name__,
+        "message": str(error),
+        "tool": tool,
+        "next_action": "run_doctor",
+        "blocked_categories": preflight["blocked_categories"],
+        "warning_categories": preflight["warning_categories"],
+        "required_categories": preflight["required_categories"],
+        "category_status": preflight["category_status"],
+        "category_severity": preflight["category_severity"],
+        "preflight": preflight,
+    }
 
 
 def _jsonrpc_error(request_id: Any, code: int, message: str) -> dict[str, Any]:

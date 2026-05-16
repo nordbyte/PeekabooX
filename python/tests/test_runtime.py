@@ -3040,6 +3040,59 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(response["result"]["isError"])
         self.assertEqual(response["result"]["structuredContent"]["tool"], "click")
 
+    def test_mcp_server_reports_preflight_errors_as_structured_tool_results(self) -> None:
+        runtime = AgentRuntime(client=FakeClient(), preflight_mode="strict")
+        server = McpServer(runtime=runtime)
+        server.register_default_tools()
+        doctor = DoctorResult(
+            status="fail",
+            checks=(
+                DoctorCheck(
+                    name="input-click",
+                    status="fail",
+                    detail="no input backend candidate detected",
+                ),
+            ),
+            categories=(
+                DoctorCategory(
+                    name="input",
+                    status="fail",
+                    severity="error",
+                    ok_count=0,
+                    warn_count=0,
+                    fail_count=1,
+                    total_count=1,
+                ),
+            ),
+            ok_count=0,
+            warn_count=0,
+            fail_count=1,
+            exit_code=0,
+        )
+
+        with patch("peekaboox.agent.runtime.run_doctor", return_value=doctor):
+            response = server.handle_jsonrpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 11,
+                    "method": "tools/call",
+                    "params": {"name": "click", "arguments": {"x": 10, "y": 20}},
+                }
+            )
+
+        content = response["result"]["structuredContent"]
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual(content["error"], "PreflightError")
+        self.assertEqual(content["tool"], "click")
+        self.assertEqual(content["next_action"], "run_doctor")
+        self.assertEqual(content["blocked_categories"], ["input"])
+        self.assertEqual(content["warning_categories"], [])
+        self.assertEqual(content["category_status"]["input"], "fail")
+        self.assertEqual(content["preflight"]["operation"], "click")
+        self.assertEqual(content["preflight"]["blocked_categories"], ["input"])
+        text_payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertEqual(text_payload["blocked_categories"], ["input"])
+
     def test_mcp_server_reports_capability_denials_as_tool_errors(self) -> None:
         runtime = AgentRuntime(
             client=FakeClient(),

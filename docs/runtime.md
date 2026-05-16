@@ -205,6 +205,9 @@ Tool execution through MCP requires Python runtime dependencies and a running
 dependencies, the server can still list tool descriptors for inspection.
 Use `--preflight-mode off|warn|strict` and `--preflight-timeout <seconds>` to
 control Doctor-backed preflight gates without changing application code.
+When preflight blocks an MCP tool call, the tool result keeps `isError: true`
+and includes `blocked_categories`, `warning_categories`, `next_action`, and the
+full `preflight` object in `structuredContent`.
 
 The current tool surface includes capture, capture delta, DMA-BUF probe,
 click, text and paste input, semantic lookup, window listing, desktop state,

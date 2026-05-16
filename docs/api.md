@@ -392,6 +392,9 @@ returns a normal `tools/call` result with `isError: true` and
 When the runtime has a `ConfirmationPolicy`, missing or denied confirmations are
 reported the same way with `ConfirmationRequiredError` or
 `ConfirmationDeniedError`.
+Doctor-backed preflight blocks return `PreflightError` with
+`blocked_categories`, `warning_categories`, `next_action`, and the full
+`preflight` result in `structuredContent`.
 Set `--audit-log` or `PEEKABOOX_RUNTIME_AUDIT_LOG` to persist those runtime
 checks for MCP sessions. Set `--capability-profile`,
 `PEEKABOOX_MCP_CAPABILITY_PROFILE`, or `PEEKABOOX_CAPABILITY_PROFILE` to apply a
