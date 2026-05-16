@@ -15,9 +15,15 @@ bash examples/cli/ui_state_sequence.sh
 bash examples/cli/ocr-smoke.sh
 bash examples/cli/agent-preflight-smoke.sh
 bash examples/cli/paste_sources.sh
+bash examples/cli/hotkey_dry_run.sh
+bash examples/cli/plugins_system_info.sh
+bash examples/cli/capture_dmabuf_probe.sh
 PYTHONPATH=python/src python3 examples/python/runtime_smoke.py
 PYTHONPATH=python/src python3 examples/python/doctor_runtime.py
 PYTHONPATH=python/src python3 examples/python/paste_runtime.py
+PYTHONPATH=python/src python3 examples/python/hotkey_runtime.py
+PYTHONPATH=python/src python3 examples/python/plugins_runtime.py
+PYTHONPATH=python/src python3 examples/python/capture_dmabuf_runtime.py
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_list_tools.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_doctor.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_preflight.sh
@@ -28,6 +34,9 @@ PYTHONPATH=python/src bash examples/mcp/jsonrpc_recovery_matrix.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_tool_parity.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_image_content.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_paste_text.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_hotkey.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_plugins.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_capture_dmabuf.sh
 cargo run -q -p peekaboox-cli -- doctor --json
 ```
 
@@ -130,7 +139,7 @@ accessibility, and input backends:
 ```bash
 bash examples/desktop/live_smoke.sh
 bash examples/desktop/capture_backends_diagnostics.sh
-examples/cli/capture_dmabuf_probe.sh
+bash examples/cli/capture_dmabuf_probe.sh
 ./examples/desktop/capture_window_targets.sh
 ./examples/desktop/capture_daemon_mcp_targets.sh
 python3 examples/python/capture_backends_runtime.py
