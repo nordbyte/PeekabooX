@@ -24,7 +24,16 @@ class FakeClient:
     def click(self, x=None, y=None, semantic_selector=None, vision_fallback=False):
         return ActionResult(ok=True, message="clicked")
 
-    def type_text(self, text, typing_speed_chars_per_second=None):
+    def type_text(
+        self,
+        text,
+        typing_speed_chars_per_second=None,
+        *,
+        dry_run=False,
+        backend=None,
+        delay_ms=None,
+        key_delay_ms=None,
+    ):
         return ActionResult(ok=True, message="typed")
 
 

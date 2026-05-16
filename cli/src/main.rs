@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 mod doctor;
@@ -7219,10 +7219,23 @@ fn merge_optional_drag_point(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TypeArgs {
-    text: String,
+    source: TypeTextSource,
     dry_run: bool,
     paste: bool,
     preserve_clipboard: bool,
+    json: bool,
+    typing_speed_chars_per_second: Option<u32>,
+    delay_ms: Option<u64>,
+    key_delay_ms: Option<u64>,
+    backend: peekaboox_input::InputToolSelection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TypeTextSource {
+    Arguments(Vec<String>),
+    Text(String),
+    Stdin,
+    File(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7251,13 +7264,19 @@ fn paste_text(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
 }
 
 fn run_text_input(args: TypeArgs, context: &CliContext) -> Result<(), CliError> {
+    validate_text_input_args(&args)?;
+    let text = read_type_text_source(&args.source)?;
+    if text.is_empty() {
+        return Err(CliError::Failure("missing text to type".to_owned()));
+    }
+
     let action = if args.paste {
         peekaboox_input::InputAction::PasteText {
-            text: args.text.clone(),
+            text: text.clone(),
             preserve_clipboard: args.preserve_clipboard,
         }
     } else {
-        peekaboox_input::InputAction::TypeText(args.text.clone())
+        peekaboox_input::InputAction::TypeText(text.clone())
     };
 
     if context.use_daemon {
@@ -7265,14 +7284,18 @@ fn run_text_input(args: TypeArgs, context: &CliContext) -> Result<(), CliError> 
             context,
             if args.paste {
                 ApiRequest::PasteText {
-                    text: args.text.clone(),
+                    text: text.clone(),
                     preserve_clipboard: args.preserve_clipboard,
                     dry_run: args.dry_run,
                 }
             } else {
                 ApiRequest::TypeText {
-                    text: args.text.clone(),
+                    text: text.clone(),
                     dry_run: args.dry_run,
+                    typing_speed_chars_per_second: args.typing_speed_chars_per_second,
+                    delay_ms: args.delay_ms,
+                    key_delay_ms: args.key_delay_ms,
+                    backend: args.backend.name().to_owned(),
                 }
             },
         )?;
@@ -7285,16 +7308,23 @@ fn run_text_input(args: TypeArgs, context: &CliContext) -> Result<(), CliError> 
                 ));
             }
         };
-        print_type_result(&args, metadata);
+        print_type_result(&args, &text, metadata);
         return Ok(());
     }
 
     if args.dry_run {
-        let backend = peekaboox_input::CommandInputBackend
-            .detect_backend_for(&action)
-            .map_err(|error| CliError::Failure(error.to_string()))?;
+        let backend = if args.paste {
+            peekaboox_input::CommandInputBackend
+                .detect_backend_for(&action)
+                .map_err(|error| CliError::Failure(error.to_string()))?
+        } else {
+            peekaboox_input::CommandInputBackend
+                .detect_backend_for_with_selection(&action, args.backend)
+                .map_err(|error| CliError::Failure(error.to_string()))?
+        };
         print_type_result(
             &args,
+            &text,
             ActionResultDto {
                 backend_name: backend.name().to_owned(),
                 backend_kind: format!("{:?}", backend.backend_kind()).to_ascii_lowercase(),
@@ -7304,13 +7334,14 @@ fn run_text_input(args: TypeArgs, context: &CliContext) -> Result<(), CliError> 
     }
 
     let metadata = if args.paste {
-        peekaboox_input::paste_text_with_options(args.text.clone(), args.preserve_clipboard)
+        peekaboox_input::paste_text_with_options(text.clone(), args.preserve_clipboard)
     } else {
-        peekaboox_input::type_text(args.text.clone())
+        peekaboox_input::type_text_with_options(text.clone(), type_options_from_args(&args))
     }
     .map_err(|error| CliError::Failure(error.to_string()))?;
     print_type_result(
         &args,
+        &text,
         ActionResultDto {
             backend_name: metadata.backend_name,
             backend_kind: format!("{:?}", metadata.backend_kind).to_ascii_lowercase(),
@@ -7320,7 +7351,77 @@ fn run_text_input(args: TypeArgs, context: &CliContext) -> Result<(), CliError> 
     Ok(())
 }
 
-fn print_type_result(args: &TypeArgs, metadata: ActionResultDto) {
+fn type_options_from_args(args: &TypeArgs) -> peekaboox_input::TypeTextOptions {
+    peekaboox_input::TypeTextOptions {
+        typing_speed_chars_per_second: args.typing_speed_chars_per_second,
+        delay_ms: args.delay_ms,
+        key_delay_ms: args.key_delay_ms,
+        backend: args.backend,
+    }
+}
+
+fn validate_text_input_args(args: &TypeArgs) -> Result<(), CliError> {
+    if args.paste {
+        if args.typing_speed_chars_per_second.is_some()
+            || args.delay_ms.is_some()
+            || args.key_delay_ms.is_some()
+            || args.backend != peekaboox_input::InputToolSelection::Auto
+        {
+            return Err(CliError::Failure(
+                "paste does not support type timing or type backend options".to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+
+    if args.preserve_clipboard {
+        return Err(CliError::Failure(
+            "--preserve-clipboard requires --paste or the paste command".to_owned(),
+        ));
+    }
+    if args.typing_speed_chars_per_second.is_some() && args.key_delay_ms.is_some() {
+        return Err(CliError::Failure(
+            "--typing-speed cannot be combined with --key-delay-ms".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn read_type_text_source(source: &TypeTextSource) -> Result<String, CliError> {
+    match source {
+        TypeTextSource::Arguments(parts) => Ok(parts.join(" ")),
+        TypeTextSource::Text(text) => Ok(text.clone()),
+        TypeTextSource::Stdin => {
+            let mut text = String::new();
+            std::io::stdin()
+                .read_to_string(&mut text)
+                .map_err(|error| CliError::Failure(format!("failed to read stdin: {error}")))?;
+            Ok(text)
+        }
+        TypeTextSource::File(path) => std::fs::read_to_string(path).map_err(|error| {
+            CliError::Failure(format!("failed to read {}: {error}", path.display()))
+        }),
+    }
+}
+
+fn print_type_result(args: &TypeArgs, text: &str, metadata: ActionResultDto) {
+    if args.json {
+        let _ = print_json_pretty(&serde_json::json!({
+            "ok": true,
+            "dry_run": args.dry_run,
+            "action": if args.paste { "paste_text" } else { "type_text" },
+            "text_length": text.chars().count(),
+            "backend_name": metadata.backend_name,
+            "backend_kind": metadata.backend_kind,
+            "requested_backend": if args.paste { None } else { Some(args.backend.name()) },
+            "typing_speed_chars_per_second": args.typing_speed_chars_per_second,
+            "delay_ms": args.delay_ms,
+            "key_delay_ms": args.key_delay_ms,
+            "preserve_clipboard": args.preserve_clipboard,
+        }));
+        return;
+    }
+
     match (args.dry_run, args.paste) {
         (true, true) => println!("would paste via {}", metadata.backend_name),
         (true, false) => println!("would type via {}", metadata.backend_name),
@@ -7333,6 +7434,12 @@ fn parse_type_args(args: Vec<String>) -> Result<TypeCommand, CliError> {
     let mut dry_run = false;
     let mut paste = false;
     let mut preserve_clipboard = false;
+    let mut json = false;
+    let mut typing_speed_chars_per_second = None;
+    let mut delay_ms = None;
+    let mut key_delay_ms = None;
+    let mut backend = peekaboox_input::InputToolSelection::Auto;
+    let mut source = None;
     let mut text_parts = Vec::new();
     let mut index = 0;
 
@@ -7341,24 +7448,89 @@ fn parse_type_args(args: Vec<String>) -> Result<TypeCommand, CliError> {
             "--dry-run" => dry_run = true,
             "--paste" => paste = true,
             "--preserve-clipboard" => preserve_clipboard = true,
+            "--json" => json = true,
+            "--text" | "-t" => {
+                let value = parse_next_string(&args, &mut index, "--text")?;
+                set_type_source(&mut source, TypeTextSource::Text(value), "--text")?;
+            }
+            "--stdin" => set_type_source(&mut source, TypeTextSource::Stdin, "--stdin")?,
+            "--file" => {
+                let value = parse_next_string(&args, &mut index, "--file")?;
+                set_type_source(
+                    &mut source,
+                    TypeTextSource::File(PathBuf::from(value)),
+                    "--file",
+                )?;
+            }
+            "--typing-speed" | "--typing-speed-cps" => {
+                let value = parse_next_string(&args, &mut index, "--typing-speed")?;
+                typing_speed_chars_per_second = Some(parse_positive_u32("--typing-speed", &value)?);
+            }
+            "--delay-ms" => {
+                let value = parse_next_string(&args, &mut index, "--delay-ms")?;
+                delay_ms = Some(parse_u64("--delay-ms", &value)?);
+            }
+            "--key-delay-ms" => {
+                let value = parse_next_string(&args, &mut index, "--key-delay-ms")?;
+                key_delay_ms = Some(parse_u64("--key-delay-ms", &value)?);
+            }
+            "--backend" => {
+                let value = parse_next_string(&args, &mut index, "--backend")?;
+                backend = parse_type_backend_selection(&value)?;
+            }
             "--help" | "-h" => return Ok(TypeCommand::Help),
+            "--" => {
+                text_parts.extend(args.iter().skip(index + 1).cloned());
+                break;
+            }
+            value if value.starts_with('-') => {
+                return Err(CliError::Failure(format!(
+                    "unknown type argument: {value}; use -- before text that starts with '-'"
+                )));
+            }
             value => text_parts.push(value.to_owned()),
         }
 
         index += 1;
     }
 
-    let text = text_parts.join(" ");
-    if text.is_empty() {
-        return Err(CliError::Failure("missing text to type".to_owned()));
+    if !text_parts.is_empty() {
+        set_type_source(
+            &mut source,
+            TypeTextSource::Arguments(text_parts),
+            "positional text",
+        )?;
     }
 
+    let Some(source) = source else {
+        return Err(CliError::Failure("missing text to type".to_owned()));
+    };
+
     Ok(TypeCommand::Run(TypeArgs {
-        text,
+        source,
         dry_run,
         paste,
         preserve_clipboard,
+        json,
+        typing_speed_chars_per_second,
+        delay_ms,
+        key_delay_ms,
+        backend,
     }))
+}
+
+fn set_type_source(
+    source: &mut Option<TypeTextSource>,
+    value: TypeTextSource,
+    name: &str,
+) -> Result<(), CliError> {
+    if source.is_some() {
+        return Err(CliError::Failure(format!(
+            "{name} cannot be combined with another text source"
+        )));
+    }
+    *source = Some(value);
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7695,6 +7867,20 @@ fn parse_input_backend_selection(
         "xdotool" => Ok(peekaboox_input::InputToolSelection::Xdotool),
         _ => Err(CliError::Failure(format!(
             "--backend must be auto, uinput, ydotool, or xdotool, got {value:?}"
+        ))),
+    }
+}
+
+fn parse_type_backend_selection(
+    value: &str,
+) -> Result<peekaboox_input::InputToolSelection, CliError> {
+    match value {
+        "auto" => Ok(peekaboox_input::InputToolSelection::Auto),
+        "wtype" => Ok(peekaboox_input::InputToolSelection::Wtype),
+        "ydotool" => Ok(peekaboox_input::InputToolSelection::Ydotool),
+        "xdotool" => Ok(peekaboox_input::InputToolSelection::Xdotool),
+        _ => Err(CliError::Failure(format!(
+            "--backend must be auto, wtype, ydotool, or xdotool for type, got {value:?}"
         ))),
     }
 }
@@ -8043,11 +8229,15 @@ fn print_drag_usage() {
 }
 
 fn print_type_usage() {
-    println!("Usage: peekaboox type [--dry-run] [--paste] [--preserve-clipboard] <text>");
+    println!(
+        "Usage: peekaboox type [--dry-run] [--json] [--backend auto|wtype|ydotool|xdotool] [--typing-speed <cps>|--key-delay-ms <ms>] [--delay-ms <ms>] [--paste] [--preserve-clipboard] [--text <text>|--stdin|--file <path>|-- <text>|<text>...]"
+    );
 }
 
 fn print_paste_usage() {
-    println!("Usage: peekaboox paste [--dry-run] [--preserve-clipboard] <text>");
+    println!(
+        "Usage: peekaboox paste [--dry-run] [--json] [--preserve-clipboard] [--text <text>|--stdin|--file <path>|-- <text>|<text>...]"
+    );
 }
 
 fn print_hotkey_usage() {
@@ -8069,9 +8259,9 @@ mod tests {
         DesktopDragArgs, DesktopFocusArgs, DesktopLocateArgs, DesktopProfilesArgs,
         DesktopTypeIntoArgs, DragArgs, DragCommand, DragEndpoint, ElementsArgs, ElementsCommand,
         GlobalArgs, HotkeyArgs, HotkeyCommand, MoveArgs, MoveCommand, MoveTarget, OcrArgs,
-        OcrCommand, PluginsArgs, PluginsCommand, TypeArgs, TypeCommand, UiStateArgs,
-        UiStateCommand, VisionElementsArgs, VisionElementsCommand, WindowsArgs, WindowsCommand,
-        parse_capture_args, parse_capture_backends_args, parse_capture_delta_args,
+        OcrCommand, PluginsArgs, PluginsCommand, TypeArgs, TypeCommand, TypeTextSource,
+        UiStateArgs, UiStateCommand, VisionElementsArgs, VisionElementsCommand, WindowsArgs,
+        WindowsCommand, parse_capture_args, parse_capture_backends_args, parse_capture_delta_args,
         parse_capture_dmabuf_args, parse_click_args, parse_compare_args, parse_desktop_args,
         parse_drag_args, parse_elements_args, parse_global_args, parse_hotkey_args,
         parse_move_args, parse_ocr_args, parse_plugins_args, parse_type_args, parse_ui_state_args,
@@ -9867,10 +10057,15 @@ mod tests {
         assert_eq!(
             command,
             TypeCommand::Run(TypeArgs {
-                text: "hello world".to_owned(),
+                source: TypeTextSource::Arguments(vec!["hello".to_owned(), "world".to_owned()]),
                 dry_run: false,
                 paste: false,
-                preserve_clipboard: false
+                preserve_clipboard: false,
+                json: false,
+                typing_speed_chars_per_second: None,
+                delay_ms: None,
+                key_delay_ms: None,
+                backend: InputToolSelection::Auto,
             })
         );
     }
@@ -9882,10 +10077,15 @@ mod tests {
         assert_eq!(
             command,
             TypeCommand::Run(TypeArgs {
-                text: "hello".to_owned(),
+                source: TypeTextSource::Arguments(vec!["hello".to_owned()]),
                 dry_run: true,
                 paste: false,
-                preserve_clipboard: false
+                preserve_clipboard: false,
+                json: false,
+                typing_speed_chars_per_second: None,
+                delay_ms: None,
+                key_delay_ms: None,
+                backend: InputToolSelection::Auto,
             })
         );
     }
@@ -9897,10 +10097,15 @@ mod tests {
         assert_eq!(
             command,
             TypeCommand::Run(TypeArgs {
-                text: "hello".to_owned(),
+                source: TypeTextSource::Arguments(vec!["hello".to_owned()]),
                 dry_run: false,
                 paste: true,
-                preserve_clipboard: false
+                preserve_clipboard: false,
+                json: false,
+                typing_speed_chars_per_second: None,
+                delay_ms: None,
+                key_delay_ms: None,
+                backend: InputToolSelection::Auto,
             })
         );
     }
@@ -9917,12 +10122,83 @@ mod tests {
         assert_eq!(
             command,
             TypeCommand::Run(TypeArgs {
-                text: "hello".to_owned(),
+                source: TypeTextSource::Arguments(vec!["hello".to_owned()]),
                 dry_run: false,
                 paste: true,
-                preserve_clipboard: true
+                preserve_clipboard: true,
+                json: false,
+                typing_speed_chars_per_second: None,
+                delay_ms: None,
+                key_delay_ms: None,
+                backend: InputToolSelection::Auto,
             })
         );
+    }
+
+    #[test]
+    fn type_accepts_timing_backend_json_and_explicit_text() {
+        let command = parse_type_args(vec![
+            "--json".to_owned(),
+            "--backend".to_owned(),
+            "wtype".to_owned(),
+            "--typing-speed".to_owned(),
+            "20".to_owned(),
+            "--delay-ms".to_owned(),
+            "10".to_owned(),
+            "--text".to_owned(),
+            "hello".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            TypeCommand::Run(TypeArgs {
+                source: TypeTextSource::Text("hello".to_owned()),
+                dry_run: false,
+                paste: false,
+                preserve_clipboard: false,
+                json: true,
+                typing_speed_chars_per_second: Some(20),
+                delay_ms: Some(10),
+                key_delay_ms: None,
+                backend: InputToolSelection::Wtype,
+            })
+        );
+    }
+
+    #[test]
+    fn type_accepts_file_stdin_and_dash_separator_sources() {
+        let file_command =
+            parse_type_args(vec!["--file".to_owned(), "/tmp/example.txt".to_owned()]).unwrap();
+        let stdin_command = parse_type_args(vec!["--stdin".to_owned()]).unwrap();
+        let dash_command = parse_type_args(vec![
+            "--".to_owned(),
+            "--literal".to_owned(),
+            "text".to_owned(),
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            file_command,
+            TypeCommand::Run(TypeArgs {
+                source: TypeTextSource::File(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            stdin_command,
+            TypeCommand::Run(TypeArgs {
+                source: TypeTextSource::Stdin,
+                ..
+            })
+        ));
+        assert!(matches!(
+            dash_command,
+            TypeCommand::Run(TypeArgs {
+                source: TypeTextSource::Arguments(_),
+                ..
+            })
+        ));
     }
 
     #[test]

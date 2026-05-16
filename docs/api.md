@@ -416,10 +416,13 @@ object, or JSON/YAML workflow text. The runtime validates every returned
 executing it.
 
 Workflow files use the same fields as `WorkflowStep`: `action`, `selector`,
-`value`, `x`, `y`, `vision_fallback`, and `verify`. JSON is parsed with the
-standard library; YAML support covers the repository workflow shape without an
-extra runtime dependency. The recorder writes the same schema, so recorded
-workflows can be reviewed, edited, and replayed through `execute_workflow_file`.
+`value`, pointer coordinates, scoped window fields, `backend`, `dry_run`,
+`vision_fallback`, and `verify`. `type_text` steps can also set
+`typing_speed_chars_per_second`, `delay_ms`, and `key_delay_ms`; `paste_text`
+steps can set `preserve_clipboard`. JSON is parsed with the standard library;
+YAML support covers the repository workflow shape without an extra runtime
+dependency. The recorder writes the same schema, so recorded workflows can be
+reviewed, edited, and replayed through `execute_workflow_file`.
 For recorded coordinate clicks, the runtime attempts to resolve the point
 against a fresh semantic desktop graph and records a unique semantic selector
 when possible. If no element resolves, the step falls back to `x`/`y`.

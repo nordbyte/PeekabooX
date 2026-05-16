@@ -84,6 +84,7 @@ class FakeClient:
         self.typed_text: str | None = None
         self.pasted_text: str | None = None
         self.preserve_clipboard: bool | None = None
+        self.last_type_options: dict[str, object] = {}
         self.last_find_selector: str | None = None
         self.desktop_calls: list[tuple[str, dict[str, object]]] = []
         self.last_window_query: dict[str, object] | None = None
@@ -580,8 +581,20 @@ class FakeClient:
         self,
         text: str,
         typing_speed_chars_per_second: int | None = None,
+        *,
+        dry_run: bool = False,
+        backend: str | None = None,
+        delay_ms: int | None = None,
+        key_delay_ms: int | None = None,
     ) -> ActionResult:
         self.typed_text = text
+        self.last_type_options = {
+            "typing_speed_chars_per_second": typing_speed_chars_per_second,
+            "dry_run": dry_run,
+            "backend": backend,
+            "delay_ms": delay_ms,
+            "key_delay_ms": key_delay_ms,
+        }
         return ActionResult(ok=True, message=f"typed {len(text)} chars")
 
     def paste_text(self, text: str, preserve_clipboard: bool = False) -> ActionResult:
@@ -2148,7 +2161,13 @@ class RuntimeTests(unittest.TestCase):
                     selector="role=push button,label=Submit",
                     vision_fallback=True,
                 ),
-                WorkflowStep(action="type_text", value="Hello"),
+                WorkflowStep(
+                    action="type_text",
+                    value="Hello",
+                    typing_speed_chars_per_second=20,
+                    delay_ms=10,
+                    backend="wtype",
+                ),
             ],
         )
 
@@ -2162,6 +2181,9 @@ class RuntimeTests(unittest.TestCase):
             True,
         )
         self.assertEqual(fake_client.typed_text, "Hello")
+        self.assertEqual(fake_client.last_type_options["typing_speed_chars_per_second"], 20)
+        self.assertEqual(fake_client.last_type_options["delay_ms"], 10)
+        self.assertEqual(fake_client.last_type_options["backend"], "wtype")
         self.assertTrue(fake_client.last_vision_fallback)
 
     def test_agent_runtime_executes_pointer_and_hotkey_workflow_steps(self) -> None:
@@ -2447,7 +2469,18 @@ class RuntimeTests(unittest.TestCase):
                 vision_fallback=True,
             )
         )
-        recorder.record_step(WorkflowStep(action="type_text", value="true"))
+        recorder.record_step(
+            WorkflowStep(
+                action="type_text",
+                value="true",
+                typing_speed_chars_per_second=25,
+                delay_ms=5,
+                backend="ydotool",
+            )
+        )
+        recorder.record_step(
+            WorkflowStep(action="paste_text", value="pasted", preserve_clipboard=True)
+        )
 
         json_workflow = load_workflow_text(recorder.to_json(), format_name="json")
         yaml_workflow = load_workflow_text(recorder.to_yaml(), format_name="yaml")
@@ -2456,6 +2489,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(json_workflow.steps[1].vision_fallback)
         self.assertEqual(yaml_workflow.steps[0].selector, "role=push button")
         self.assertEqual(yaml_workflow.steps[2].value, "true")
+        self.assertEqual(yaml_workflow.steps[2].typing_speed_chars_per_second, 25)
+        self.assertEqual(yaml_workflow.steps[2].delay_ms, 5)
+        self.assertEqual(yaml_workflow.steps[2].backend, "ydotool")
+        self.assertTrue(yaml_workflow.steps[3].preserve_clipboard)
 
     def test_agent_runtime_executes_workflow_file(self) -> None:
         fake_client = FakeClient()
@@ -2511,7 +2548,13 @@ class RuntimeTests(unittest.TestCase):
         runtime.start_recording("manual")
         runtime.find_element("role=push button,label=Submit")
         runtime.click_selector("role=push button,label=Submit", vision_fallback=True)
-        runtime.type_text("Hello")
+        runtime.type_text(
+            "Hello",
+            typing_speed_chars_per_second=30,
+            dry_run=True,
+            backend="xdotool",
+            delay_ms=5,
+        )
         workflow = runtime.stop_recording()
 
         self.assertEqual(
@@ -2520,6 +2563,10 @@ class RuntimeTests(unittest.TestCase):
         )
         self.assertEqual(workflow.steps[1].selector, "role=push button,label=Submit")
         self.assertTrue(workflow.steps[1].vision_fallback)
+        self.assertEqual(workflow.steps[2].typing_speed_chars_per_second, 30)
+        self.assertTrue(workflow.steps[2].dry_run)
+        self.assertEqual(workflow.steps[2].backend, "xdotool")
+        self.assertEqual(workflow.steps[2].delay_ms, 5)
 
         with TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "recording.yaml"
@@ -2528,6 +2575,8 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(loaded.name, "manual")
         self.assertEqual(loaded.steps[2].value, "Hello")
+        self.assertEqual(loaded.steps[2].typing_speed_chars_per_second, 30)
+        self.assertTrue(loaded.steps[2].dry_run)
 
     def test_agent_runtime_records_pointer_and_hotkey_actions(self) -> None:
         runtime = AgentRuntime(client=FakeClient())
@@ -2735,7 +2784,16 @@ class RuntimeTests(unittest.TestCase):
                 "duration_ms": 75,
             },
         )
-        typed = server.call_tool("type_text", {"text": "Hello"})
+        typed = server.call_tool(
+            "type_text",
+            {
+                "text": "Hello",
+                "typing_speed_chars_per_second": 20,
+                "dry_run": True,
+                "backend": "wtype",
+                "delay_ms": 10,
+            },
+        )
         pasted = server.call_tool("paste_text", {"text": "World", "preserve_clipboard": True})
         hotkey = server.call_tool("hotkey", {"keys": ["ctrl", "s"]})
         state = server.call_tool("get_desktop_state", {})
@@ -2791,6 +2849,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(dragged["ok"])
         self.assertEqual(fake_client.dragged, (1, 2, 3, 4, "right", 75))
         self.assertEqual(fake_client.typed_text, "Hello")
+        self.assertEqual(fake_client.last_type_options["typing_speed_chars_per_second"], 20)
+        self.assertTrue(fake_client.last_type_options["dry_run"])
+        self.assertEqual(fake_client.last_type_options["backend"], "wtype")
+        self.assertEqual(fake_client.last_type_options["delay_ms"], 10)
         self.assertEqual(typed["message"], "typed 5 chars")
         self.assertEqual(fake_client.pasted_text, "World")
         self.assertTrue(fake_client.preserve_clipboard)
@@ -4275,6 +4337,10 @@ class RuntimeTests(unittest.TestCase):
                 self.requests.append(("drag", request))
                 return peekaboox_pb2.ActionResponse(ok=True, message="ok")
 
+            def TypeText(self, request, timeout):
+                self.requests.append(("type", request))
+                return peekaboox_pb2.ActionResponse(ok=True, message="ok")
+
             def Hotkey(self, request, timeout):
                 self.requests.append(("hotkey", request))
                 return peekaboox_pb2.ActionResponse(ok=True, message="ok")
@@ -4308,6 +4374,15 @@ class RuntimeTests(unittest.TestCase):
                 restore=True,
             ).ok
         )
+        self.assertTrue(
+            client.type_text(
+                "Hello",
+                typing_speed_chars_per_second=20,
+                dry_run=True,
+                backend="wtype",
+                delay_ms=10,
+            ).ok
+        )
         self.assertTrue(client.hotkey(["ctrl", "s"]).ok)
 
         self.assertEqual(stub.requests[0][1].coordinates.x, 7)
@@ -4332,7 +4407,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(stub.requests[3][1].bounds_policy, "clamp")
         self.assertEqual(stub.requests[3][1].backend, "xdotool")
         self.assertTrue(stub.requests[3][1].restore)
-        self.assertEqual(list(stub.requests[4][1].keys), ["ctrl", "s"])
+        self.assertEqual(stub.requests[4][1].text, "Hello")
+        self.assertEqual(stub.requests[4][1].typing_speed_chars_per_second, 20)
+        self.assertTrue(stub.requests[4][1].dry_run)
+        self.assertEqual(stub.requests[4][1].backend, "wtype")
+        self.assertEqual(stub.requests[4][1].delay_ms, 10)
+        self.assertEqual(list(stub.requests[5][1].keys), ["ctrl", "s"])
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_python_client_builds_generated_paste_probe_and_plugin_requests(self) -> None:

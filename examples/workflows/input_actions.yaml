@@ -12,6 +12,16 @@ steps:
     button: left
     duration_ms: 250
     verify: false
+  - action: type_text
+    value: PeekabooX workflow typing
+    typing_speed_chars_per_second: 20
+    backend: auto
+    dry_run: true
+    verify: false
+  - action: paste_text
+    value: PeekabooX workflow paste
+    preserve_clipboard: true
+    verify: false
   - action: hotkey
     value: ctrl+s
     verify: false

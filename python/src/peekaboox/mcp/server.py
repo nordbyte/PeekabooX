@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from peekaboox.agent import AgentRuntime, PreflightError, WorkflowExecutionResult
-from peekaboox.agent.runtime import WINDOW_BACKEND_CHOICES, WINDOW_SORT_CHOICES
+from peekaboox.agent.runtime import (
+    TYPE_BACKEND_CHOICES,
+    WINDOW_BACKEND_CHOICES,
+    WINDOW_SORT_CHOICES,
+)
 from peekaboox.client import Rect
 from peekaboox.security import (
     KNOWN_CAPABILITY_PROFILES,
@@ -972,6 +976,10 @@ class McpServer:
                     {
                         "text": {"type": "string"},
                         "typing_speed_chars_per_second": {"type": "integer", "minimum": 1},
+                        "dry_run": {"type": "boolean", "default": False},
+                        "backend": {"type": "string", "enum": list(TYPE_BACKEND_CHOICES)},
+                        "delay_ms": {"type": "integer", "minimum": 0},
+                        "key_delay_ms": {"type": "integer", "minimum": 0},
                     },
                     required=["text"],
                 ),
@@ -2029,9 +2037,13 @@ class McpServer:
         return _to_mcp_value(
             self._require_runtime().type_text(
                 _required_str(arguments, "text"),
-                typing_speed_chars_per_second=_optional_int(
+                typing_speed_chars_per_second=_optional_positive_int(
                     arguments, "typing_speed_chars_per_second"
                 ),
+                dry_run=_optional_bool(arguments, "dry_run"),
+                backend=_optional_choice(arguments, "backend", TYPE_BACKEND_CHOICES),
+                delay_ms=_optional_nonnegative_int(arguments, "delay_ms"),
+                key_delay_ms=_optional_nonnegative_int(arguments, "key_delay_ms"),
             )
         )
 
@@ -2720,6 +2732,13 @@ def _optional_positive_int(arguments: dict[str, Any], name: str) -> int | None:
     value = _optional_int(arguments, name)
     if value is not None and value <= 0:
         raise ValueError(f"{name} must be greater than zero")
+    return value
+
+
+def _optional_nonnegative_int(arguments: dict[str, Any], name: str) -> int | None:
+    value = _optional_int(arguments, name)
+    if value is not None and value < 0:
+        raise ValueError(f"{name} must be non-negative")
     return value
 
 

@@ -220,6 +220,10 @@ message DragRequest {
 message TypeTextRequest {
   string text = 1;
   optional uint32 typing_speed_chars_per_second = 2;
+  bool dry_run = 3;
+  optional string backend = 4;
+  optional uint64 delay_ms = 5;
+  optional uint64 key_delay_ms = 6;
 }
 
 message PasteTextRequest {

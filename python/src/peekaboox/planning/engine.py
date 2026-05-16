@@ -281,6 +281,32 @@ def _validate_step(step: WorkflowStep, index: int) -> None:
             raise ValueError(f"steps[{index}].button must be left, middle, or right")
     if action in {"type", "type_text", "paste", "paste_text"} and step.value is None:
         raise ValueError(f"steps[{index}].value is required for type_text")
+    if action in {"type", "type_text"}:
+        if (
+            step.typing_speed_chars_per_second is not None
+            and step.typing_speed_chars_per_second <= 0
+        ):
+            raise ValueError(
+                f"steps[{index}].typing_speed_chars_per_second must be greater than zero"
+            )
+        if step.delay_ms is not None and step.delay_ms < 0:
+            raise ValueError(f"steps[{index}].delay_ms must be non-negative")
+        if step.key_delay_ms is not None and step.key_delay_ms < 0:
+            raise ValueError(f"steps[{index}].key_delay_ms must be non-negative")
+        if (
+            step.typing_speed_chars_per_second is not None
+            and step.key_delay_ms is not None
+        ):
+            raise ValueError(
+                f"steps[{index}].typing_speed_chars_per_second cannot be combined with key_delay_ms"
+            )
+        if step.backend is not None and step.backend not in {
+            "auto",
+            "wtype",
+            "ydotool",
+            "xdotool",
+        }:
+            raise ValueError(f"steps[{index}].backend is unsupported")
     if action == "hotkey" and step.value is None:
         raise ValueError(f"steps[{index}].value is required for hotkey")
 

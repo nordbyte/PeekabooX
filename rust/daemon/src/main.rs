@@ -1727,17 +1727,30 @@ fn dispatch_request(
             };
             Ok(ApiResult::Drag(metadata))
         }
-        ApiRequest::TypeText { text, dry_run } => {
+        ApiRequest::TypeText {
+            text,
+            dry_run,
+            typing_speed_chars_per_second,
+            delay_ms,
+            key_delay_ms,
+            backend,
+        } => {
             let action = peekaboox_input::InputAction::TypeText(text.clone());
+            let options = type_options_from_fields(
+                typing_speed_chars_per_second,
+                delay_ms,
+                key_delay_ms,
+                Some(backend.as_str()),
+            )?;
             let metadata = if dry_run {
                 let backend = peekaboox_input::CommandInputBackend
-                    .detect_backend_for(&action)
+                    .detect_backend_for_with_selection(&action, options.backend)
                     .map_err(|error| error.to_string())?;
                 detected_input_backend_dto(backend)
             } else {
                 ensure_input_allowed(config)?;
-                let metadata =
-                    peekaboox_input::type_text(text).map_err(|error| error.to_string())?;
+                let metadata = peekaboox_input::type_text_with_options(text, options)
+                    .map_err(|error| error.to_string())?;
                 input_metadata_dto(metadata)
             };
             Ok(ApiResult::TypeText(metadata))
@@ -2409,7 +2422,11 @@ impl PeekabooX for GrpcPeekabooXService {
         let request = request.into_inner();
         let details = json!({
             "text_length": request.text.chars().count(),
-            "typing_speed_chars_per_second": request.typing_speed_chars_per_second
+            "typing_speed_chars_per_second": request.typing_speed_chars_per_second,
+            "dry_run": request.dry_run,
+            "backend": request.backend.as_deref(),
+            "delay_ms": request.delay_ms,
+            "key_delay_ms": request.key_delay_ms
         });
 
         let result = grpc_type_text(request, &self.config);
@@ -4471,15 +4488,39 @@ fn grpc_type_text(
     request: proto::TypeTextRequest,
     config: &ServerConfig,
 ) -> Result<proto::ActionResponse, Status> {
-    ensure_input_allowed(config).map_err(Status::permission_denied)?;
-    let metadata = peekaboox_input::type_text(request.text)
-        .map_err(|error| Status::internal(error.to_string()))?;
+    let options = type_options_from_fields(
+        request.typing_speed_chars_per_second,
+        request.delay_ms,
+        request.key_delay_ms,
+        request.backend.as_deref(),
+    )
+    .map_err(Status::invalid_argument)?;
+    let action = peekaboox_input::InputAction::TypeText(request.text.clone());
+    let metadata = if request.dry_run {
+        let backend = peekaboox_input::CommandInputBackend
+            .detect_backend_for_with_selection(&action, options.backend)
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        peekaboox_input::InputExecutionMetadata {
+            backend_name: backend.name().to_owned(),
+            backend_kind: backend.backend_kind(),
+            action,
+        }
+    } else {
+        ensure_input_allowed(config).map_err(Status::permission_denied)?;
+        peekaboox_input::type_text_with_options(request.text, options)
+            .map_err(|error| Status::internal(error.to_string()))?
+    };
     let backend_kind = backend_kind_name(metadata.backend_kind);
     let backend_name = metadata.backend_name;
+    let action = if request.dry_run {
+        "would type text"
+    } else {
+        "typed text"
+    };
 
     Ok(proto::ActionResponse {
         ok: true,
-        message: format!("typed text using {backend_name}/{backend_kind}"),
+        message: format!("{action} using {backend_name}/{backend_kind}"),
         backend_name: Some(backend_name),
         backend_kind: Some(backend_kind),
     })
@@ -6493,6 +6534,29 @@ fn click_options_from_fields(
     })
 }
 
+fn type_options_from_fields(
+    typing_speed_chars_per_second: Option<u32>,
+    delay_ms: Option<u64>,
+    key_delay_ms: Option<u64>,
+    backend: Option<&str>,
+) -> Result<peekaboox_input::TypeTextOptions, String> {
+    if typing_speed_chars_per_second == Some(0) {
+        return Err("typing_speed_chars_per_second must be greater than zero".to_owned());
+    }
+    if typing_speed_chars_per_second.is_some() && key_delay_ms.is_some() {
+        return Err(
+            "typing_speed_chars_per_second cannot be combined with key_delay_ms".to_owned(),
+        );
+    }
+
+    Ok(peekaboox_input::TypeTextOptions {
+        typing_speed_chars_per_second,
+        delay_ms,
+        key_delay_ms,
+        backend: parse_type_backend_selection(backend.unwrap_or("auto"))?,
+    })
+}
+
 fn drag_options_from_fields(
     duration_ms: Option<u64>,
     steps: Option<u32>,
@@ -6532,6 +6596,20 @@ fn parse_input_backend_selection(
         "xdotool" => Ok(peekaboox_input::InputToolSelection::Xdotool),
         value => Err(format!(
             "backend must be auto, uinput, ydotool, or xdotool, got {value:?}"
+        )),
+    }
+}
+
+fn parse_type_backend_selection(
+    value: &str,
+) -> Result<peekaboox_input::InputToolSelection, String> {
+    match value.trim() {
+        "" | "auto" => Ok(peekaboox_input::InputToolSelection::Auto),
+        "wtype" => Ok(peekaboox_input::InputToolSelection::Wtype),
+        "ydotool" => Ok(peekaboox_input::InputToolSelection::Ydotool),
+        "xdotool" => Ok(peekaboox_input::InputToolSelection::Xdotool),
+        value => Err(format!(
+            "backend must be auto, wtype, ydotool, or xdotool for type, got {value:?}"
         )),
     }
 }
@@ -6872,9 +6950,21 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             "restore": restore,
             "dry_run": dry_run
         }),
-        ApiRequest::TypeText { text, dry_run } => {
-            json!({ "text_length": text.chars().count(), "dry_run": dry_run })
-        }
+        ApiRequest::TypeText {
+            text,
+            dry_run,
+            typing_speed_chars_per_second,
+            delay_ms,
+            key_delay_ms,
+            backend,
+        } => json!({
+            "text_length": text.chars().count(),
+            "dry_run": dry_run,
+            "typing_speed_chars_per_second": typing_speed_chars_per_second,
+            "delay_ms": delay_ms,
+            "key_delay_ms": key_delay_ms,
+            "backend": backend
+        }),
         ApiRequest::PasteText {
             text,
             preserve_clipboard,
@@ -7405,10 +7495,31 @@ mod tests {
         let details = audit_details(&ApiRequest::TypeText {
             text: "secret".to_owned(),
             dry_run: false,
+            typing_speed_chars_per_second: Some(20),
+            delay_ms: Some(10),
+            key_delay_ms: None,
+            backend: "wtype".to_owned(),
         });
 
         assert_eq!(details["text_length"], 6);
+        assert_eq!(details["typing_speed_chars_per_second"], 20);
+        assert_eq!(details["backend"], "wtype");
         assert!(details.get("text").is_none());
+    }
+
+    #[test]
+    fn type_options_validate_backend_and_timing() {
+        let options = super::type_options_from_fields(Some(20), Some(10), None, Some("wtype"))
+            .expect("valid type options");
+
+        assert_eq!(options.backend, peekaboox_input::InputToolSelection::Wtype);
+        assert_eq!(options.typing_speed_chars_per_second, Some(20));
+        assert_eq!(options.delay_ms, Some(10));
+        assert!(
+            super::type_options_from_fields(Some(20), None, Some(5), Some("auto"))
+                .unwrap_err()
+                .contains("cannot be combined")
+        );
     }
 
     #[test]

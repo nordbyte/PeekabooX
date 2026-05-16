@@ -119,6 +119,9 @@ cargo run -q -p peekaboox-cli -- move --current-position --json
 cargo run -q -p peekaboox-cli -- drag --from 100,200 --to 320,240 --dry-run
 cargo run -q -p peekaboox-cli -- drag --from-current --region 0,0,400,240 --to-ratio 0.8,0.5 --steps 10 --backend xdotool --bounds clamp --restore --dry-run --json
 cargo run -q -p peekaboox-cli -- type --dry-run "Hello World"
+cargo run -q -p peekaboox-cli -- type --backend wtype --typing-speed 20 --delay-ms 100 --dry-run --json --text "Hello World"
+cargo run -q -p peekaboox-cli -- type --file ./message.txt --key-delay-ms 15 --dry-run
+printf 'multi-line\ntext\n' | cargo run -q -p peekaboox-cli -- type --stdin --dry-run
 cargo run -q -p peekaboox-cli -- paste --dry-run "/tmp/PeekabooX Example.txt"
 cargo run -q -p peekaboox-cli -- type --paste --preserve-clipboard --dry-run "/tmp/PeekabooX Example.txt"
 cargo run -q -p peekaboox-cli -- hotkey --dry-run ctrl+s
@@ -135,7 +138,11 @@ movement with `--duration-ms` and `--steps`, bounds policies with `--clamp` or
 `--restore`, and backend selection via `--backend auto|uinput|ydotool|xdotool`.
 Input prefers direct `/dev/uinput` pointer events on Wayland, uses `ydotool` for
 Wayland hotkeys, prefers `wtype` for Wayland text where available with
-`ydotool` as fallback, and prefers `xdotool` on X11. Clipboard paste uses
+`ydotool` as fallback, and prefers `xdotool` on X11. Text input accepts
+`--backend auto|wtype|ydotool|xdotool`, `--typing-speed <chars-per-second>`,
+explicit `--key-delay-ms`, optional initial `--delay-ms`, structured `--json`
+output, and text from positional arguments, `--text`, `--stdin`, or `--file`.
+Use `--` before literal text that starts with a dash. Clipboard paste uses
 `wl-copy`, `xclip`, or `xsel` plus the safest available `ctrl+v` backend, can
 restore the previous textual clipboard with `--preserve-clipboard`, and is
 better than synthetic typing for paths and layout-sensitive text.

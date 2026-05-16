@@ -159,6 +159,7 @@ pub enum InputToolSelection {
     Auto,
     Uinput,
     Ydotool,
+    Wtype,
     Xdotool,
 }
 
@@ -168,6 +169,7 @@ impl InputToolSelection {
             Self::Auto => "auto",
             Self::Uinput => "uinput",
             Self::Ydotool => "ydotool",
+            Self::Wtype => "wtype",
             Self::Xdotool => "xdotool",
         }
     }
@@ -177,6 +179,7 @@ impl InputToolSelection {
             Self::Auto => None,
             Self::Uinput => Some(InputTool::Uinput),
             Self::Ydotool => Some(InputTool::Ydotool),
+            Self::Wtype => Some(InputTool::Wtype),
             Self::Xdotool => Some(InputTool::Xdotool),
         }
     }
@@ -211,6 +214,14 @@ pub struct MoveMouseOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ClickMouseOptions {
     pub bounds_policy: MoveBoundsPolicy,
+    pub backend: InputToolSelection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TypeTextOptions {
+    pub typing_speed_chars_per_second: Option<u32>,
+    pub delay_ms: Option<u64>,
+    pub key_delay_ms: Option<u64>,
     pub backend: InputToolSelection,
 }
 
@@ -469,6 +480,47 @@ impl CommandInputBackend {
             errors.join("; ")
         )))
     }
+
+    pub fn type_text_with_options(
+        &self,
+        text: String,
+        options: TypeTextOptions,
+    ) -> Result<InputExecutionMetadata> {
+        validate_type_text_options(options)?;
+        let action = InputAction::TypeText(text.clone());
+        let environment = InputEnvironment::detect();
+        let candidates = candidate_backends_with_selection(&environment, &action, options.backend);
+
+        if candidates.is_empty() {
+            return Err(missing_backend_error_for_selection(
+                &environment,
+                &action,
+                options.backend,
+            ));
+        }
+
+        let mut errors = Vec::new();
+        for backend in candidates {
+            match run_type_text_tool(backend.tool, &text, options) {
+                Ok(()) => {
+                    return Ok(InputExecutionMetadata {
+                        backend_name: backend.name().to_owned(),
+                        backend_kind: backend.backend_kind(),
+                        action,
+                    });
+                }
+                Err(error) => {
+                    let _ = release_modifiers();
+                    errors.push(format!("{}: {}", backend.name(), error.message()));
+                }
+            }
+        }
+
+        Err(PeekabooXError::new(format!(
+            "all input backends failed: {}",
+            errors.join("; ")
+        )))
+    }
 }
 
 impl InputBackend for CommandInputBackend {
@@ -552,7 +604,14 @@ pub fn drag_with_options(
 }
 
 pub fn type_text(text: impl Into<String>) -> Result<InputExecutionMetadata> {
-    CommandInputBackend.execute_with_metadata(InputAction::TypeText(text.into()))
+    type_text_with_options(text, TypeTextOptions::default())
+}
+
+pub fn type_text_with_options(
+    text: impl Into<String>,
+    options: TypeTextOptions,
+) -> Result<InputExecutionMetadata> {
+    CommandInputBackend.type_text_with_options(text.into(), options)
 }
 
 pub fn paste_text(text: impl Into<String>) -> Result<InputExecutionMetadata> {
@@ -692,13 +751,13 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
                 ["click", "--delay", "0", ydotool_button(*button)],
             )
         }
-        (InputTool::Ydotool, InputAction::TypeText(text)) => run_command_with_stdin(
-            "ydotool",
-            ["type", "--delay", "120", "--key-delay", "45", "--file", "-"],
-            text,
-        ),
+        (InputTool::Ydotool, InputAction::TypeText(text)) => {
+            run_type_text_tool(tool, text, TypeTextOptions::default())
+        }
         (InputTool::Ydotool, InputAction::Hotkey(keys)) => ydotool_hotkey(keys),
-        (InputTool::Wtype, InputAction::TypeText(text)) => run_command("wtype", ["--", text]),
+        (InputTool::Wtype, InputAction::TypeText(text)) => {
+            run_type_text_tool(tool, text, TypeTextOptions::default())
+        }
         (InputTool::Xdotool, InputAction::Click { position, button }) => run_command(
             "xdotool",
             [
@@ -727,7 +786,7 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
             },
         ),
         (InputTool::Xdotool, InputAction::TypeText(text)) => {
-            run_command("xdotool", ["type", "--delay", "0", "--", text])
+            run_type_text_tool(tool, text, TypeTextOptions::default())
         }
         (InputTool::Xdotool, InputAction::Hotkey(keys)) => xdotool_hotkey(keys),
         (
@@ -756,6 +815,117 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
             tool.name(),
             action
         ))),
+    }
+}
+
+fn run_type_text_tool(tool: InputTool, text: &str, options: TypeTextOptions) -> Result<()> {
+    validate_type_text_options(options)?;
+    match tool {
+        InputTool::Ydotool => {
+            run_command_with_stdin_vec("ydotool", type_text_command_args(tool, options), text)
+        }
+        InputTool::Wtype => {
+            run_command_with_stdin_vec("wtype", type_text_command_args(tool, options), text)
+        }
+        InputTool::Xdotool => {
+            if let Some(delay_ms) = options.delay_ms {
+                sleep_ms(delay_ms);
+            }
+            run_command_with_stdin_vec("xdotool", type_text_command_args(tool, options), text)
+        }
+        _ => Err(PeekabooXError::new(format!(
+            "{} does not support text typing",
+            tool.name()
+        ))),
+    }
+}
+
+fn type_text_command_args(tool: InputTool, options: TypeTextOptions) -> Vec<String> {
+    match tool {
+        InputTool::Ydotool => vec![
+            "type".to_owned(),
+            "--delay".to_owned(),
+            type_initial_delay_ms(tool, options).to_string(),
+            "--key-delay".to_owned(),
+            type_key_delay_ms(tool, options).to_string(),
+            "--file".to_owned(),
+            "-".to_owned(),
+        ],
+        InputTool::Wtype => {
+            let mut args = Vec::new();
+            let initial_delay = type_initial_delay_ms(tool, options);
+            if initial_delay > 0 {
+                args.push("-s".to_owned());
+                args.push(initial_delay.to_string());
+            }
+            let key_delay = type_key_delay_ms(tool, options);
+            if key_delay > 0 {
+                args.push("-d".to_owned());
+                args.push(key_delay.to_string());
+            }
+            args.push("-".to_owned());
+            args
+        }
+        InputTool::Xdotool => vec![
+            "type".to_owned(),
+            "--delay".to_owned(),
+            type_key_delay_ms(tool, options).to_string(),
+            "--file".to_owned(),
+            "-".to_owned(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn type_initial_delay_ms(tool: InputTool, options: TypeTextOptions) -> u64 {
+    options.delay_ms.unwrap_or(match tool {
+        InputTool::Ydotool => 120,
+        _ => 0,
+    })
+}
+
+fn type_key_delay_ms(tool: InputTool, options: TypeTextOptions) -> u64 {
+    if let Some(delay_ms) = options.key_delay_ms {
+        return delay_ms;
+    }
+    if let Some(chars_per_second) = options.typing_speed_chars_per_second {
+        return typing_speed_to_key_delay_ms(chars_per_second);
+    }
+    match tool {
+        InputTool::Ydotool => 45,
+        _ => 0,
+    }
+}
+
+fn typing_speed_to_key_delay_ms(chars_per_second: u32) -> u64 {
+    if chars_per_second == 0 {
+        return 0;
+    }
+    1000_u64.div_ceil(u64::from(chars_per_second)).max(1)
+}
+
+fn validate_type_text_options(options: TypeTextOptions) -> Result<()> {
+    if options.typing_speed_chars_per_second == Some(0) {
+        return Err(PeekabooXError::new(
+            "typing_speed_chars_per_second must be greater than zero",
+        ));
+    }
+    if options.typing_speed_chars_per_second.is_some() && options.key_delay_ms.is_some() {
+        return Err(PeekabooXError::new(
+            "typing_speed_chars_per_second cannot be combined with key_delay_ms",
+        ));
+    }
+    if options.backend == InputToolSelection::Uinput {
+        return Err(PeekabooXError::new(
+            "type backend must be auto, wtype, ydotool, or xdotool",
+        ));
+    }
+    Ok(())
+}
+
+fn sleep_ms(milliseconds: u64) {
+    if milliseconds > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(milliseconds));
     }
 }
 
@@ -1569,11 +1739,7 @@ fn run_command<const N: usize>(program: &str, args: [&str; N]) -> Result<()> {
     )))
 }
 
-fn run_command_with_stdin<const N: usize>(
-    program: &str,
-    args: [&str; N],
-    stdin: &str,
-) -> Result<()> {
+fn run_command_with_stdin_vec(program: &str, args: Vec<String>, stdin: &str) -> Result<()> {
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::piped())
@@ -1615,7 +1781,7 @@ mod tests {
 
     use super::{
         InputAction, InputBackend, InputEnvironment, InputTool, InputToolSelection, MouseButton,
-        SessionType, UnimplementedInputBackend, candidate_backends,
+        SessionType, TypeTextOptions, UnimplementedInputBackend, candidate_backends,
         candidate_backends_with_selection,
     };
     use peekaboox_core::Point;
@@ -1794,6 +1960,69 @@ mod tests {
                 .remove(0);
 
         assert_eq!(backend.tool, InputTool::Ydotool);
+    }
+
+    #[test]
+    fn type_backend_selection_accepts_wtype() {
+        let environment = environment(SessionType::Wayland, ["wtype", "ydotool"], true);
+        let action = InputAction::TypeText("hello".to_owned());
+
+        let backend =
+            candidate_backends_with_selection(&environment, &action, InputToolSelection::Wtype)
+                .remove(0);
+
+        assert_eq!(backend.tool, InputTool::Wtype);
+    }
+
+    #[test]
+    fn type_text_options_map_speed_to_backend_delays() {
+        let options = TypeTextOptions {
+            typing_speed_chars_per_second: Some(20),
+            delay_ms: Some(10),
+            key_delay_ms: None,
+            backend: InputToolSelection::Wtype,
+        };
+
+        assert_eq!(
+            super::type_text_command_args(InputTool::Wtype, options),
+            ["-s", "10", "-d", "50", "-"].map(str::to_owned).to_vec()
+        );
+        assert_eq!(
+            super::type_text_command_args(InputTool::Xdotool, options),
+            ["type", "--delay", "50", "--file", "-"]
+                .map(str::to_owned)
+                .to_vec()
+        );
+        assert_eq!(
+            super::type_text_command_args(InputTool::Ydotool, options),
+            vec![
+                "type".to_owned(),
+                "--delay".to_owned(),
+                "10".to_owned(),
+                "--key-delay".to_owned(),
+                "50".to_owned(),
+                "--file".to_owned(),
+                "-".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn type_text_options_reject_ambiguous_speed_and_key_delay() {
+        let options = TypeTextOptions {
+            typing_speed_chars_per_second: Some(20),
+            delay_ms: None,
+            key_delay_ms: Some(50),
+            backend: InputToolSelection::Auto,
+        };
+
+        let error = super::validate_type_text_options(options).unwrap_err();
+
+        assert!(
+            error
+                .message()
+                .contains("cannot be combined with key_delay_ms")
+        );
     }
 
     #[test]

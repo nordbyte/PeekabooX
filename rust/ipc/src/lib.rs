@@ -50,6 +50,10 @@ pub struct ClickRequest {
 pub struct TypeTextRequest {
     pub text: String,
     pub typing_speed_chars_per_second: Option<u32>,
+    pub delay_ms: Option<u64>,
+    pub key_delay_ms: Option<u64>,
+    pub backend: Option<String>,
+    pub dry_run: bool,
 }
 
 pub trait PeekabooXApi {
@@ -193,7 +197,16 @@ pub enum ApiRequest {
     },
     TypeText {
         text: String,
+        #[serde(default)]
         dry_run: bool,
+        #[serde(default)]
+        typing_speed_chars_per_second: Option<u32>,
+        #[serde(default)]
+        delay_ms: Option<u64>,
+        #[serde(default)]
+        key_delay_ms: Option<u64>,
+        #[serde(default = "default_input_backend")]
+        backend: String,
     },
     PasteText {
         text: String,
@@ -1189,6 +1202,43 @@ mod tests {
         assert!(payload.contains(r#""method":"paste_text""#));
         assert!(payload.contains(r#""preserve_clipboard":true"#));
         assert_eq!(decode_request(&payload).unwrap(), request);
+    }
+
+    #[test]
+    fn type_text_request_round_trips_as_json() {
+        let request = ApiRequestEnvelope::new(ApiRequest::TypeText {
+            text: "hello".to_owned(),
+            dry_run: true,
+            typing_speed_chars_per_second: Some(20),
+            delay_ms: Some(10),
+            key_delay_ms: None,
+            backend: "wtype".to_owned(),
+        });
+        let payload = serde_json::to_string(&request).unwrap();
+
+        assert!(payload.contains(r#""method":"type_text""#));
+        assert!(payload.contains(r#""typing_speed_chars_per_second":20"#));
+        assert!(payload.contains(r#""backend":"wtype""#));
+        assert_eq!(decode_request(&payload).unwrap(), request);
+    }
+
+    #[test]
+    fn type_text_request_defaults_optional_fields() {
+        let payload =
+            r#"{"version":"peekaboox.v1","request":{"method":"type_text","text":"hello"}}"#;
+        let request = decode_request(payload).unwrap();
+
+        assert_eq!(
+            request,
+            ApiRequestEnvelope::new(ApiRequest::TypeText {
+                text: "hello".to_owned(),
+                dry_run: false,
+                typing_speed_chars_per_second: None,
+                delay_ms: None,
+                key_delay_ms: None,
+                backend: "auto".to_owned(),
+            })
+        );
     }
 
     #[test]

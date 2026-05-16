@@ -99,6 +99,7 @@ bash examples/desktop/elements_calculator.sh
 bash examples/desktop/ocr_visible_window.sh
 bash examples/desktop/move_pointer_path.sh
 bash examples/desktop/click_calculator_keypad.sh
+bash examples/desktop/type_text_editor_input.sh
 bash examples/desktop/paint_draw_and_save.sh
 bash examples/desktop/text_editor_save_dialog.sh
 bash examples/desktop/telegram_saved_messages.sh
@@ -184,6 +185,12 @@ digit `7` button through `peekaboox elements`, and exercises the raw
 window-scoped `--ratio`, JSON dry-runs, backend selection, bounds clamping, and
 cursor restore. It runs as dry-run by default; set `PEEKABOOX_CLICK_LIVE=1` to
 perform a real Calculator button click.
+
+`examples/desktop/type_text_editor_input.sh` exercises the raw `peekaboox type`
+command with `--text`, `--file`, `--stdin`, JSON dry-runs, backend selection,
+typing speed, initial delay, and per-key delay. It runs as dry-run by default;
+set `PEEKABOOX_TYPE_LIVE=1` to open GNOME Text Editor on a unique draft file,
+focus the document, type the sample text, save, and verify the file content.
 
 `examples/desktop/windows_inventory.sh` runs the enhanced `peekaboox windows`
 command with backend diagnostics, focused-window filtering, Calculator

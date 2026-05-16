@@ -1088,10 +1088,32 @@ class PeekabooXClient:
         self,
         text: str,
         typing_speed_chars_per_second: int | None = None,
+        *,
+        dry_run: bool = False,
+        backend: str | None = None,
+        delay_ms: int | None = None,
+        key_delay_ms: int | None = None,
     ) -> ActionResult:
-        request_kwargs: dict[str, Any] = {"text": text}
+        if typing_speed_chars_per_second is not None and typing_speed_chars_per_second <= 0:
+            raise ValueError("typing_speed_chars_per_second must be greater than zero")
+        if delay_ms is not None and delay_ms < 0:
+            raise ValueError("delay_ms must be non-negative")
+        if key_delay_ms is not None and key_delay_ms < 0:
+            raise ValueError("key_delay_ms must be non-negative")
+        if typing_speed_chars_per_second is not None and key_delay_ms is not None:
+            raise ValueError("typing_speed_chars_per_second cannot be combined with key_delay_ms")
+        if backend is not None and backend not in {"auto", "wtype", "ydotool", "xdotool"}:
+            raise ValueError("backend must be auto, wtype, ydotool, or xdotool")
+
+        request_kwargs: dict[str, Any] = {"text": text, "dry_run": dry_run}
         if typing_speed_chars_per_second is not None:
             request_kwargs["typing_speed_chars_per_second"] = typing_speed_chars_per_second
+        if backend is not None:
+            request_kwargs["backend"] = backend
+        if delay_ms is not None:
+            request_kwargs["delay_ms"] = delay_ms
+        if key_delay_ms is not None:
+            request_kwargs["key_delay_ms"] = key_delay_ms
         request = self.messages.TypeTextRequest(**request_kwargs)
         return _action_result_from_proto(self._call("TypeText", request))
 

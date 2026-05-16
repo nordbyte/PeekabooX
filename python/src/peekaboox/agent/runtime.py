@@ -68,6 +68,7 @@ from peekaboox import __version__ as PEEKABOOX_VERSION
 
 WINDOW_SORT_CHOICES = ("backend", "focused", "title", "app", "area", "id", "state")
 WINDOW_BACKEND_CHOICES = ("auto", "gnome", "at-spi", "xdotool")
+TYPE_BACKEND_CHOICES = ("auto", "wtype", "ydotool", "xdotool")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1887,17 +1888,53 @@ class AgentRuntime:
         self,
         text: str,
         typing_speed_chars_per_second: int | None = None,
+        *,
+        dry_run: bool = False,
+        backend: str | None = None,
+        delay_ms: int | None = None,
+        key_delay_ms: int | None = None,
     ) -> ActionResult:
+        if typing_speed_chars_per_second is not None and typing_speed_chars_per_second <= 0:
+            raise ValueError("typing_speed_chars_per_second must be greater than zero")
+        if delay_ms is not None and delay_ms < 0:
+            raise ValueError("delay_ms must be non-negative")
+        if key_delay_ms is not None and key_delay_ms < 0:
+            raise ValueError("key_delay_ms must be non-negative")
+        if typing_speed_chars_per_second is not None and key_delay_ms is not None:
+            raise ValueError("typing_speed_chars_per_second cannot be combined with key_delay_ms")
+        if backend is not None and backend not in TYPE_BACKEND_CHOICES:
+            raise ValueError("backend must be auto, wtype, ydotool, or xdotool")
         self._require_capability(Capability.TYPE_TEXT, "type_text", text_length=len(text))
-        self._require_preflight("type_text", "input")
-        self._require_confirmation(
-            DangerousAction.TYPE_TEXT,
-            "type_text",
-            text_length=len(text),
-            typing_speed_chars_per_second=typing_speed_chars_per_second,
+        if not dry_run:
+            self._require_preflight("type_text", "input")
+            self._require_confirmation(
+                DangerousAction.TYPE_TEXT,
+                "type_text",
+                text_length=len(text),
+                typing_speed_chars_per_second=typing_speed_chars_per_second,
+                backend=backend,
+                delay_ms=delay_ms,
+                key_delay_ms=key_delay_ms,
+            )
+        result = self._require_client().type_text(
+            text,
+            typing_speed_chars_per_second,
+            dry_run=dry_run,
+            backend=backend,
+            delay_ms=delay_ms,
+            key_delay_ms=key_delay_ms,
         )
-        result = self._require_client().type_text(text, typing_speed_chars_per_second)
-        self._record_step(WorkflowStep(action="type_text", value=text))
+        self._record_step(
+            WorkflowStep(
+                action="type_text",
+                value=text,
+                typing_speed_chars_per_second=typing_speed_chars_per_second,
+                delay_ms=delay_ms,
+                key_delay_ms=key_delay_ms,
+                backend=backend,
+                dry_run=dry_run,
+            )
+        )
         return result
 
     def paste_text(self, text: str, preserve_clipboard: bool = False) -> ActionResult:
@@ -1910,7 +1947,13 @@ class AgentRuntime:
             preserve_clipboard=preserve_clipboard,
         )
         result = self._require_client().paste_text(text, preserve_clipboard=preserve_clipboard)
-        self._record_step(WorkflowStep(action="paste_text", value=text))
+        self._record_step(
+            WorkflowStep(
+                action="paste_text",
+                value=text,
+                preserve_clipboard=preserve_clipboard,
+            )
+        )
         return result
 
     def hotkey(self, keys: Sequence[str] | str) -> ActionResult:
@@ -2110,11 +2153,21 @@ class AgentRuntime:
         if action in {"type", "type_text"}:
             if step.value is None:
                 raise ValueError("type_text step requires value")
-            return self.type_text(step.value)
+            return self.type_text(
+                step.value,
+                typing_speed_chars_per_second=step.typing_speed_chars_per_second,
+                dry_run=step.dry_run,
+                backend=step.backend,
+                delay_ms=step.delay_ms,
+                key_delay_ms=step.key_delay_ms,
+            )
         if action in {"paste", "paste_text"}:
             if step.value is None:
                 raise ValueError("paste_text step requires value")
-            return self.paste_text(step.value)
+            return self.paste_text(
+                step.value,
+                preserve_clipboard=step.preserve_clipboard,
+            )
         if action == "hotkey":
             if step.value is None:
                 raise ValueError("hotkey step requires value")

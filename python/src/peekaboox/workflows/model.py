@@ -31,6 +31,10 @@ class WorkflowStep:
     steps: int | None = None
     bounds_policy: str | None = None
     backend: str | None = None
+    typing_speed_chars_per_second: int | None = None
+    delay_ms: int | None = None
+    key_delay_ms: int | None = None
+    preserve_clipboard: bool = False
     restore: bool = False
     dry_run: bool = False
     vision_fallback: bool = False

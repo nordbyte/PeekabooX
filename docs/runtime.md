@@ -165,7 +165,7 @@ as JSON or YAML:
 runtime.start_recording("manual-submit")
 runtime.find_element("role=push button,label=Submit")
 runtime.click_selector("role=push button,label=Submit", vision_fallback=True)
-runtime.type_text("Hello")
+runtime.type_text("Hello", typing_speed_chars_per_second=20, backend="wtype")
 runtime.save_recording("recordings/manual-submit.yaml")
 ```
 
@@ -173,6 +173,9 @@ runtime.save_recording("recordings/manual-submit.yaml")
 `app`, `window_title`, `window_id`, and the `vision_*` fallback detector tuning
 arguments. Scoped or vision-tuned lookups bypass stale graph cache hits and go
 to the daemon so the requested window and detector options are honored.
+Text input steps preserve `typing_speed_chars_per_second`, `delay_ms`,
+`key_delay_ms`, `backend`, and `dry_run` through recording and replay. Paste
+steps preserve `preserve_clipboard`.
 
 When recording coordinate clicks, the runtime samples semantic desktop state if
 needed and stores a stable selector such as `role=push button,label=Submit`
