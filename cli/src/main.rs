@@ -8946,11 +8946,8 @@ fn launcher_command(args: Vec<String>) -> Result<(), CliError> {
             print_launcher_usage();
             Err(CliError::HelpRequested)
         }
-        value => launch_app(args.as_slice()).or_else(|_| {
-            Err(CliError::Failure(format!(
-                "unknown launcher command: {value}"
-            )))
-        }),
+        value => launch_app(args.as_slice())
+            .map_err(|_| CliError::Failure(format!("unknown launcher command: {value}"))),
     }
 }
 
