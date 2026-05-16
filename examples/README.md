@@ -32,6 +32,8 @@ accessibility, and input backends:
 bash examples/desktop/live_smoke.sh
 bash examples/desktop/capture_backends_diagnostics.sh
 bash examples/desktop/capture_delta_stream.sh
+python3 examples/python/capture_delta_runtime.py
+bash examples/mcp/jsonrpc_capture_delta.sh
 bash examples/desktop/windows_inventory.sh
 bash examples/desktop/elements_accessibility_probe.sh
 bash examples/desktop/elements_calculator.sh
@@ -59,6 +61,14 @@ full-frame captures, follow-up low-bandwidth deltas, forced full-frame requests,
 independent stream state, and region-scoped streams. It writes per-step JSON
 responses under `target/examples/capture-delta`. Override
 `PEEKABOOX_CAPTURE_DELTA_REGION` to change the region stream.
+
+`examples/python/capture_delta_runtime.py` and
+`examples/mcp/jsonrpc_capture_delta.sh` run the same capture-delta stream checks
+through `AgentRuntime.connect(...)` and MCP JSON-RPC `tools/call` respectively.
+Both start a temporary observe-only daemon with gRPC and write JSON responses
+under `target/examples/python-capture-delta` or
+`target/examples/mcp-capture-delta`. Set `PEEKABOOX_PYTHON_BIN` when your system
+Python does not already have the packaged `grpcio` and `protobuf` dependencies.
 
 `examples/desktop/paint_draw_and_save.sh` opens a blank PNG in `drawing`,
 `pinta`, or `kolourpaint`, locates the canvas through `peekaboox desktop`,

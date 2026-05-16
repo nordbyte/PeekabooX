@@ -278,6 +278,8 @@ class PeekabooXClient:
 
     target: str = DEFAULT_GRPC_TARGET
     timeout_seconds: float = 5.0
+    max_receive_message_bytes: int = 64 * 1024 * 1024
+    max_send_message_bytes: int = 64 * 1024 * 1024
     stub: Any | None = field(default=None, repr=False)
     messages: ModuleType | Any | None = field(default=None, repr=False)
     _grpc: ModuleType | Any | None = field(default=None, init=False, repr=False)
@@ -292,7 +294,13 @@ class PeekabooXClient:
         if self.messages is None:
             self.messages = messages
         if self.stub is None:
-            self._channel = grpc_module.insecure_channel(self.target)
+            self._channel = grpc_module.insecure_channel(
+                self.target,
+                options=[
+                    ("grpc.max_receive_message_length", self.max_receive_message_bytes),
+                    ("grpc.max_send_message_length", self.max_send_message_bytes),
+                ],
+            )
             self.stub = services.PeekabooXStub(self._channel)
 
     def close(self) -> None:
