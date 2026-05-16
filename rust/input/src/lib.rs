@@ -279,6 +279,9 @@ impl InputTool {
                 | (Self::Ydotool, InputAction::TypeText(_))
                 | (Self::Ydotool, InputAction::Hotkey(_))
                 | (Self::Wtype, InputAction::TypeText(_))
+                | (Self::WlClipboard, InputAction::TypeText(_))
+                | (Self::XclipClipboard, InputAction::TypeText(_))
+                | (Self::XselClipboard, InputAction::TypeText(_))
                 | (Self::Xdotool, InputAction::MoveMouse(_))
                 | (Self::Xdotool, InputAction::Click { .. })
                 | (Self::Xdotool, InputAction::Drag { .. })
@@ -648,15 +651,17 @@ pub fn candidate_backends(
                 candidates.push(InputTool::WlClipboard);
                 candidates.push(InputTool::XclipClipboard);
                 candidates.push(InputTool::XselClipboard);
+            } else if matches!(action, InputAction::TypeText(_)) {
+                candidates.push(InputTool::Wtype);
+                candidates.push(InputTool::WlClipboard);
+                candidates.push(InputTool::XclipClipboard);
+                candidates.push(InputTool::XselClipboard);
+                candidates.push(InputTool::Ydotool);
+                candidates.push(InputTool::Xdotool);
             } else {
                 candidates.push(InputTool::Uinput);
-                if matches!(action, InputAction::TypeText(_)) {
-                    candidates.push(InputTool::Wtype);
-                    candidates.push(InputTool::Ydotool);
-                } else {
-                    candidates.push(InputTool::Ydotool);
-                    candidates.push(InputTool::Wtype);
-                }
+                candidates.push(InputTool::Ydotool);
+                candidates.push(InputTool::Wtype);
                 candidates.push(InputTool::Xdotool);
             }
         }
@@ -665,6 +670,13 @@ pub fn candidate_backends(
                 candidates.push(InputTool::XclipClipboard);
                 candidates.push(InputTool::XselClipboard);
                 candidates.push(InputTool::WlClipboard);
+            } else if matches!(action, InputAction::TypeText(_)) {
+                candidates.push(InputTool::Xdotool);
+                candidates.push(InputTool::XclipClipboard);
+                candidates.push(InputTool::XselClipboard);
+                candidates.push(InputTool::WlClipboard);
+                candidates.push(InputTool::Ydotool);
+                candidates.push(InputTool::Wtype);
             } else {
                 candidates.push(InputTool::Xdotool);
                 candidates.push(InputTool::Uinput);
@@ -677,6 +689,13 @@ pub fn candidate_backends(
                 candidates.push(InputTool::WlClipboard);
                 candidates.push(InputTool::XclipClipboard);
                 candidates.push(InputTool::XselClipboard);
+            } else if matches!(action, InputAction::TypeText(_)) {
+                candidates.push(InputTool::Wtype);
+                candidates.push(InputTool::WlClipboard);
+                candidates.push(InputTool::XclipClipboard);
+                candidates.push(InputTool::XselClipboard);
+                candidates.push(InputTool::Ydotool);
+                candidates.push(InputTool::Xdotool);
             } else {
                 candidates.push(InputTool::Ydotool);
                 candidates.push(InputTool::Uinput);
@@ -832,6 +851,9 @@ fn run_type_text_tool(tool: InputTool, text: &str, options: TypeTextOptions) -> 
                 sleep_ms(delay_ms);
             }
             run_command_with_stdin_vec("xdotool", type_text_command_args(tool, options), text)
+        }
+        InputTool::WlClipboard | InputTool::XclipClipboard | InputTool::XselClipboard => {
+            clipboard_paste(tool, text, true)
         }
         _ => Err(PeekabooXError::new(format!(
             "{} does not support text typing",
@@ -1837,6 +1859,16 @@ mod tests {
         let backend = candidate_backends(&environment, &action).remove(0);
 
         assert_eq!(backend.tool, InputTool::Wtype);
+    }
+
+    #[test]
+    fn selects_clipboard_fallback_for_wayland_typing_before_ydotool() {
+        let environment = environment(SessionType::Wayland, ["wl-copy", "ydotool"], true);
+        let action = InputAction::TypeText("layout sensitive text".to_owned());
+
+        let backend = candidate_backends(&environment, &action).remove(0);
+
+        assert_eq!(backend.tool, InputTool::WlClipboard);
     }
 
     #[test]

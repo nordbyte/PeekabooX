@@ -138,7 +138,8 @@ movement with `--duration-ms` and `--steps`, bounds policies with `--clamp` or
 `--restore`, and backend selection via `--backend auto|uinput|ydotool|xdotool`.
 Input prefers direct `/dev/uinput` pointer events on Wayland, uses `ydotool` for
 Wayland hotkeys, prefers `wtype` for Wayland text where available with
-`ydotool` as fallback, and prefers `xdotool` on X11. Text input accepts
+clipboard paste as the exact-text fallback before layout-sensitive `ydotool`,
+and prefers `xdotool` on X11. Text input accepts
 `--backend auto|wtype|ydotool|xdotool`, `--typing-speed <chars-per-second>`,
 explicit `--key-delay-ms`, optional initial `--delay-ms`, structured `--json`
 output, and text from positional arguments, `--text`, `--stdin`, or `--file`.
