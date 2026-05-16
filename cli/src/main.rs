@@ -1,9 +1,10 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 mod doctor;
 
 use peekaboox_accessibility::{AccessibilityTreeMetadata, ElementQuery};
-use peekaboox_core::{BackendKind, Point, Rect, UiElement};
+use peekaboox_core::{BackendKind, Point, Rect, UiElement, WindowInfo};
 use peekaboox_desktop::{
     AssertOptions, ClickOptions as DesktopClickOptions, DesktopAssertion, DesktopDragOptions,
     FocusOptions, LocateOptions, TypeIntoOptions,
@@ -12,11 +13,12 @@ use peekaboox_input::MouseButton;
 use peekaboox_ipc::{
     ActionResultDto, ApiRequest, ApiResponse, ApiResult, CaptureBackendDto, CaptureBackendProbeDto,
     CaptureBackendProbeResultDto, CaptureBackendsResultDto, CaptureDeltaResultDto,
-    DesktopActionResultDto, DesktopAssertionDto, DesktopLocateResultDto, DmaBufImportTargetDto,
-    DmaBufProbeResultDto, ElementDto, ElementListResultDto, MouseButtonDto, OcrBlockDto,
-    OcrResultDto, PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
-    PluginToolExecutionResultDto, RectDto, UiStateDto, VisualDiffDto, WindowBackendReportDto,
-    WindowDto, WindowListResultDto, ZeroCopyBackendDto, default_socket_path, send_request,
+    CaptureResultDto, DesktopActionResultDto, DesktopAssertionDto, DesktopLocateResultDto,
+    DmaBufImportTargetDto, DmaBufProbeResultDto, ElementDto, ElementListResultDto, MouseButtonDto,
+    OcrBlockDto, OcrResultDto, PluginDiscoveryErrorDto, PluginDto, PluginListResultDto,
+    PluginToolDto, PluginToolExecutionResultDto, RectDto, UiStateDto, VisualDiffDto,
+    WindowBackendReportDto, WindowDto, WindowListResultDto, ZeroCopyBackendDto,
+    default_socket_path, send_request,
 };
 use peekaboox_vision::{
     OcrConfig, OcrOptions, OcrPreprocessingOptions, OcrResult, TesseractOcrBackend,
@@ -266,12 +268,42 @@ struct CaptureArgs {
     output: PathBuf,
     region: Option<Rect>,
     window_id: Option<String>,
+    app: Option<String>,
+    window_title: Option<String>,
+    title_regex: Option<String>,
+    format: CaptureOutputFormat,
+    json: bool,
+    stdout: bool,
+    no_overwrite: bool,
+    include_semantic_tree: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CaptureCommand {
     Run(CaptureArgs),
     Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureOutputFormat {
+    Png,
+    Xwd,
+}
+
+impl CaptureOutputFormat {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Xwd => "xwd",
+        }
+    }
+
+    fn mime_type(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Xwd => "image/x-xwindowdump",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -587,12 +619,23 @@ fn capture(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
     };
 
     if context.use_daemon {
+        if args.stdout {
+            return Err(CliError::Failure(
+                "capture --stdout is only supported without --daemon".to_owned(),
+            ));
+        }
         let result = daemon_request(
             context,
             ApiRequest::Capture {
                 output: args.output.display().to_string(),
                 region: args.region.map(RectDto::from),
                 window_id: args.window_id,
+                app: args.app,
+                window_title: args.window_title,
+                title_regex: args.title_regex,
+                format: Some(args.format.as_str().to_owned()),
+                no_overwrite: args.no_overwrite,
+                include_semantic_tree: args.include_semantic_tree,
             },
         )?;
         let ApiResult::Capture(metadata) = result else {
@@ -600,58 +643,80 @@ fn capture(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 "daemon returned unexpected capture response".to_owned(),
             ));
         };
-        println!(
-            "captured {} bytes to {} via {}",
-            metadata.bytes_written, metadata.output_path, metadata.backend_name
-        );
+        if args.json {
+            print_json_pretty(&metadata)?;
+        } else {
+            print_capture_result_dto(&metadata);
+        }
         return Ok(());
     }
 
-    let region = capture_region_from_args(args.region, args.window_id.as_deref())?;
-    let metadata = capture_cli_to_file(&args.output, region)
-        .map_err(|error| CliError::Failure(error.to_string()))?;
-
-    println!(
-        "captured {} bytes to {} via {}",
-        metadata.bytes_written,
-        metadata.output_path.display(),
-        metadata.backend_name
-    );
+    let target = capture_target_from_args(&args)?;
+    let result = capture_cli_execute(&args, target)?;
+    if let Some(bytes) = result.stdout_bytes {
+        std::io::stdout()
+            .write_all(&bytes)
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+        return Ok(());
+    }
+    if args.json {
+        print_json_pretty(&result.metadata)?;
+    } else {
+        print_capture_result_dto(&result.metadata);
+    }
 
     Ok(())
 }
 
 fn parse_capture_args(args: Vec<String>) -> Result<CaptureCommand, CliError> {
-    let mut output = PathBuf::from("screenshot.png");
+    let mut output = None;
     let mut region = None;
     let mut window_id = None;
+    let mut app = None;
+    let mut window_title = None;
+    let mut title_regex = None;
+    let mut format = CaptureOutputFormat::Png;
+    let mut json = false;
+    let mut stdout = false;
+    let mut no_overwrite = false;
+    let mut include_semantic_tree = false;
     let mut index = 0;
 
     while index < args.len() {
         match args[index].as_str() {
             "--output" | "-o" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --output".to_owned()));
-                };
-                output = PathBuf::from(value);
+                output = Some(PathBuf::from(parse_next_string(
+                    &args, &mut index, "--output",
+                )?));
             }
             "--region" | "-r" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --region".to_owned()));
-                };
-                region = Some(parse_rect("--region", value)?);
+                let value = parse_next_string(&args, &mut index, "--region")?;
+                region = Some(parse_rect("--region", &value)?);
             }
             "--window-id" | "--window" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure(
-                        "missing value for --window-id".to_owned(),
-                    ));
-                };
-                window_id = non_empty_cli_string(value);
+                let value = parse_next_string(&args, &mut index, "--window-id")?;
+                window_id = non_empty_cli_string(&value);
             }
+            "--app" => {
+                let value = parse_next_string(&args, &mut index, "--app")?;
+                app = non_empty_cli_string(&value);
+            }
+            "--window-title" | "--title" => {
+                let value = parse_next_string(&args, &mut index, "--window-title")?;
+                window_title = non_empty_cli_string(&value);
+            }
+            "--title-regex" => {
+                let value = parse_next_string(&args, &mut index, "--title-regex")?;
+                title_regex = non_empty_cli_string(&value);
+            }
+            "--format" => {
+                let value = parse_next_string(&args, &mut index, "--format")?;
+                format = parse_capture_output_format(&value)?;
+            }
+            "--json" => json = true,
+            "--stdout" => stdout = true,
+            "--no-overwrite" => no_overwrite = true,
+            "--include-semantic-tree" => include_semantic_tree = true,
             "--help" | "-h" => return Ok(CaptureCommand::Help),
             unknown => {
                 return Err(CliError::Failure(format!(
@@ -663,9 +728,50 @@ fn parse_capture_args(args: Vec<String>) -> Result<CaptureCommand, CliError> {
         index += 1;
     }
 
-    if region.is_some() && window_id.is_some() {
+    if stdout && json {
         return Err(CliError::Failure(
-            "provide either --region or --window-id, not both".to_owned(),
+            "capture --stdout cannot be combined with --json".to_owned(),
+        ));
+    }
+    if stdout && no_overwrite {
+        return Err(CliError::Failure(
+            "capture --stdout cannot be combined with --no-overwrite".to_owned(),
+        ));
+    }
+    if stdout && format != CaptureOutputFormat::Png {
+        return Err(CliError::Failure(
+            "capture --stdout currently supports PNG output only".to_owned(),
+        ));
+    }
+    if include_semantic_tree && !json {
+        return Err(CliError::Failure(
+            "capture --include-semantic-tree requires --json".to_owned(),
+        ));
+    }
+    if format == CaptureOutputFormat::Xwd
+        && (region.is_some()
+            || window_id.is_some()
+            || app.is_some()
+            || window_title.is_some()
+            || title_regex.is_some())
+    {
+        return Err(CliError::Failure(
+            "capture --format xwd only supports full-screen file output".to_owned(),
+        ));
+    }
+
+    let output = output.unwrap_or_else(|| match format {
+        CaptureOutputFormat::Png => PathBuf::from("screenshot.png"),
+        CaptureOutputFormat::Xwd => PathBuf::from("screenshot.xwd"),
+    });
+    if format == CaptureOutputFormat::Xwd
+        && !output
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("xwd"))
+    {
+        return Err(CliError::Failure(
+            "capture --format xwd output path must end in .xwd".to_owned(),
         ));
     }
 
@@ -673,6 +779,14 @@ fn parse_capture_args(args: Vec<String>) -> Result<CaptureCommand, CliError> {
         output,
         region,
         window_id,
+        app,
+        window_title,
+        title_regex,
+        format,
+        json,
+        stdout,
+        no_overwrite,
+        include_semantic_tree,
     }))
 }
 
@@ -4789,34 +4903,235 @@ fn capture_cli_to_file(
     }
 }
 
-fn capture_region_from_args(
-    region: Option<Rect>,
-    window_id: Option<&str>,
-) -> Result<Option<Rect>, CliError> {
-    if region.is_some() && window_id.is_some_and(|value| !value.trim().is_empty()) {
-        return Err(CliError::Failure(
-            "provide either --region or --window-id, not both".to_owned(),
-        ));
+#[derive(Debug, Clone)]
+struct CaptureTarget {
+    capture_region: Option<Rect>,
+    window: Option<WindowInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct CaptureCliExecutionResult {
+    metadata: CaptureResultDto,
+    stdout_bytes: Option<Vec<u8>>,
+}
+
+fn capture_cli_execute(
+    args: &CaptureArgs,
+    target: CaptureTarget,
+) -> Result<CaptureCliExecutionResult, CliError> {
+    if args.format == CaptureOutputFormat::Xwd {
+        let output_path = ensure_capture_output_path(&args.output, args.no_overwrite)?;
+        let metadata = peekaboox_capture::capture_screen_to_file(&output_path)
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+        return Ok(CaptureCliExecutionResult {
+            metadata: CaptureResultDto {
+                output_path: metadata.output_path.display().to_string(),
+                backend_name: metadata.backend_name,
+                backend_kind: backend_kind_label(metadata.backend_kind),
+                bytes_written: metadata.bytes_written,
+                width: 0,
+                height: 0,
+                mime_type: args.format.mime_type().to_owned(),
+                capture_region: None,
+                window_id: None,
+                window: None,
+                captured_at_unix_ms: unix_time_ms_u64(),
+                source: "file-backend".to_owned(),
+                semantic_tree: Vec::new(),
+            },
+            stdout_bytes: None,
+        });
     }
-    if let Some(region) = region {
-        return Ok(Some(region));
-    }
-    let Some(window_id) = window_id.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(None);
+
+    let output_path = if args.stdout {
+        None
+    } else {
+        Some(ensure_capture_output_path(&args.output, args.no_overwrite)?)
     };
-    let metadata =
-        peekaboox_windows::list_windows().map_err(|error| CliError::Failure(error.to_string()))?;
+    let frame_metadata = match target.capture_region {
+        Some(region) => peekaboox_capture::capture_region_frame(region),
+        None => peekaboox_capture::capture_screen_frame(),
+    }
+    .map_err(|error| CliError::Failure(error.to_string()))?;
+    let width = frame_metadata.frame.width;
+    let height = frame_metadata.frame.height;
+    let source = capture_frame_source_label(frame_metadata.source).to_owned();
+    let captured_at_unix_ms = unix_time_ms_u64();
+    let (bytes_written, stdout_bytes, output_path_label) = if let Some(output_path) = output_path {
+        let bytes_written = peekaboox_capture::write_frame_png(&frame_metadata.frame, &output_path)
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+        (bytes_written, None, output_path.display().to_string())
+    } else {
+        let bytes = peekaboox_capture::encode_frame_png(&frame_metadata.frame)
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+        (bytes.len() as u64, Some(bytes), String::new())
+    };
+    let semantic_tree = if args.include_semantic_tree {
+        peekaboox_accessibility::semantic_tree()
+            .map_err(|error| CliError::Failure(error.to_string()))?
+            .elements
+            .iter()
+            .map(ElementDto::from)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let window_id = target.window.as_ref().map(|window| window.id.clone());
+    let window = target.window.as_ref().map(WindowDto::from);
+
+    Ok(CaptureCliExecutionResult {
+        metadata: CaptureResultDto {
+            output_path: output_path_label,
+            backend_name: frame_metadata.backend_name,
+            backend_kind: backend_kind_label(frame_metadata.backend_kind),
+            bytes_written,
+            width,
+            height,
+            mime_type: args.format.mime_type().to_owned(),
+            capture_region: target.capture_region.map(RectDto::from),
+            window_id,
+            window,
+            captured_at_unix_ms,
+            source,
+            semantic_tree,
+        },
+        stdout_bytes,
+    })
+}
+
+fn capture_target_from_args(args: &CaptureArgs) -> Result<CaptureTarget, CliError> {
+    let window = resolve_capture_window(args)?;
+    let capture_region = match (&window, args.region) {
+        (Some(window), Some(region)) => Some(offset_window_relative_region(window.bounds, region)?),
+        (Some(window), None) => Some(window.bounds),
+        (None, Some(region)) => Some(region),
+        (None, None) => None,
+    };
+
+    Ok(CaptureTarget {
+        capture_region,
+        window,
+    })
+}
+
+fn resolve_capture_window(args: &CaptureArgs) -> Result<Option<WindowInfo>, CliError> {
+    if args.window_id.is_none()
+        && args.app.is_none()
+        && args.window_title.is_none()
+        && args.title_regex.is_none()
+    {
+        return Ok(None);
+    }
+
+    let query = peekaboox_windows::WindowQuery {
+        id: args.window_id.clone(),
+        app: args.app.clone(),
+        title: args.window_title.clone(),
+        title_regex: args.title_regex.clone(),
+        focused_only: false,
+        limit: None,
+        sort: peekaboox_windows::WindowSort::Focused,
+        backend: peekaboox_windows::WindowBackendSelection::Auto,
+        diagnose: false,
+    };
+    let metadata = peekaboox_windows::list_windows_with_query(query)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
     let window = metadata
         .windows
-        .iter()
-        .find(|window| window.id == window_id)
-        .ok_or_else(|| CliError::Failure(format!("window not found: {window_id}")))?;
+        .into_iter()
+        .next()
+        .ok_or_else(|| CliError::Failure("no window matched capture filters".to_owned()))?;
     if window.bounds.width == 0 || window.bounds.height == 0 {
         return Err(CliError::Failure(format!(
-            "window {window_id} has empty bounds"
+            "window {} has empty bounds",
+            window.id
         )));
     }
-    Ok(Some(window.bounds))
+    Ok(Some(window))
+}
+
+fn offset_window_relative_region(origin: Rect, region: Rect) -> Result<Rect, CliError> {
+    if region.x < 0 || region.y < 0 {
+        return Err(CliError::Failure(
+            "window-relative capture region must start inside the window".to_owned(),
+        ));
+    }
+    let right = i64::from(region.x) + i64::from(region.width);
+    let bottom = i64::from(region.y) + i64::from(region.height);
+    if right > i64::from(origin.width) || bottom > i64::from(origin.height) {
+        return Err(CliError::Failure(
+            "window-relative capture region must fit inside the window".to_owned(),
+        ));
+    }
+    let x = i64::from(origin.x) + i64::from(region.x);
+    let y = i64::from(origin.y) + i64::from(region.y);
+    Ok(Rect::new(
+        i32::try_from(x)
+            .map_err(|_| CliError::Failure("window-relative region x overflow".to_owned()))?,
+        i32::try_from(y)
+            .map_err(|_| CliError::Failure("window-relative region y overflow".to_owned()))?,
+        region.width,
+        region.height,
+    ))
+}
+
+fn ensure_capture_output_path(output: &Path, no_overwrite: bool) -> Result<PathBuf, CliError> {
+    let output = if output.is_absolute() {
+        output.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| CliError::Failure(error.to_string()))?
+            .join(output)
+    };
+    if no_overwrite && output.exists() {
+        return Err(CliError::Failure(format!(
+            "capture output already exists: {}",
+            output.display()
+        )));
+    }
+    Ok(output)
+}
+
+fn unix_time_ms_u64() -> u64 {
+    u64::try_from(monotonic_ms()).unwrap_or(u64::MAX)
+}
+
+fn parse_capture_output_format(value: &str) -> Result<CaptureOutputFormat, CliError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "png" => Ok(CaptureOutputFormat::Png),
+        "xwd" => Ok(CaptureOutputFormat::Xwd),
+        other => Err(CliError::Failure(format!(
+            "invalid capture format {other:?}; expected png or xwd"
+        ))),
+    }
+}
+
+fn print_capture_result_dto(metadata: &CaptureResultDto) {
+    if metadata.output_path.is_empty() {
+        println!(
+            "captured {} bytes via {} ({}x{}, {})",
+            metadata.bytes_written,
+            metadata.backend_name,
+            metadata.width,
+            metadata.height,
+            metadata.source
+        );
+    } else if metadata.width == 0 || metadata.height == 0 {
+        println!(
+            "captured {} bytes to {} via {}",
+            metadata.bytes_written, metadata.output_path, metadata.backend_name
+        );
+    } else {
+        println!(
+            "captured {} bytes to {} via {} ({}x{}, {})",
+            metadata.bytes_written,
+            metadata.output_path,
+            metadata.backend_name,
+            metadata.width,
+            metadata.height,
+            metadata.source
+        );
+    }
 }
 
 fn format_rect(rect: Rect) -> String {
@@ -5985,7 +6300,7 @@ fn print_usage() {
 
 fn print_capture_usage() {
     println!(
-        "Usage: peekaboox capture [--output <path>] [--region x,y,width,height | --window-id <id>]"
+        "Usage: peekaboox capture [--output <path>|--stdout] [--format png|xwd] [--region x,y,width,height] [--window-id <id>|--app <name>|--window-title <text>|--title-regex <regex>] [--json] [--include-semantic-tree] [--no-overwrite]"
     );
 }
 
@@ -6117,17 +6432,18 @@ mod tests {
     use super::{
         CaptureArgs, CaptureBackendsArgs, CaptureBackendsCommand, CaptureCommand, CaptureDeltaArgs,
         CaptureDeltaCommand, CaptureDmaBufArgs, CaptureDmaBufCommand, CaptureDmaBufImportTarget,
-        CliContext, CliError, ClickArgs, ClickCommand, ClickTarget, CompareArgs, CompareCommand,
-        DesktopAssertArgs, DesktopClickArgs, DesktopCommand, DesktopDragArgs, DesktopFocusArgs,
-        DesktopLocateArgs, DesktopProfilesArgs, DesktopTypeIntoArgs, DragArgs, DragCommand,
-        ElementsArgs, ElementsCommand, GlobalArgs, HotkeyArgs, HotkeyCommand, MoveArgs,
-        MoveCommand, OcrArgs, OcrCommand, PluginsArgs, PluginsCommand, TypeArgs, TypeCommand,
-        UiStateArgs, UiStateCommand, VisionElementsArgs, VisionElementsCommand, WindowsArgs,
-        WindowsCommand, parse_capture_args, parse_capture_backends_args, parse_capture_delta_args,
-        parse_capture_dmabuf_args, parse_click_args, parse_compare_args, parse_desktop_args,
-        parse_drag_args, parse_elements_args, parse_global_args, parse_hotkey_args,
-        parse_move_args, parse_ocr_args, parse_plugins_args, parse_type_args, parse_ui_state_args,
-        parse_vision_elements_args, parse_windows_args,
+        CaptureOutputFormat, CliContext, CliError, ClickArgs, ClickCommand, ClickTarget,
+        CompareArgs, CompareCommand, DesktopAssertArgs, DesktopClickArgs, DesktopCommand,
+        DesktopDragArgs, DesktopFocusArgs, DesktopLocateArgs, DesktopProfilesArgs,
+        DesktopTypeIntoArgs, DragArgs, DragCommand, ElementsArgs, ElementsCommand, GlobalArgs,
+        HotkeyArgs, HotkeyCommand, MoveArgs, MoveCommand, OcrArgs, OcrCommand, PluginsArgs,
+        PluginsCommand, TypeArgs, TypeCommand, UiStateArgs, UiStateCommand, VisionElementsArgs,
+        VisionElementsCommand, WindowsArgs, WindowsCommand, parse_capture_args,
+        parse_capture_backends_args, parse_capture_delta_args, parse_capture_dmabuf_args,
+        parse_click_args, parse_compare_args, parse_desktop_args, parse_drag_args,
+        parse_elements_args, parse_global_args, parse_hotkey_args, parse_move_args, parse_ocr_args,
+        parse_plugins_args, parse_type_args, parse_ui_state_args, parse_vision_elements_args,
+        parse_windows_args,
     };
     use peekaboox_core::{Point, Rect};
     use peekaboox_desktop::DesktopAssertion;
@@ -6143,6 +6459,14 @@ mod tests {
                 output: PathBuf::from("screenshot.png"),
                 region: None,
                 window_id: None,
+                app: None,
+                window_title: None,
+                title_regex: None,
+                format: CaptureOutputFormat::Png,
+                json: false,
+                stdout: false,
+                no_overwrite: false,
+                include_semantic_tree: false,
             })
         );
     }
@@ -6180,6 +6504,14 @@ mod tests {
                 output: PathBuf::from("tmp/screenshot.png"),
                 region: None,
                 window_id: None,
+                app: None,
+                window_title: None,
+                title_regex: None,
+                format: CaptureOutputFormat::Png,
+                json: false,
+                stdout: false,
+                no_overwrite: false,
+                include_semantic_tree: false,
             })
         );
     }
@@ -6202,6 +6534,14 @@ mod tests {
                 output: PathBuf::from("tmp/region.png"),
                 region: Some(Rect::new(10, 20, 100, 40)),
                 window_id: None,
+                app: None,
+                window_title: None,
+                title_regex: None,
+                format: CaptureOutputFormat::Png,
+                json: false,
+                stdout: false,
+                no_overwrite: false,
+                include_semantic_tree: false,
             })
         );
         assert_eq!(
@@ -6210,23 +6550,91 @@ mod tests {
                 output: PathBuf::from("screenshot.png"),
                 region: None,
                 window_id: Some("window-1".to_owned()),
+                app: None,
+                window_title: None,
+                title_regex: None,
+                format: CaptureOutputFormat::Png,
+                json: false,
+                stdout: false,
+                no_overwrite: false,
+                include_semantic_tree: false,
             })
         );
     }
 
     #[test]
-    fn capture_rejects_region_and_window_id_together() {
-        let error = parse_capture_args(vec![
+    fn capture_accepts_window_relative_region_and_filters() {
+        let command = parse_capture_args(vec![
             "--region".to_owned(),
             "10,20,100,40".to_owned(),
             "--window-id".to_owned(),
             "window-1".to_owned(),
+            "--app".to_owned(),
+            "calculator".to_owned(),
+            "--window-title".to_owned(),
+            "Calculator".to_owned(),
+            "--title-regex".to_owned(),
+            "Calc.*".to_owned(),
+            "--json".to_owned(),
+            "--include-semantic-tree".to_owned(),
+            "--no-overwrite".to_owned(),
         ])
-        .unwrap_err();
+        .unwrap();
 
         assert_eq!(
-            error,
-            CliError::Failure("provide either --region or --window-id, not both".to_owned())
+            command,
+            CaptureCommand::Run(CaptureArgs {
+                output: PathBuf::from("screenshot.png"),
+                region: Some(Rect::new(10, 20, 100, 40)),
+                window_id: Some("window-1".to_owned()),
+                app: Some("calculator".to_owned()),
+                window_title: Some("Calculator".to_owned()),
+                title_regex: Some("Calc.*".to_owned()),
+                format: CaptureOutputFormat::Png,
+                json: true,
+                stdout: false,
+                no_overwrite: true,
+                include_semantic_tree: true,
+            })
+        );
+    }
+
+    #[test]
+    fn capture_accepts_stdout_and_xwd_format() {
+        let stdout = parse_capture_args(vec!["--stdout".to_owned()]).unwrap();
+        let xwd = parse_capture_args(vec!["--format".to_owned(), "xwd".to_owned()]).unwrap();
+
+        assert_eq!(
+            stdout,
+            CaptureCommand::Run(CaptureArgs {
+                output: PathBuf::from("screenshot.png"),
+                region: None,
+                window_id: None,
+                app: None,
+                window_title: None,
+                title_regex: None,
+                format: CaptureOutputFormat::Png,
+                json: false,
+                stdout: true,
+                no_overwrite: false,
+                include_semantic_tree: false,
+            })
+        );
+        assert_eq!(
+            xwd,
+            CaptureCommand::Run(CaptureArgs {
+                output: PathBuf::from("screenshot.xwd"),
+                region: None,
+                window_id: None,
+                app: None,
+                window_title: None,
+                title_regex: None,
+                format: CaptureOutputFormat::Xwd,
+                json: false,
+                stdout: false,
+                no_overwrite: false,
+                include_semantic_tree: false,
+            })
         );
     }
 

@@ -63,6 +63,18 @@ pub enum ApiRequest {
         region: Option<RectDto>,
         #[serde(default)]
         window_id: Option<String>,
+        #[serde(default)]
+        app: Option<String>,
+        #[serde(default)]
+        window_title: Option<String>,
+        #[serde(default)]
+        title_regex: Option<String>,
+        #[serde(default)]
+        format: Option<String>,
+        #[serde(default)]
+        no_overwrite: bool,
+        #[serde(default)]
+        include_semantic_tree: bool,
     },
     CaptureDelta {
         #[serde(default)]
@@ -448,12 +460,21 @@ pub enum ApiResult {
     DesktopLocate(DesktopLocateResultDto),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaptureResultDto {
     pub output_path: String,
     pub backend_name: String,
     pub backend_kind: String,
     pub bytes_written: u64,
+    pub width: u32,
+    pub height: u32,
+    pub mime_type: String,
+    pub capture_region: Option<RectDto>,
+    pub window_id: Option<String>,
+    pub window: Option<WindowDto>,
+    pub captured_at_unix_ms: u64,
+    pub source: String,
+    pub semantic_tree: Vec<ElementDto>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1104,6 +1125,12 @@ mod tests {
                 height: 40,
             }),
             window_id: None,
+            app: None,
+            window_title: None,
+            title_regex: None,
+            format: None,
+            no_overwrite: false,
+            include_semantic_tree: false,
         });
         let payload = serde_json::to_string(&request).unwrap();
 
@@ -1115,10 +1142,22 @@ mod tests {
             output: "window.png".to_owned(),
             region: None,
             window_id: Some("window-1".to_owned()),
+            app: Some("calculator".to_owned()),
+            window_title: Some("Calculator".to_owned()),
+            title_regex: Some("Calc.*".to_owned()),
+            format: Some("png".to_owned()),
+            no_overwrite: true,
+            include_semantic_tree: true,
         });
         let payload = serde_json::to_string(&window_request).unwrap();
 
         assert!(payload.contains(r#""window_id":"window-1""#));
+        assert!(payload.contains(r#""app":"calculator""#));
+        assert!(payload.contains(r#""window_title":"Calculator""#));
+        assert!(payload.contains(r#""title_regex":"Calc.*""#));
+        assert!(payload.contains(r#""format":"png""#));
+        assert!(payload.contains(r#""no_overwrite":true"#));
+        assert!(payload.contains(r#""include_semantic_tree":true"#));
         assert_eq!(decode_request(&payload).unwrap(), window_request);
     }
 

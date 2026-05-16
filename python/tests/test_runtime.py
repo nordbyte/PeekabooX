@@ -82,6 +82,7 @@ class FakeClient:
         self.desktop_calls: list[tuple[str, dict[str, object]]] = []
         self.last_window_query: dict[str, object] | None = None
         self.last_window_result_query: dict[str, object] | None = None
+        self.last_capture: dict[str, object] | None = None
 
     def capture_screen(
         self,
@@ -89,6 +90,11 @@ class FakeClient:
         region: Rect | None = None,
         window_id: str | None = None,
     ) -> CaptureScreenResult:
+        self.last_capture = {
+            "include_semantic_tree": include_semantic_tree,
+            "region": region,
+            "window_id": window_id,
+        }
         semantic_tree = (
             self._submit_button(),
         ) if include_semantic_tree else ()
@@ -2600,6 +2606,42 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(desktop_type["action"], "type-into")
         self.assertEqual(desktop_assert["action"], "assert")
         self.assertEqual(fake_client.desktop_calls[-1][0], "assert")
+
+    def test_capture_screen_resolves_window_filters_and_relative_region(self) -> None:
+        fake_client = FakeClient()
+        runtime = AgentRuntime(client=fake_client)
+
+        runtime.capture_screen(
+            region=Rect(x=10, y=20, width=100, height=40),
+            app="Terminal",
+            title_regex="Term.*",
+        )
+
+        self.assertEqual(
+            fake_client.last_window_result_query,
+            {
+                "id": None,
+                "app": "Terminal",
+                "title": None,
+                "title_regex": "Term.*",
+                "focused": False,
+                "limit": 1,
+                "sort": "focused",
+                "backend": None,
+                "diagnose": False,
+            },
+        )
+        self.assertIsNotNone(fake_client.last_capture)
+        self.assertEqual(
+            fake_client.last_capture["region"],
+            Rect(x=11, y=22, width=100, height=40),
+        )
+        self.assertIsNone(fake_client.last_capture["window_id"])
+
+        runtime.capture_screen(window_title="Terminal")
+        self.assertIsNotNone(fake_client.last_capture)
+        self.assertIsNone(fake_client.last_capture["region"])
+        self.assertEqual(fake_client.last_capture["window_id"], "window-1")
 
     def test_mcp_server_calls_list_plugins_tool(self) -> None:
         with TemporaryDirectory() as tmpdir:

@@ -30,6 +30,7 @@ print(runtime.doctor().categories)
 print(runtime.preflight(["desktop", "capture"], operation="capture_screen"))
 print(runtime.find_element("role=push button"))
 print(runtime.ocr_screen().text)
+print(runtime.capture_screen(app="calculator", title_regex="Calculator").metadata)
 print(
     runtime.capture_delta(
         stream_id="agent-loop",

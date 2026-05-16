@@ -65,6 +65,7 @@ accessibility, and input backends:
 ```bash
 bash examples/desktop/live_smoke.sh
 bash examples/desktop/capture_backends_diagnostics.sh
+./examples/desktop/capture_window_targets.sh
 python3 examples/python/capture_backends_runtime.py
 bash examples/mcp/jsonrpc_capture_backends.sh
 bash examples/desktop/capture_delta_stream.sh
@@ -90,6 +91,14 @@ optional DMA-BUF capture paths, and checks the daemon-routed command surface
 through a temporary observe-only `peekabooxd` socket. It writes per-run JSON
 reports and probe output under `target/examples/capture-backends`. Override
 `PEEKABOOX_CAPTURE_BACKENDS_REGION` to change the region probe.
+
+`examples/desktop/capture_window_targets.sh` opens or reuses Calculator and
+validates the main `capture` command surface: app/title-regex window targeting,
+window-relative regions, JSON metadata, semantic-tree metadata, PNG stdout,
+XWD output, and `--no-overwrite`. It writes artifacts under
+`target/examples/capture-window-targets`. Override `PEEKABOOX_CAPTURE_APP`,
+`PEEKABOOX_CAPTURE_APP_QUERY`, or `PEEKABOOX_CAPTURE_TITLE_REGEX` for custom
+desktops.
 
 `examples/python/capture_backends_runtime.py` and
 `examples/mcp/jsonrpc_capture_backends.sh` run matching capture-backends

@@ -70,6 +70,8 @@ peekaboox doctor --json
 peekaboox capture --output screenshot.png
 peekaboox capture --region 10,20,400,240 --output region.png
 peekaboox capture --window-id window-1 --output window.png
+peekaboox capture --app calculator --title-regex Calculator --json --output calculator.png
+peekaboox capture --stdout > screenshot.png
 
 # Inspect windows and semantic UI elements.
 peekaboox windows --json
@@ -115,7 +117,7 @@ Shell-native completion generation is not part of the current CLI surface.
 
 | Command | Key flags / subcommands | What it does |
 | --- | --- | --- |
-| [capture](docs/cli.md#capture) | `--output`, `--region`, `--window-id` | Save a screenshot from the active desktop session |
+| [capture](docs/cli.md#capture) | `--output`, `--region`, `--window-id`, `--app`, `--title-regex`, `--json`, `--stdout` | Save a screenshot from the active desktop session |
 | [capture-delta](docs/cli.md#capture-delta) | `--stream`, `--low-bandwidth`, `--reset`, `--json` | Return full-frame or changed-rectangle capture deltas |
 | [capture-backends](docs/cli.md#capture-backends-and-dma-buf) | `--json`, `--diagnose`, `--probe`, `--output`, `--format` | Inspect and probe screenshot and zero-copy backends |
 | [capture-dmabuf](docs/cli.md#capture-backends-and-dma-buf) | `--import egl`, `--import egl-texture` | Probe optional PipeWire DMA-BUF import paths |

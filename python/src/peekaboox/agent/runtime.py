@@ -728,9 +728,19 @@ class AgentRuntime:
         include_semantic_tree: bool = False,
         region: Rect | None = None,
         window_id: str | None = None,
+        app: str | None = None,
+        window_title: str | None = None,
+        title_regex: str | None = None,
     ) -> CaptureScreenResult:
         self._require_capability(Capability.OBSERVE, "capture_screen")
         self._require_preflight("capture_screen", ("desktop", "capture"))
+        region, window_id = self._capture_screen_target(
+            region=region,
+            window_id=window_id,
+            app=app,
+            window_title=window_title,
+            title_regex=title_regex,
+        )
         result = self._require_client().capture_screen(
             include_semantic_tree,
             region=region,
@@ -738,6 +748,42 @@ class AgentRuntime:
         )
         self._record_step(WorkflowStep(action="observe"))
         return result
+
+    def _capture_screen_target(
+        self,
+        *,
+        region: Rect | None,
+        window_id: str | None,
+        app: str | None,
+        window_title: str | None,
+        title_regex: str | None,
+    ) -> tuple[Rect | None, str | None]:
+        if not any(
+            _clean_optional_string(value)
+            for value in (window_id, app, window_title, title_regex)
+        ):
+            return region, None
+
+        kwargs = _window_query_kwargs(
+            id=window_id,
+            app=app,
+            title=window_title,
+            title_regex=title_regex,
+            focused=False,
+            limit=1,
+            sort="focused",
+            backend=None,
+            diagnose=False,
+        )
+        windows = self._require_client().list_windows_result(**kwargs).windows
+        if not windows:
+            raise RuntimeError("no window matched capture filters")
+        window = windows[0]
+        if window.bounds.width <= 0 or window.bounds.height <= 0:
+            raise RuntimeError(f"window {window.id} has empty bounds")
+        if region is None:
+            return None, window.id
+        return _window_relative_rect(window.bounds, region), None
 
     def capture_delta(
         self,
@@ -2376,6 +2422,19 @@ def _clean_optional_string(value: str | None) -> str | None:
         return None
     value = value.strip()
     return value or None
+
+
+def _window_relative_rect(origin: Rect, region: Rect) -> Rect:
+    if region.x < 0 or region.y < 0:
+        raise ValueError("window-relative capture region must start inside the window")
+    if region.x + region.width > origin.width or region.y + region.height > origin.height:
+        raise ValueError("window-relative capture region must fit inside the window")
+    return Rect(
+        x=origin.x + region.x,
+        y=origin.y + region.y,
+        width=region.width,
+        height=region.height,
+    )
 
 
 def _positive_int(value: str) -> int:

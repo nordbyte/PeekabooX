@@ -804,6 +804,9 @@ class McpServer:
                         "include_semantic_tree": {"type": "boolean", "default": False},
                         "region": RECT_SCHEMA,
                         "window_id": {"type": "string"},
+                        "app": {"type": "string"},
+                        "window_title": {"type": "string"},
+                        "title_regex": {"type": "string"},
                     }
                 ),
                 self._capture_screen,
@@ -1703,6 +1706,9 @@ class McpServer:
             include_semantic_tree=bool(arguments.get("include_semantic_tree", False)),
             region=_optional_rect(arguments, "region"),
             window_id=_optional_string(arguments, "window_id"),
+            app=_optional_string(arguments, "app"),
+            window_title=_optional_string(arguments, "window_title"),
+            title_regex=_optional_string(arguments, "title_regex"),
         )
         payload = _to_mcp_value(result)
         payload["image_base64"] = payload.pop("image")

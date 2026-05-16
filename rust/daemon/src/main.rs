@@ -1453,18 +1453,24 @@ fn dispatch_request(
             output,
             region,
             window_id,
-        } => {
-            let capture_region =
-                capture_region_from_request(region.map(Rect::from), window_id.as_deref())?;
-            let metadata =
-                capture_to_file(output, capture_region).map_err(|error| error.to_string())?;
-            Ok(ApiResult::Capture(CaptureResultDto {
-                output_path: metadata.output_path.display().to_string(),
-                backend_name: metadata.backend_name,
-                backend_kind: backend_kind_name(metadata.backend_kind),
-                bytes_written: metadata.bytes_written,
-            }))
-        }
+            app,
+            window_title,
+            title_regex,
+            format,
+            no_overwrite,
+            include_semantic_tree,
+        } => Ok(ApiResult::Capture(capture_to_file_response(
+            &output,
+            region.map(Rect::from),
+            window_id.as_deref(),
+            app.as_deref(),
+            window_title.as_deref(),
+            title_regex.as_deref(),
+            format.as_deref(),
+            no_overwrite,
+            include_semantic_tree,
+            accessibility_cache,
+        )?)),
         ApiRequest::CaptureDelta {
             stream_id,
             reset,
@@ -2910,6 +2916,240 @@ fn capture_to_file(
         Some(region) => peekaboox_capture::capture_region_to_file(region, output),
         None => peekaboox_capture::capture_screen_to_file(output),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureFileFormat {
+    Png,
+    Xwd,
+}
+
+impl CaptureFileFormat {
+    fn mime_type(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Xwd => "image/x-xwindowdump",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CaptureFileTarget {
+    capture_region: Option<Rect>,
+    window: Option<WindowInfo>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_to_file_response(
+    output: &str,
+    region: Option<Rect>,
+    window_id: Option<&str>,
+    app: Option<&str>,
+    window_title: Option<&str>,
+    title_regex: Option<&str>,
+    format: Option<&str>,
+    no_overwrite: bool,
+    include_semantic_tree: bool,
+    accessibility_cache: &SharedAccessibilityCache,
+) -> Result<CaptureResultDto, String> {
+    let format = capture_file_format_from_request(format)?;
+    if format == CaptureFileFormat::Xwd
+        && (region.is_some() || has_capture_window_scope(window_id, app, window_title, title_regex))
+    {
+        return Err("capture format xwd only supports full-screen file output".to_owned());
+    }
+    let output_path = ensure_capture_output_path(Path::new(output), no_overwrite)?;
+    if format == CaptureFileFormat::Xwd
+        && !output_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("xwd"))
+    {
+        return Err("capture format xwd output path must end in .xwd".to_owned());
+    }
+
+    if format == CaptureFileFormat::Xwd {
+        let metadata = peekaboox_capture::capture_screen_to_file(&output_path)
+            .map_err(|error| error.to_string())?;
+        return Ok(CaptureResultDto {
+            output_path: metadata.output_path.display().to_string(),
+            backend_name: metadata.backend_name,
+            backend_kind: backend_kind_name(metadata.backend_kind),
+            bytes_written: metadata.bytes_written,
+            width: 0,
+            height: 0,
+            mime_type: format.mime_type().to_owned(),
+            capture_region: None,
+            window_id: None,
+            window: None,
+            captured_at_unix_ms: unix_time_ms_u64(),
+            source: "file-backend".to_owned(),
+            semantic_tree: capture_semantic_tree_dto(include_semantic_tree, accessibility_cache)?,
+        });
+    }
+
+    let target = resolve_capture_file_target(region, window_id, app, window_title, title_regex)?;
+    let frame_metadata = match target.capture_region {
+        Some(region) => peekaboox_capture::capture_region_frame(region),
+        None => peekaboox_capture::capture_screen_frame(),
+    }
+    .map_err(|error| error.to_string())?;
+    let bytes_written = peekaboox_capture::write_frame_png(&frame_metadata.frame, &output_path)
+        .map_err(|error| error.to_string())?;
+    let window_id = target.window.as_ref().map(|window| window.id.clone());
+    let window = target.window.as_ref().map(WindowDto::from);
+
+    Ok(CaptureResultDto {
+        output_path: output_path.display().to_string(),
+        backend_name: frame_metadata.backend_name,
+        backend_kind: backend_kind_name(frame_metadata.backend_kind),
+        bytes_written,
+        width: frame_metadata.frame.width,
+        height: frame_metadata.frame.height,
+        mime_type: format.mime_type().to_owned(),
+        capture_region: target.capture_region.map(RectDto::from),
+        window_id,
+        window,
+        captured_at_unix_ms: unix_time_ms_u64(),
+        source: capture_frame_source_label(frame_metadata.source).to_owned(),
+        semantic_tree: capture_semantic_tree_dto(include_semantic_tree, accessibility_cache)?,
+    })
+}
+
+fn capture_file_format_from_request(format: Option<&str>) -> Result<CaptureFileFormat, String> {
+    match format.unwrap_or("png").trim().to_ascii_lowercase().as_str() {
+        "" | "png" => Ok(CaptureFileFormat::Png),
+        "xwd" => Ok(CaptureFileFormat::Xwd),
+        other => Err(format!(
+            "invalid capture format {other:?}; expected png or xwd"
+        )),
+    }
+}
+
+fn has_capture_window_scope(
+    window_id: Option<&str>,
+    app: Option<&str>,
+    window_title: Option<&str>,
+    title_regex: Option<&str>,
+) -> bool {
+    clean_str(window_id).is_some()
+        || clean_str(app).is_some()
+        || clean_str(window_title).is_some()
+        || clean_str(title_regex).is_some()
+}
+
+fn clean_str(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn resolve_capture_file_target(
+    region: Option<Rect>,
+    window_id: Option<&str>,
+    app: Option<&str>,
+    window_title: Option<&str>,
+    title_regex: Option<&str>,
+) -> Result<CaptureFileTarget, String> {
+    let Some(window) = resolve_capture_file_window(window_id, app, window_title, title_regex)?
+    else {
+        return Ok(CaptureFileTarget {
+            capture_region: region,
+            window: None,
+        });
+    };
+    let capture_region = match region {
+        Some(region) => offset_window_relative_capture_region(window.bounds, region)?,
+        None => window.bounds,
+    };
+    Ok(CaptureFileTarget {
+        capture_region: Some(capture_region),
+        window: Some(window),
+    })
+}
+
+fn resolve_capture_file_window(
+    window_id: Option<&str>,
+    app: Option<&str>,
+    window_title: Option<&str>,
+    title_regex: Option<&str>,
+) -> Result<Option<WindowInfo>, String> {
+    let id = clean_str(window_id).map(str::to_owned);
+    let app = clean_str(app).map(str::to_owned);
+    let title = clean_str(window_title).map(str::to_owned);
+    let title_regex = clean_str(title_regex).map(str::to_owned);
+    if id.is_none() && app.is_none() && title.is_none() && title_regex.is_none() {
+        return Ok(None);
+    }
+
+    let query = peekaboox_windows::WindowQuery {
+        id,
+        app,
+        title,
+        title_regex,
+        sort: peekaboox_windows::WindowSort::Focused,
+        ..peekaboox_windows::WindowQuery::default()
+    };
+    let metadata =
+        peekaboox_windows::list_windows_with_query(query).map_err(|error| error.to_string())?;
+    let window = metadata
+        .windows
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no window matched capture filters".to_owned())?;
+    if window.bounds.width == 0 || window.bounds.height == 0 {
+        return Err(format!("window {} has empty bounds", window.id));
+    }
+    Ok(Some(window))
+}
+
+fn offset_window_relative_capture_region(origin: Rect, region: Rect) -> Result<Rect, String> {
+    if region.x < 0 || region.y < 0 {
+        return Err("window-relative capture region must start inside the window".to_owned());
+    }
+    let right = i64::from(region.x) + i64::from(region.width);
+    let bottom = i64::from(region.y) + i64::from(region.height);
+    if right > i64::from(origin.width) || bottom > i64::from(origin.height) {
+        return Err("window-relative capture region must fit inside the window".to_owned());
+    }
+    let x = i64::from(origin.x) + i64::from(region.x);
+    let y = i64::from(origin.y) + i64::from(region.y);
+    Ok(Rect::new(
+        i32::try_from(x).map_err(|_| "window-relative region x overflow".to_owned())?,
+        i32::try_from(y).map_err(|_| "window-relative region y overflow".to_owned())?,
+        region.width,
+        region.height,
+    ))
+}
+
+fn ensure_capture_output_path(output: &Path, no_overwrite: bool) -> Result<PathBuf, String> {
+    let output = if output.is_absolute() {
+        output.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| error.to_string())?
+            .join(output)
+    };
+    if no_overwrite && output.exists() {
+        return Err(format!(
+            "capture output already exists: {}",
+            output.display()
+        ));
+    }
+    Ok(output)
+}
+
+fn capture_semantic_tree_dto(
+    include_semantic_tree: bool,
+    accessibility_cache: &SharedAccessibilityCache,
+) -> Result<Vec<ElementDto>, String> {
+    if !include_semantic_tree {
+        return Ok(Vec::new());
+    }
+    Ok(cached_accessibility_tree(accessibility_cache)?
+        .metadata
+        .elements
+        .iter()
+        .map(ElementDto::from)
+        .collect())
 }
 
 fn capture_backends_result(
@@ -5295,10 +5535,22 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             output,
             region,
             window_id,
+            app,
+            window_title,
+            title_regex,
+            format,
+            no_overwrite,
+            include_semantic_tree,
         } => json!({
             "output": output,
             "has_region": region.is_some(),
-            "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty())
+            "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_app": app.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_window_title": window_title.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "has_title_regex": title_regex.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "format": format.as_deref(),
+            "no_overwrite": no_overwrite,
+            "include_semantic_tree": include_semantic_tree
         }),
         ApiRequest::CaptureDelta {
             stream_id,

@@ -211,6 +211,11 @@ delta = runtime.capture_delta(
 )
 backends = runtime.capture_backends(output="screen.png", diagnose=True, probe="frame")
 window_capture = runtime.capture_screen(window_id="window-1")
+app_capture = runtime.capture_screen(app="calculator", title_regex="Calculator")
+window_region = runtime.capture_screen(
+    app="calculator",
+    region=Rect(x=10, y=10, width=220, height=160),
+)
 diff = runtime.compare_image_files("before.png", "after.png", max_changed_ratio=0.01)
 ui_state = runtime.detect_ui_state_from_image_files(["frame1.png", "frame2.png", "frame3.png"])
 target = runtime.desktop_locate("telegram", "search-input")
@@ -489,8 +494,10 @@ lookup and add `limit`; `vision_elements` aliases `detect_ui_elements`,
 `list_windows` supports `id`, `app`, `title`, `title_regex`, `focused`,
 `limit`, `sort`, `backend`, and `diagnose` arguments through MCP, matching the
 daemon CLI and Python runtime client.
-`capture_screen` accepts optional `region` or `window_id`; `capture_delta`
-accepts `stream_id`, `reset`, optional `region` or `window_id`,
+`capture_screen` accepts optional `region`, `window_id`, `app`, `window_title`,
+and `title_regex`. When a region is combined with a window filter, the region is
+resolved relative to the matched window before capture. `capture_delta` accepts
+`stream_id`, `reset`, optional `region` or `window_id`,
 `per_channel_threshold`, and `low_bandwidth` for persistent low-bandwidth
 capture streams. `capture_backends` accepts `output`, optional `region`,
 `diagnose`, and `probe` values `none`, `file`, `frame`, `region`, `dmabuf`, or
@@ -631,8 +638,12 @@ Supported request methods:
 - `list_plugins`
 - `call_plugin_tool`
 
-Daemon-routed `capture` requests accept `output` plus optional `region` or
-`window_id`. Daemon-routed `capture_delta` requests accept `stream_id`, `reset`,
+Daemon-routed `capture` requests accept `output` plus optional `region`,
+`window_id`, `app`, `window_title`, `title_regex`, `format` (`png` or `xwd`),
+`no_overwrite`, and `include_semantic_tree`. JSON responses include output
+path, backend, byte count, dimensions, MIME type, capture region, matched
+window, source, timestamp, and optional semantic tree. Daemon-routed
+`capture_delta` requests accept `stream_id`, `reset`,
 optional `region` or `window_id`, `per_channel_threshold`, and `low_bandwidth`.
 `low_bandwidth=true` is the default and returns changed-rectangle patches after
 the first frame; `low_bandwidth=false` forces a full-frame patch for that

@@ -34,6 +34,10 @@ Create a screenshot in the current Linux desktop session:
 cargo run -q -p peekaboox-cli -- capture --output screenshot.png
 cargo run -q -p peekaboox-cli -- capture --region 10,20,400,240 --output region.png
 cargo run -q -p peekaboox-cli -- --daemon capture --window-id window-1 --output window.png
+cargo run -q -p peekaboox-cli -- capture --app calculator --title-regex Calculator --json --output calculator.png
+cargo run -q -p peekaboox-cli -- capture --window-id window-1 --region 10,10,220,160 --output window-region.png
+cargo run -q -p peekaboox-cli -- capture --stdout > screenshot.png
+cargo run -q -p peekaboox-cli -- capture --format xwd --output screenshot.xwd
 ```
 
 The capture implementation detects the session and prefers
@@ -41,6 +45,13 @@ The capture implementation detects the session and prefers
 fallbacks where available. Incremental capture first tries direct
 stdout-to-frame capture through backends that can emit image bytes without a
 daemon-managed screenshot file, then falls back to file-only capture backends.
+`capture` can target a full screen, absolute region, exact `--window-id`, or
+window filters via `--app`, `--window-title`, and `--title-regex`. A `--region`
+combined with a window filter is interpreted relative to that window. Add
+`--json` for structured metadata (`width`, `height`, `mime_type`,
+`capture_region`, `window_id`, `source`, and timestamp), `--include-semantic-tree`
+to embed current accessibility elements in that JSON response, `--stdout` to
+emit PNG bytes, and `--no-overwrite` to reject existing output files.
 
 ## Capture Backends and DMA-BUF
 
