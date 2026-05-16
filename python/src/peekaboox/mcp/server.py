@@ -3229,6 +3229,23 @@ def _tool_annotations(name: str) -> dict[str, Any]:
 def _tool_output_schema(name: str) -> dict[str, Any]:
     object_schema = {"type": "object", "additionalProperties": True}
     array_schema = {"type": "array", "items": {"type": "object", "additionalProperties": True}}
+    desktop_action_schema = {
+        "type": "object",
+        "properties": {
+            "app": {"type": "string"},
+            "action": {"type": "string"},
+            "detail": {"type": "string"},
+            "backend_name": {"type": "string"},
+            "verified": {"type": "boolean"},
+            "verification_detail": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "focus_diagnostics": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["app", "action", "detail", "backend_name", "verified", "focus_diagnostics"],
+        "additionalProperties": True,
+    }
     if name == "capture_screen":
         return {
             "type": "object",
@@ -3253,6 +3270,14 @@ def _tool_output_schema(name: str) -> dict[str, Any]:
             "required": ["ok", "message"],
             "additionalProperties": True,
         }
+    if name in {
+        "desktop_focus",
+        "desktop_click",
+        "desktop_drag",
+        "desktop_type_into",
+        "desktop_assert",
+    }:
+        return desktop_action_schema
     return object_schema
 
 

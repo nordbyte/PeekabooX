@@ -672,6 +672,9 @@ class FakeClient:
             action="focus",
             detail="focused",
             backend_name="fake-desktop",
+            verified=True,
+            verification_detail="window fake-window is focused",
+            focus_diagnostics=["windows: selected fake-window", "verify: fake-window focused"],
         )
 
     def desktop_locate(self, app: str, target: str, **kwargs) -> DesktopLocateResult:
@@ -1017,6 +1020,9 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("release_before", hotkey_schema)
         self.assertIn("release_after", hotkey_schema)
         self.assertIn("outputSchema", server.tools["capture_screen"].descriptor())
+        desktop_focus_output = server.tools["desktop_focus"].descriptor()["outputSchema"]
+        self.assertIn("focus_diagnostics", desktop_focus_output["properties"])
+        self.assertIn("focus_diagnostics", desktop_focus_output["required"])
         self.assertIn("annotations", server.tools["click"].descriptor())
         self.assertTrue(server.tools["capture_screen"].descriptor()["annotations"]["readOnlyHint"])
         self.assertTrue(server.tools["click"].descriptor()["annotations"]["destructiveHint"])
@@ -3045,6 +3051,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(fake_client.last_hotkey_options["release_after"])
         self.assertEqual(state["active_window"]["title"], "Terminal")
         self.assertEqual(desktop_focus["action"], "focus")
+        self.assertEqual(
+            desktop_focus["focus_diagnostics"],
+            ["windows: selected fake-window", "verify: fake-window focused"],
+        )
         self.assertEqual(desktop_locate["x"], 10)
         self.assertEqual(desktop_click["action"], "click")
         self.assertEqual(desktop_drag["action"], "drag")
@@ -3722,6 +3732,32 @@ class RuntimeTests(unittest.TestCase):
         text_payload = json.loads(response["result"]["content"][0]["text"])
         self.assertEqual(text_payload[0]["bounds"]["width"], 90)
         self.assertTrue(fake_client.last_vision_fallback)
+
+    def test_mcp_server_returns_desktop_focus_diagnostics_in_structured_content(self) -> None:
+        server = McpServer(runtime=AgentRuntime(client=FakeClient()))
+        server.register_default_tools()
+
+        response = server.handle_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "desktop_focus",
+                    "arguments": {"app": "telegram", "verify": True},
+                },
+            }
+        )
+
+        self.assertFalse(response["result"]["isError"])
+        structured = response["result"]["structuredContent"]
+        self.assertEqual(structured["action"], "focus")
+        self.assertEqual(
+            structured["focus_diagnostics"],
+            ["windows: selected fake-window", "verify: fake-window focused"],
+        )
+        text_payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertEqual(text_payload["focus_diagnostics"], structured["focus_diagnostics"])
 
     def test_mcp_server_handles_jsonrpc_execute_workflow_tool_call(self) -> None:
         server = McpServer(runtime=AgentRuntime(client=FakeClient()))

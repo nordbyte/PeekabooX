@@ -63,6 +63,8 @@ print(
     ).elements
 )
 print(runtime.desktop_locate("telegram", "search-input"))
+focus = runtime.desktop_focus("telegram", verify=True)
+print(focus.focus_diagnostics)
 runtime.desktop_click("telegram", "search-input", dry_run=True)
 runtime.desktop_type_into("telegram", "message-input", "PeekabooX", dry_run=True)
 runtime.click_selector("role=push button,label=Submit", vision_fallback=True)

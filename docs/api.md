@@ -467,6 +467,9 @@ The stdio and HTTP transports handle `initialize`, `ping`, `tools/list`, `tools/
 `notifications/initialized`. Tool calls return `structuredContent` plus a
 serialized JSON text content block for compatibility. Image-producing tools
 such as `capture_screen` also return an MCP `image` content block.
+Desktop action tools declare an `outputSchema` with `focus_diagnostics`; MCP
+clients can read the same ordered focus lookup, fallback, and verification
+entries from `structuredContent` without parsing the text content block.
 HTTP accepts JSON-RPC POST requests on `/mcp`; SSE exposes `/sse` with endpoint
 and tool-list events for clients that discover HTTP JSON-RPC through
 server-sent events.
@@ -600,6 +603,9 @@ filters and is the discovery surface for command arguments, target capability
 metadata, and installation checks. Use `window_id` for exact-window targeting
 when multiple windows share an app profile; use `verify: true` on focus, click,
 drag, or type-into calls when the caller needs an immediate postcondition check.
+`desktop_focus`, `desktop_click`, `desktop_drag`, and `desktop_type_into` return
+`focus_diagnostics` when they focus an app or window before the requested
+action; the field is also present as an empty list when no focus path ran.
 `click` and `find_element` both accept `vision_fallback: true`; when a fresh
 graph cache hits, `find_element` returns cached elements directly and semantic
 `click` uses the cached element center as a coordinate click.
