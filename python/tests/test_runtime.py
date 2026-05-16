@@ -1320,6 +1320,112 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(connect.call_args.kwargs["preflight_mode"], "strict")
         self.assertEqual(connect.call_args.kwargs["preflight_timeout_seconds"], 2.5)
 
+    def test_agent_cli_preflight_prints_json_result(self) -> None:
+        output = StringIO()
+        doctor = DoctorResult(
+            status="ok",
+            checks=(
+                DoctorCheck(
+                    name="capture-frame",
+                    status="warn",
+                    detail="no direct backend candidate detected",
+                ),
+            ),
+            categories=(
+                DoctorCategory(
+                    name="desktop",
+                    status="ok",
+                    severity="info",
+                    ok_count=1,
+                    warn_count=0,
+                    fail_count=0,
+                    total_count=1,
+                ),
+                DoctorCategory(
+                    name="capture",
+                    status="warn",
+                    severity="warning",
+                    ok_count=0,
+                    warn_count=1,
+                    fail_count=0,
+                    total_count=1,
+                ),
+            ),
+            ok_count=1,
+            warn_count=1,
+            fail_count=0,
+            exit_code=0,
+        )
+
+        with (
+            patch("sys.stdout", output),
+            patch("peekaboox.agent.runtime.run_doctor", return_value=doctor) as run,
+        ):
+            exit_code = agent_runtime_module.main(
+                [
+                    "--preflight-mode",
+                    "strict",
+                    "--preflight-timeout",
+                    "2.5",
+                    "preflight",
+                    "desktop",
+                    "capture",
+                    "--operation",
+                    "capture_screen",
+                    "--timeout",
+                    "1.5",
+                ]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        run.assert_called_once_with(strict=False, timeout_seconds=1.5)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["required_categories"], ["desktop", "capture"])
+        self.assertEqual(payload["warning_categories"], ["capture"])
+        self.assertEqual(payload["operation"], "capture_screen")
+
+    def test_agent_cli_preflight_require_returns_failure_for_blocked_category(self) -> None:
+        output = StringIO()
+        doctor = DoctorResult(
+            status="fail",
+            checks=(
+                DoctorCheck(
+                    name="display-server",
+                    status="fail",
+                    detail="neither WAYLAND_DISPLAY nor DISPLAY is set",
+                ),
+            ),
+            categories=(
+                DoctorCategory(
+                    name="desktop",
+                    status="fail",
+                    severity="error",
+                    ok_count=0,
+                    warn_count=0,
+                    fail_count=1,
+                    total_count=1,
+                ),
+            ),
+            ok_count=0,
+            warn_count=0,
+            fail_count=1,
+            exit_code=0,
+        )
+
+        with (
+            patch("sys.stdout", output),
+            patch("peekaboox.agent.runtime.run_doctor", return_value=doctor),
+        ):
+            exit_code = agent_runtime_module.main(
+                ["preflight", "desktop", "--operation", "list_windows", "--require"]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["blocked_categories"], ["desktop"])
+
     def test_agent_cli_windows_diagnose_prints_metadata(self) -> None:
         fake_client = FakeClient()
         output = StringIO()

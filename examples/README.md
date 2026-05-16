@@ -10,6 +10,7 @@ local smoke tests and CI:
 ```bash
 bash examples/cli/vision-smoke.sh
 bash examples/cli/ocr-smoke.sh
+bash examples/cli/agent-preflight-smoke.sh
 PYTHONPATH=python/src python3 examples/python/runtime_smoke.py
 PYTHONPATH=python/src python3 examples/python/doctor_runtime.py
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_list_tools.sh
@@ -25,6 +26,11 @@ installed or packaged binary instead of the local Cargo fallback.
 `examples/cli/ocr-smoke.sh` uses `tests/fixtures/ocr/ocr_sample.png` to test
 Tesseract-backed OCR over an image file, region OCR, JSON block metadata, and
 word-level output. It skips cleanly when `tesseract` is not installed.
+
+`examples/cli/agent-preflight-smoke.sh` exercises
+`peekaboox-agent --preflight-mode strict preflight desktop capture` and
+validates the JSON result shape. Set `PEEKABOOX_STRICT=1` to make blocked
+Doctor categories fail the example instead of being reported.
 
 `examples/python/doctor_runtime.py` and `examples/mcp/jsonrpc_doctor.sh` run the
 same structured environment diagnostics through `AgentRuntime.doctor(...)` and

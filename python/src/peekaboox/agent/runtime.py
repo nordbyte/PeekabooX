@@ -2163,6 +2163,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=30.0,
         help="maximum seconds to wait for the doctor command",
     )
+    preflight_parser = subparsers.add_parser(
+        "preflight",
+        help="check Doctor categories before live automation",
+    )
+    preflight_parser.add_argument(
+        "categories",
+        nargs="+",
+        choices=("desktop", "capture", "input", "ocr", "python"),
+        help="Doctor categories required by the planned operation",
+    )
+    preflight_parser.add_argument(
+        "--operation",
+        default="agent",
+        help="operation name to include in the preflight result",
+    )
+    preflight_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="refresh Doctor diagnostics instead of using a cached result",
+    )
+    preflight_parser.add_argument(
+        "--require",
+        action="store_true",
+        help="return exit code 1 when required categories are blocked",
+    )
+    preflight_parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=None,
+        help="maximum seconds to wait for this preflight Doctor check",
+    )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.version:
@@ -2195,6 +2226,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = runtime.doctor(strict=args.strict, timeout_seconds=args.timeout)
             _print_json(result)
             return 1 if args.strict and result.fail_count else 0
+        if args.command == "preflight":
+            runtime = _local_runtime(
+                args.profile,
+                args.audit_log,
+                tuple(Path(path) for path in args.plugin_path),
+                preflight_mode=args.preflight_mode,
+                preflight_timeout_seconds=args.preflight_timeout,
+            )
+            result = runtime.preflight(
+                tuple(args.categories),
+                operation=args.operation,
+                refresh=args.refresh,
+                timeout_seconds=args.timeout,
+            )
+            _print_json(result)
+            return 1 if args.require and not result.ok else 0
 
         runtime = AgentRuntime.connect(
             target=args.target,

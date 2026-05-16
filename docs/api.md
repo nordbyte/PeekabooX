@@ -545,6 +545,7 @@ Inspect the installed Python runtime without starting an MCP client:
 ```bash
 peekaboox-agent --version
 peekaboox-agent plugins --path examples/plugins
+peekaboox-agent preflight desktop capture --operation capture_screen
 peekaboox-agent windows
 peekaboox-agent --preflight-mode strict windows
 peekaboox-agent windows --focused --limit 1 --sort focused
