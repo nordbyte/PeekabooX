@@ -35,6 +35,7 @@ PYTHONPATH=python/src bash examples/mcp/jsonrpc_recovery_matrix.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_tool_parity.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_image_content.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_desktop_focus_diagnostics.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_desktop_action_diagnostics.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_paste_text.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_hotkey.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_plugins.sh
@@ -129,7 +130,14 @@ failures, CLI-compatible tool aliases, tool annotations/output schemas, and MCP
 image content blocks. `jsonrpc_desktop_focus_diagnostics.sh` verifies the MCP
 `desktop_focus` input/output schemas for `focus_diagnostics` and can call a
 live daemon with `PEEKABOOX_MCP_DESKTOP_FOCUS_LIVE=1` to print the structured
-diagnostic count and verification detail. `jsonrpc_paste_text.sh` verifies the
+diagnostic count and verification detail.
+`jsonrpc_desktop_action_diagnostics.sh` extends that schema check to
+`desktop_click`, `desktop_drag`, and `desktop_type_into`; with
+`PEEKABOOX_MCP_DESKTOP_ACTIONS_LIVE=1` it starts a temporary operator daemon,
+opens a unique Text Editor draft, and validates that each action carries
+structured focus diagnostics through MCP. Set
+`PEEKABOOX_MCP_DESKTOP_ACTIONS_TYPE_VERIFY=1` to also run the OCR-backed
+typed-text postcondition. `jsonrpc_paste_text.sh` verifies the
 MCP `paste_text`
 schema for clipboard/hotkey backend selection, timing, dry-run, and restore
 policy fields, with an optional live dry-run call when
@@ -162,6 +170,7 @@ bash examples/desktop/windows_inventory.sh
 bash examples/desktop/desktop_profiles_registry.sh
 bash examples/desktop/desktop_profiles_daemon_parity.sh
 python3 examples/python/desktop_focus_diagnostics_runtime.py
+python3 examples/python/desktop_action_diagnostics_runtime.py
 bash examples/desktop/elements_accessibility_probe.sh
 bash examples/desktop/elements_calculator.sh
 bash examples/desktop/ocr_visible_window.sh
@@ -304,6 +313,17 @@ Python result under `target/examples/python-desktop-focus`. Override
 `PEEKABOOX_DESKTOP_FOCUS_WINDOW_ID`, or
 `PEEKABOOX_DESKTOP_FOCUS_START_DAEMON=0` for custom desktops or an already
 running daemon.
+
+`examples/python/desktop_action_diagnostics_runtime.py` uses a unique Text
+Editor draft under `target/examples/python-desktop-actions` and validates
+`AgentRuntime.desktop_click(...)`, `desktop_drag(...)`, and
+`desktop_type_into(...)` with live focus diagnostics. It scopes every action by
+the draft window title, writes one JSON response per action, and leaves the
+editor window open for inspection. Override `PEEKABOOX_DESKTOP_ACTIONS_APP`,
+`PEEKABOOX_DESKTOP_ACTIONS_TARGET`, `PEEKABOOX_DESKTOP_ACTIONS_TEXT`, or
+`PEEKABOOX_DESKTOP_ACTIONS_START_DAEMON=0` for custom runs. Set
+`PEEKABOOX_DESKTOP_ACTIONS_TYPE_VERIFY=1` when Tesseract OCR is installed and
+the typed-text postcondition should be verified too.
 
 `examples/desktop/ocr_visible_window.sh` opens
 `examples/desktop/assets/ocr_desktop_sample.png` in the desktop's image viewer,

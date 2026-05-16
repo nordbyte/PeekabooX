@@ -767,6 +767,9 @@ class FakeClient:
             action="click",
             detail=f"clicked {target}",
             backend_name="fake-desktop",
+            verified=bool(kwargs.get("verify", False)),
+            verification_detail="target still present" if kwargs.get("verify", False) else None,
+            focus_diagnostics=["windows: selected fake-window", "verify: fake-window focused"],
         )
 
     def desktop_drag(self, app: str, target: str, **kwargs) -> DesktopActionResult:
@@ -776,6 +779,9 @@ class FakeClient:
             action="drag",
             detail=f"dragged {target}",
             backend_name="fake-desktop",
+            verified=bool(kwargs.get("verify", False)),
+            verification_detail="target still present" if kwargs.get("verify", False) else None,
+            focus_diagnostics=["windows: selected fake-window", "verify: fake-window focused"],
         )
 
     def desktop_type_into(self, app: str, target: str, text: str, **kwargs) -> DesktopActionResult:
@@ -787,6 +793,9 @@ class FakeClient:
             action="type-into",
             detail=f"typed into {target}",
             backend_name="fake-desktop",
+            verified=bool(kwargs.get("verify", False)),
+            verification_detail="target contains typed text" if kwargs.get("verify", False) else None,
+            focus_diagnostics=["windows: selected fake-window", "verify: fake-window focused"],
         )
 
     def desktop_assert(self, app: str, target: str, **kwargs) -> DesktopActionResult:
@@ -1020,9 +1029,15 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("release_before", hotkey_schema)
         self.assertIn("release_after", hotkey_schema)
         self.assertIn("outputSchema", server.tools["capture_screen"].descriptor())
-        desktop_focus_output = server.tools["desktop_focus"].descriptor()["outputSchema"]
-        self.assertIn("focus_diagnostics", desktop_focus_output["properties"])
-        self.assertIn("focus_diagnostics", desktop_focus_output["required"])
+        for tool_name in (
+            "desktop_focus",
+            "desktop_click",
+            "desktop_drag",
+            "desktop_type_into",
+        ):
+            desktop_action_output = server.tools[tool_name].descriptor()["outputSchema"]
+            self.assertIn("focus_diagnostics", desktop_action_output["properties"])
+            self.assertIn("focus_diagnostics", desktop_action_output["required"])
         self.assertIn("annotations", server.tools["click"].descriptor())
         self.assertTrue(server.tools["capture_screen"].descriptor()["annotations"]["readOnlyHint"])
         self.assertTrue(server.tools["click"].descriptor()["annotations"]["destructiveHint"])
@@ -3733,31 +3748,70 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(text_payload[0]["bounds"]["width"], 90)
         self.assertTrue(fake_client.last_vision_fallback)
 
-    def test_mcp_server_returns_desktop_focus_diagnostics_in_structured_content(self) -> None:
+    def test_mcp_server_returns_desktop_action_diagnostics_in_structured_content(self) -> None:
         server = McpServer(runtime=AgentRuntime(client=FakeClient()))
         server.register_default_tools()
 
-        response = server.handle_jsonrpc(
-            {
-                "jsonrpc": "2.0",
-                "id": 4,
-                "method": "tools/call",
-                "params": {
-                    "name": "desktop_focus",
-                    "arguments": {"app": "telegram", "verify": True},
+        calls = (
+            (
+                "desktop_focus",
+                {"app": "telegram", "verify": True},
+                "focus",
+            ),
+            (
+                "desktop_click",
+                {"app": "telegram", "target": "search-input", "verify": True},
+                "click",
+            ),
+            (
+                "desktop_drag",
+                {
+                    "app": "paint",
+                    "target": "canvas",
+                    "from_ratio": [0.2, 0.5],
+                    "to_ratio": [0.8, 0.5],
+                    "verify": True,
                 },
-            }
+                "drag",
+            ),
+            (
+                "desktop_type_into",
+                {
+                    "app": "telegram",
+                    "target": "message-input",
+                    "text": "PeekabooX",
+                    "verify": True,
+                },
+                "type-into",
+            ),
         )
 
-        self.assertFalse(response["result"]["isError"])
-        structured = response["result"]["structuredContent"]
-        self.assertEqual(structured["action"], "focus")
-        self.assertEqual(
-            structured["focus_diagnostics"],
-            ["windows: selected fake-window", "verify: fake-window focused"],
-        )
-        text_payload = json.loads(response["result"]["content"][0]["text"])
-        self.assertEqual(text_payload["focus_diagnostics"], structured["focus_diagnostics"])
+        for index, (tool_name, arguments, action) in enumerate(calls, start=4):
+            with self.subTest(tool_name=tool_name):
+                response = server.handle_jsonrpc(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": index,
+                        "method": "tools/call",
+                        "params": {
+                            "name": tool_name,
+                            "arguments": arguments,
+                        },
+                    }
+                )
+
+                self.assertFalse(response["result"]["isError"])
+                structured = response["result"]["structuredContent"]
+                self.assertEqual(structured["action"], action)
+                self.assertEqual(
+                    structured["focus_diagnostics"],
+                    ["windows: selected fake-window", "verify: fake-window focused"],
+                )
+                text_payload = json.loads(response["result"]["content"][0]["text"])
+                self.assertEqual(
+                    text_payload["focus_diagnostics"],
+                    structured["focus_diagnostics"],
+                )
 
     def test_mcp_server_handles_jsonrpc_execute_workflow_tool_call(self) -> None:
         server = McpServer(runtime=AgentRuntime(client=FakeClient()))
