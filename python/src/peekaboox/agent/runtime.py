@@ -1663,47 +1663,89 @@ class AgentRuntime:
 
     def drag(
         self,
-        from_x: int,
-        from_y: int,
-        to_x: int,
-        to_y: int,
+        from_x: int | None = None,
+        from_y: int | None = None,
+        to_x: int | None = None,
+        to_y: int | None = None,
         *,
         button: str = "left",
         duration_ms: int = 250,
+        dry_run: bool = False,
+        steps: int | None = None,
+        bounds_policy: str | None = None,
+        backend: str | None = None,
+        restore: bool = False,
+        from_current: bool = False,
+        from_ratio: tuple[float, float] | None = None,
+        to_ratio: tuple[float, float] | None = None,
+        region: Rect | None = None,
+        window_id: str | None = None,
+        app: str | None = None,
+        window_title: str | None = None,
+        title_regex: str | None = None,
     ) -> ActionResult:
         if duration_ms < 0:
             raise ValueError("duration_ms must be non-negative")
+        if steps is not None and steps <= 0:
+            raise ValueError("steps must be greater than zero")
         button = button.strip().casefold()
         if button not in {"left", "middle", "right"}:
             raise ValueError("button must be left, middle, or right")
-        self._require_capability(
-            Capability.CLICK,
-            "drag",
-            from_x=from_x,
-            from_y=from_y,
-            to_x=to_x,
-            to_y=to_y,
-            button=button,
-            duration_ms=duration_ms,
-        )
-        self._require_preflight("drag", "input")
-        self._require_confirmation(
-            DangerousAction.CLICK,
-            "drag",
-            from_x=from_x,
-            from_y=from_y,
-            to_x=to_x,
-            to_y=to_y,
-            button=button,
-            duration_ms=duration_ms,
-        )
+        details = {
+            "from_x": from_x,
+            "from_y": from_y,
+            "to_x": to_x,
+            "to_y": to_y,
+            "button": button,
+            "duration_ms": duration_ms,
+            "dry_run": dry_run,
+            "steps": steps,
+            "bounds_policy": bounds_policy,
+            "backend": backend,
+            "restore": restore,
+            "from_current": from_current,
+            "from_ratio": from_ratio,
+            "to_ratio": to_ratio,
+            "region": region,
+            "window_id": window_id,
+            "app": app,
+            "window_title": window_title,
+            "title_regex": title_regex,
+        }
+        self._require_capability(Capability.CLICK, "drag", **details)
+        if not dry_run:
+            self._require_preflight("drag", "input")
+            self._require_confirmation(DangerousAction.CLICK, "drag", **details)
+        client_kwargs = {
+            key: value
+            for key, value in {
+                "button": button,
+                "duration_ms": duration_ms,
+                "steps": steps,
+                "bounds_policy": bounds_policy,
+                "backend": backend,
+                "from_ratio": from_ratio,
+                "to_ratio": to_ratio,
+                "region": region,
+                "window_id": window_id,
+                "app": app,
+                "window_title": window_title,
+                "title_regex": title_regex,
+            }.items()
+            if value is not None
+        }
+        if dry_run:
+            client_kwargs["dry_run"] = True
+        if restore:
+            client_kwargs["restore"] = True
+        if from_current:
+            client_kwargs["from_current"] = True
         result = self._require_client().drag(
             from_x,
             from_y,
             to_x,
             to_y,
-            button=button,
-            duration_ms=duration_ms,
+            **client_kwargs,
         )
         self._record_step(
             WorkflowStep(
@@ -1714,6 +1756,21 @@ class AgentRuntime:
                 to_y=to_y,
                 button=button,
                 duration_ms=duration_ms,
+                steps=steps,
+                bounds_policy=bounds_policy,
+                backend=backend,
+                restore=restore,
+                dry_run=dry_run,
+                from_current=from_current,
+                from_ratio_x=from_ratio[0] if from_ratio is not None else None,
+                from_ratio_y=from_ratio[1] if from_ratio is not None else None,
+                to_ratio_x=to_ratio[0] if to_ratio is not None else None,
+                to_ratio_y=to_ratio[1] if to_ratio is not None else None,
+                region=_format_rect(region) if region is not None else None,
+                window_id=window_id,
+                app=app,
+                window_title=window_title,
+                title_regex=title_regex,
             )
         )
         return result
@@ -1870,13 +1927,17 @@ class AgentRuntime:
                 restore=step.restore,
             )
         if action == "drag":
-            if (
-                step.from_x is None
-                or step.from_y is None
-                or step.to_x is None
-                or step.to_y is None
-            ):
-                raise ValueError("drag step requires from_x/from_y/to_x/to_y")
+            region = _parse_rect(step.region) if step.region is not None else None
+            from_ratio = (
+                (step.from_ratio_x, step.from_ratio_y)
+                if step.from_ratio_x is not None and step.from_ratio_y is not None
+                else None
+            )
+            to_ratio = (
+                (step.to_ratio_x, step.to_ratio_y)
+                if step.to_ratio_x is not None and step.to_ratio_y is not None
+                else None
+            )
             return self.drag(
                 step.from_x,
                 step.from_y,
@@ -1884,6 +1945,19 @@ class AgentRuntime:
                 step.to_y,
                 button=step.button or "left",
                 duration_ms=step.duration_ms if step.duration_ms is not None else 250,
+                dry_run=step.dry_run,
+                steps=step.steps,
+                bounds_policy=step.bounds_policy,
+                backend=step.backend,
+                restore=step.restore,
+                from_current=step.from_current,
+                from_ratio=from_ratio,
+                to_ratio=to_ratio,
+                region=region,
+                window_id=step.window_id,
+                app=step.app,
+                window_title=step.window_title,
+                title_regex=step.title_regex,
             )
         if action in {"type", "type_text"}:
             if step.value is None:

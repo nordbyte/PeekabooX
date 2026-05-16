@@ -112,7 +112,8 @@ Current gRPC method coverage:
   bounds-aware pointer movement
 - `Click` for coordinate clicks and AT-SPI `semantic_selector` clicks, with
   optional `vision_fallback`
-- `Drag` for coordinate drags with button and duration controls
+- `Drag` for absolute, current-position, region/window ratio, dry-run, smooth,
+  bounded, backend-selected, and cursor-restoring pointer drags
 - `TypeText`
 - `PasteText` for clipboard-backed text insertion with optional textual
   clipboard restoration
@@ -252,6 +253,16 @@ runtime.move_mouse(
     dry_run=True,
 )
 runtime.drag(100, 200, 360, 260, button="left", duration_ms=350)
+runtime.drag(
+    from_current=True,
+    to_ratio=(0.8, 0.5),
+    region=Rect(x=0, y=0, width=400, height=240),
+    steps=10,
+    bounds_policy="clamp",
+    backend="xdotool",
+    restore=True,
+    dry_run=True,
+)
 runtime.hotkey(["ctrl", "s"])
 ```
 

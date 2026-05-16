@@ -91,6 +91,11 @@ def workflow_step_from_dict(value: Any, index: int = 0) -> WorkflowStep:
         from_y=_optional_int(value, "from_y"),
         to_x=_optional_int(value, "to_x"),
         to_y=_optional_int(value, "to_y"),
+        from_current=_optional_bool(value, "from_current", default=False),
+        from_ratio_x=_optional_float(value, "from_ratio_x"),
+        from_ratio_y=_optional_float(value, "from_ratio_y"),
+        to_ratio_x=_optional_float(value, "to_ratio_x"),
+        to_ratio_y=_optional_float(value, "to_ratio_y"),
         button=_optional_string(value, "button"),
         duration_ms=_optional_int(value, "duration_ms"),
         relative_x=_optional_int(value, "relative_x"),
@@ -130,6 +135,16 @@ def workflow_step_to_dict(step: WorkflowStep) -> dict[str, object]:
         value["to_x"] = step.to_x
     if step.to_y is not None:
         value["to_y"] = step.to_y
+    if step.from_current:
+        value["from_current"] = step.from_current
+    if step.from_ratio_x is not None:
+        value["from_ratio_x"] = step.from_ratio_x
+    if step.from_ratio_y is not None:
+        value["from_ratio_y"] = step.from_ratio_y
+    if step.to_ratio_x is not None:
+        value["to_ratio_x"] = step.to_ratio_x
+    if step.to_ratio_y is not None:
+        value["to_ratio_y"] = step.to_ratio_y
     if step.button is not None:
         value["button"] = step.button
     if step.duration_ms is not None:

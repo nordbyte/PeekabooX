@@ -208,6 +208,25 @@ pub struct MoveMouseOptions {
     pub backend: InputToolSelection,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DragMouseOptions {
+    pub duration_ms: u64,
+    pub steps: Option<u32>,
+    pub bounds_policy: MoveBoundsPolicy,
+    pub backend: InputToolSelection,
+}
+
+impl Default for DragMouseOptions {
+    fn default() -> Self {
+        Self {
+            duration_ms: 250,
+            steps: None,
+            bounds_policy: MoveBoundsPolicy::Allow,
+            backend: InputToolSelection::Auto,
+        }
+    }
+}
+
 impl InputTool {
     pub fn name(self) -> &'static str {
         match self {
@@ -382,6 +401,55 @@ impl CommandInputBackend {
             action,
         })
     }
+
+    pub fn drag_with_options(
+        &self,
+        from: Point,
+        to: Point,
+        button: MouseButton,
+        options: DragMouseOptions,
+    ) -> Result<InputExecutionMetadata> {
+        let from = apply_move_bounds_policy(from, options.bounds_policy)?;
+        let to = apply_move_bounds_policy(to, options.bounds_policy)?;
+        let action = InputAction::Drag {
+            from,
+            to,
+            button,
+            duration_ms: options.duration_ms,
+        };
+        let environment = InputEnvironment::detect();
+        let candidates = candidate_backends_with_selection(&environment, &action, options.backend);
+
+        if candidates.is_empty() {
+            return Err(missing_backend_error_for_selection(
+                &environment,
+                &action,
+                options.backend,
+            ));
+        }
+
+        let mut errors = Vec::new();
+        for backend in candidates {
+            match run_drag_tool(backend.tool, from, to, button, options) {
+                Ok(()) => {
+                    return Ok(InputExecutionMetadata {
+                        backend_name: backend.name().to_owned(),
+                        backend_kind: backend.backend_kind(),
+                        action,
+                    });
+                }
+                Err(error) => {
+                    let _ = release_modifiers();
+                    errors.push(format!("{}: {}", backend.name(), error.message()));
+                }
+            }
+        }
+
+        Err(PeekabooXError::new(format!(
+            "all input backends failed: {}",
+            errors.join("; ")
+        )))
+    }
 }
 
 impl InputBackend for CommandInputBackend {
@@ -436,12 +504,24 @@ pub fn drag(
     button: MouseButton,
     duration_ms: u64,
 ) -> Result<InputExecutionMetadata> {
-    CommandInputBackend.execute_with_metadata(InputAction::Drag {
+    drag_with_options(
         from,
         to,
         button,
-        duration_ms,
-    })
+        DragMouseOptions {
+            duration_ms,
+            ..DragMouseOptions::default()
+        },
+    )
+}
+
+pub fn drag_with_options(
+    from: Point,
+    to: Point,
+    button: MouseButton,
+    options: DragMouseOptions,
+) -> Result<InputExecutionMetadata> {
+    CommandInputBackend.drag_with_options(from, to, button, options)
 }
 
 pub fn type_text(text: impl Into<String>) -> Result<InputExecutionMetadata> {
@@ -569,7 +649,15 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
                 button,
                 duration_ms,
             },
-        ) => uinput_drag(*from, *to, *button, *duration_ms),
+        ) => uinput_drag(
+            *from,
+            *to,
+            *button,
+            DragMouseOptions {
+                duration_ms: *duration_ms,
+                ..DragMouseOptions::default()
+            },
+        ),
         (InputTool::Ydotool, InputAction::Click { position, button }) => {
             ydotool_mousemove(*position)?;
             run_command(
@@ -602,7 +690,15 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
                 button,
                 duration_ms,
             },
-        ) => xdotool_drag(*from, *to, *button, *duration_ms),
+        ) => xdotool_drag(
+            *from,
+            *to,
+            *button,
+            DragMouseOptions {
+                duration_ms: *duration_ms,
+                ..DragMouseOptions::default()
+            },
+        ),
         (InputTool::Xdotool, InputAction::TypeText(text)) => {
             run_command("xdotool", ["type", "--delay", "0", "--", text])
         }
@@ -632,6 +728,23 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
             "{} does not support action {:?}",
             tool.name(),
             action
+        ))),
+    }
+}
+
+fn run_drag_tool(
+    tool: InputTool,
+    from: Point,
+    to: Point,
+    button: MouseButton,
+    options: DragMouseOptions,
+) -> Result<()> {
+    match tool {
+        InputTool::Uinput => uinput_drag(from, to, button, options),
+        InputTool::Xdotool => xdotool_drag(from, to, button, options),
+        _ => Err(PeekabooXError::new(format!(
+            "{} does not support pointer drags",
+            tool.name()
         ))),
     }
 }
@@ -910,7 +1023,12 @@ fn xdotool_button(button: MouseButton) -> &'static str {
     }
 }
 
-fn xdotool_drag(from: Point, to: Point, button: MouseButton, duration_ms: u64) -> Result<()> {
+fn xdotool_drag(
+    from: Point,
+    to: Point,
+    button: MouseButton,
+    options: DragMouseOptions,
+) -> Result<()> {
     let button = xdotool_button(button);
 
     run_command(
@@ -925,11 +1043,11 @@ fn xdotool_drag(from: Point, to: Point, button: MouseButton, duration_ms: u64) -
         ],
     )?;
 
-    let steps = drag_steps(duration_ms, from, to);
+    let steps = move_steps(options.duration_ms, from, to, options.steps)?;
     let sleep_per_step = if steps == 0 {
         0
     } else {
-        duration_ms / u64::from(steps)
+        options.duration_ms / u64::from(steps)
     };
 
     for step in 1..=steps {
@@ -976,7 +1094,12 @@ fn uinput_click(position: Point, button: MouseButton) -> Result<()> {
     device.set_button(button, false)
 }
 
-fn uinput_drag(from: Point, to: Point, button: MouseButton, duration_ms: u64) -> Result<()> {
+fn uinput_drag(
+    from: Point,
+    to: Point,
+    button: MouseButton,
+    options: DragMouseOptions,
+) -> Result<()> {
     let (screen_width, screen_height) = detect_screen_size().ok_or_else(|| {
         PeekabooXError::new("uinput drag requires a detectable screen size from xrandr or xdpyinfo")
     })?;
@@ -985,11 +1108,11 @@ fn uinput_drag(from: Point, to: Point, button: MouseButton, duration_ms: u64) ->
     device.move_to(from)?;
     device.set_button(button, true)?;
 
-    let steps = drag_steps(duration_ms, from, to);
+    let steps = move_steps(options.duration_ms, from, to, options.steps)?;
     let sleep_per_step = if steps == 0 {
         0
     } else {
-        duration_ms / u64::from(steps)
+        options.duration_ms / u64::from(steps)
     };
 
     for step in 1..=steps {

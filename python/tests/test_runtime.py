@@ -4223,6 +4223,18 @@ class RuntimeTests(unittest.TestCase):
             ).ok
         )
         self.assertTrue(client.drag(1, 2, 3, 4, button="right", duration_ms=500).ok)
+        self.assertTrue(
+            client.drag(
+                from_current=True,
+                to_ratio=(0.8, 0.5),
+                region=Rect(x=0, y=0, width=400, height=240),
+                dry_run=True,
+                steps=6,
+                bounds_policy="clamp",
+                backend="xdotool",
+                restore=True,
+            ).ok
+        )
         self.assertTrue(client.hotkey(["ctrl", "s"]).ok)
 
         self.assertEqual(stub.requests[0][1].coordinates.x, 7)
@@ -4238,7 +4250,16 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(stub.requests[2][1].to.y, 4)
         self.assertEqual(stub.requests[2][1].button, peekaboox_pb2.MOUSE_BUTTON_RIGHT)
         self.assertEqual(stub.requests[2][1].duration_ms, 500)
-        self.assertEqual(list(stub.requests[3][1].keys), ["ctrl", "s"])
+        self.assertTrue(stub.requests[3][1].from_current)
+        self.assertAlmostEqual(stub.requests[3][1].to_ratio_x, 0.8)
+        self.assertAlmostEqual(stub.requests[3][1].to_ratio_y, 0.5)
+        self.assertEqual(stub.requests[3][1].region.width, 400)
+        self.assertTrue(stub.requests[3][1].dry_run)
+        self.assertEqual(stub.requests[3][1].steps, 6)
+        self.assertEqual(stub.requests[3][1].bounds_policy, "clamp")
+        self.assertEqual(stub.requests[3][1].backend, "xdotool")
+        self.assertTrue(stub.requests[3][1].restore)
+        self.assertEqual(list(stub.requests[4][1].keys), ["ctrl", "s"])
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_python_client_builds_generated_paste_probe_and_plugin_requests(self) -> None:

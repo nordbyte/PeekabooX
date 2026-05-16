@@ -69,6 +69,7 @@ runtime.click_selector("role=push button,label=Submit", vision_fallback=True)
 runtime.move_mouse(100, 200)
 runtime.move_mouse(window_title="Calculator", ratio_x=0.5, ratio_y=0.5, dry_run=True)
 runtime.drag(100, 200, 320, 240, duration_ms=350)
+runtime.drag(from_current=True, to_ratio=(0.8, 0.5), region=Rect(0, 0, 400, 240), dry_run=True)
 runtime.hotkey(["ctrl", "s"])
 ```
 

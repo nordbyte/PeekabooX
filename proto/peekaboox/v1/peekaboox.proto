@@ -188,6 +188,21 @@ message DragRequest {
   Point to = 2;
   optional MouseButton button = 3;
   optional uint32 duration_ms = 4;
+  bool dry_run = 5;
+  optional uint32 steps = 6;
+  optional string bounds_policy = 7;
+  optional string backend = 8;
+  bool restore = 9;
+  optional Rect region = 10;
+  optional string window_id = 11;
+  optional string app = 12;
+  optional string window_title = 13;
+  optional string title_regex = 14;
+  optional float from_ratio_x = 15;
+  optional float from_ratio_y = 16;
+  optional float to_ratio_x = 17;
+  optional float to_ratio_y = 18;
+  bool from_current = 19;
 }
 
 message TypeTextRequest {

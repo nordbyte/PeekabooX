@@ -173,6 +173,14 @@ pub enum ApiRequest {
         #[serde(default = "default_drag_duration_ms")]
         duration_ms: u32,
         #[serde(default)]
+        steps: Option<u32>,
+        #[serde(default = "default_move_bounds_policy")]
+        bounds_policy: String,
+        #[serde(default = "default_input_backend")]
+        backend: String,
+        #[serde(default)]
+        restore: bool,
+        #[serde(default)]
         dry_run: bool,
     },
     TypeText {
@@ -1138,6 +1146,10 @@ mod tests {
                 to_y: 40,
                 button: MouseButtonDto::Left,
                 duration_ms: 250,
+                steps: None,
+                bounds_policy: "allow".to_owned(),
+                backend: "auto".to_owned(),
+                restore: false,
                 dry_run: false,
             })
         );

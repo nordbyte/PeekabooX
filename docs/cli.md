@@ -115,6 +115,7 @@ cargo run -q -p peekaboox-cli -- move --region 0,0,400,240 --ratio 0.5,0.5 --cla
 cargo run -q -p peekaboox-cli -- move --window-title Calculator --ratio 0.5,0.5 --dry-run
 cargo run -q -p peekaboox-cli -- move --current-position --json
 cargo run -q -p peekaboox-cli -- drag --from 100,200 --to 320,240 --dry-run
+cargo run -q -p peekaboox-cli -- drag --from-current --region 0,0,400,240 --to-ratio 0.8,0.5 --steps 10 --backend xdotool --bounds clamp --restore --dry-run --json
 cargo run -q -p peekaboox-cli -- type --dry-run "Hello World"
 cargo run -q -p peekaboox-cli -- paste --dry-run "/tmp/PeekabooX Example.txt"
 cargo run -q -p peekaboox-cli -- type --paste --preserve-clipboard --dry-run "/tmp/PeekabooX Example.txt"

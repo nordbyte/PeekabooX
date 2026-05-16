@@ -48,6 +48,7 @@ LOG_LEVELS = (
 
 PREFLIGHT_CATEGORIES = ("desktop", "capture", "input", "ocr", "python")
 MOVE_BACKEND_CHOICES = ("auto", "uinput", "ydotool", "xdotool")
+DRAG_BACKEND_CHOICES = ("auto", "uinput", "xdotool")
 MOVE_BOUNDS_POLICY_CHOICES = ("allow", "clamp", "fail", "fail-out-of-bounds")
 WORKFLOW_ACTIONS = (
     "observe",
@@ -96,6 +97,11 @@ WORKFLOW_STEP_SCHEMA: dict[str, Any] = {
         "from_y": {"type": "integer"},
         "to_x": {"type": "integer"},
         "to_y": {"type": "integer"},
+        "from_current": {"type": "boolean", "default": False},
+        "from_ratio_x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "from_ratio_y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "to_ratio_x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "to_ratio_y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         "button": {"type": "string", "enum": ["left", "middle", "right"]},
         "duration_ms": {"type": "integer", "minimum": 0},
         "relative_x": {"type": "integer"},
@@ -891,17 +897,50 @@ class McpServer:
             ),
             self._tool(
                 "drag",
-                "Drag from one screen coordinate to another through the daemon input backend.",
+                "Drag from one absolute, current, or scoped-ratio endpoint to another through the daemon input backend.",
                 _schema(
                     {
                         "from_x": {"type": "integer"},
                         "from_y": {"type": "integer"},
                         "to_x": {"type": "integer"},
                         "to_y": {"type": "integer"},
+                        "from_current": {"type": "boolean", "default": False},
+                        "from_ratio": {
+                            "type": "array",
+                            "items": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                            "minItems": 2,
+                            "maxItems": 2,
+                        },
+                        "to_ratio": {
+                            "type": "array",
+                            "items": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                            "minItems": 2,
+                            "maxItems": 2,
+                        },
+                        "region": RECT_SCHEMA,
+                        "window_id": {"type": "string"},
+                        "app": {"type": "string"},
+                        "window_title": {"type": "string"},
+                        "title_regex": {"type": "string"},
                         "button": {"type": "string", "enum": ["left", "middle", "right"]},
                         "duration_ms": {"type": "integer", "minimum": 0, "default": 250},
+                        "steps": {"type": "integer", "minimum": 1},
+                        "bounds_policy": {
+                            "type": "string",
+                            "enum": list(MOVE_BOUNDS_POLICY_CHOICES),
+                        },
+                        "backend": {"type": "string", "enum": list(DRAG_BACKEND_CHOICES)},
+                        "restore": {"type": "boolean", "default": False},
+                        "dry_run": {"type": "boolean", "default": False},
                     },
-                    required=["from_x", "from_y", "to_x", "to_y"],
+                    any_of=[
+                        {"required": ["from_x", "from_y", "to_x", "to_y"]},
+                        {"required": ["from_current", "to_x", "to_y"]},
+                        {"required": ["from_ratio", "to_x", "to_y"]},
+                        {"required": ["from_x", "from_y", "to_ratio"]},
+                        {"required": ["from_current", "to_ratio"]},
+                        {"required": ["from_ratio", "to_ratio"]},
+                    ],
                 ),
                 self._drag,
             ),
@@ -1907,12 +1946,27 @@ class McpServer:
             raise ValueError("duration_ms must be non-negative")
         return _to_mcp_value(
             self._require_runtime().drag(
-                int(arguments["from_x"]),
-                int(arguments["from_y"]),
-                int(arguments["to_x"]),
-                int(arguments["to_y"]),
+                _optional_int(arguments, "from_x"),
+                _optional_int(arguments, "from_y"),
+                _optional_int(arguments, "to_x"),
+                _optional_int(arguments, "to_y"),
                 button=_optional_string(arguments, "button") or "left",
                 duration_ms=duration_ms,
+                dry_run=_optional_bool(arguments, "dry_run"),
+                steps=_optional_positive_int(arguments, "steps"),
+                bounds_policy=_optional_choice(
+                    arguments, "bounds_policy", MOVE_BOUNDS_POLICY_CHOICES
+                ),
+                backend=_optional_choice(arguments, "backend", DRAG_BACKEND_CHOICES),
+                restore=_optional_bool(arguments, "restore"),
+                from_current=_optional_bool(arguments, "from_current"),
+                from_ratio=_optional_ratio_pair(arguments, "from_ratio"),
+                to_ratio=_optional_ratio_pair(arguments, "to_ratio"),
+                region=_optional_rect(arguments, "region"),
+                window_id=_optional_string(arguments, "window_id"),
+                app=_optional_string(arguments, "app"),
+                window_title=_optional_string(arguments, "window_title"),
+                title_regex=_optional_string(arguments, "title_regex"),
             )
         )
 

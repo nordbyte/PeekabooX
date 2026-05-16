@@ -164,6 +164,13 @@ back to the detected Save toolbar button when needed, and verifies that the
 output file changed. Override `PEEKABOOX_PAINT_APP` to force a specific paint
 application.
 
+`examples/desktop/drag_absolute_canvas.sh` opens a blank PNG in a supported
+paint application, locates the canvas, converts the canvas rectangle into
+absolute drag coordinates, and exercises the raw `peekaboox drag` command with
+JSON dry-runs, scoped ratio endpoints, backend selection, step control, bounds
+clamping, and optional cursor restore. It runs as dry-run by default; set
+`PEEKABOOX_DRAG_LIVE=1` to draw on the live canvas.
+
 `examples/desktop/move_pointer_path.sh` exercises the `move` command surface:
 cursor position JSON, compact `--to`, region-ratio targeting, relative deltas,
 smooth movement options, bounds policies, and backend selection. It runs as

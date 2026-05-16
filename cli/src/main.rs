@@ -6561,18 +6561,64 @@ fn parse_move_args(args: Vec<String>) -> Result<MoveCommand, CliError> {
     }))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct DragArgs {
-    from: Point,
-    to: Point,
+    from: DragEndpoint,
+    to: DragEndpoint,
     button: MouseButton,
-    duration_ms: u32,
+    duration_ms: u64,
+    steps: Option<u32>,
+    bounds_policy: peekaboox_input::MoveBoundsPolicy,
+    backend: peekaboox_input::InputToolSelection,
+    restore: bool,
     dry_run: bool,
+    json: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum DragEndpoint {
+    Position(Point),
+    CurrentPosition,
+    ScopeRatio {
+        ratio: (f32, f32),
+        region: Option<Rect>,
+        window_id: Option<String>,
+        app: Option<String>,
+        window_title: Option<String>,
+        title_regex: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct DragScopeParts {
+    region: Option<Rect>,
+    window_id: Option<String>,
+    app: Option<String>,
+    window_title: Option<String>,
+    title_regex: Option<String>,
+}
+
+impl DragScopeParts {
+    fn has_scope(&self) -> bool {
+        self.region.is_some()
+            || self.window_id.is_some()
+            || self.app.is_some()
+            || self.window_title.is_some()
+            || self.title_regex.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedDragTarget {
+    from: Point,
+    to: Point,
+    from_description: String,
+    to_description: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 enum DragCommand {
-    Run(DragArgs),
+    Run(Box<DragArgs>),
     Help,
 }
 
@@ -6582,23 +6628,36 @@ fn drag(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         return Err(CliError::HelpRequested);
     };
 
+    let target = resolve_drag_target(&args)?;
+    let options = drag_options_from_args(&args);
+    let from = peekaboox_input::resolve_move_position(target.from, args.bounds_policy)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    let to = peekaboox_input::resolve_move_position(target.to, args.bounds_policy)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    let target = ResolvedDragTarget { from, to, ..target };
     let action = peekaboox_input::InputAction::Drag {
-        from: args.from,
-        to: args.to,
+        from: target.from,
+        to: target.to,
         button: args.button,
-        duration_ms: u64::from(args.duration_ms),
+        duration_ms: args.duration_ms,
     };
 
     if context.use_daemon {
         let result = daemon_request(
             context,
             ApiRequest::Drag {
-                from_x: args.from.x,
-                from_y: args.from.y,
-                to_x: args.to.x,
-                to_y: args.to.y,
+                from_x: target.from.x,
+                from_y: target.from.y,
+                to_x: target.to.x,
+                to_y: target.to.y,
                 button: mouse_button_dto(args.button),
-                duration_ms: args.duration_ms,
+                duration_ms: u32::try_from(args.duration_ms).map_err(|_| {
+                    CliError::Failure("--duration-ms must fit into uint32".to_owned())
+                })?,
+                steps: args.steps,
+                bounds_policy: args.bounds_policy.name().to_owned(),
+                backend: args.backend.name().to_owned(),
+                restore: args.restore,
                 dry_run: args.dry_run,
             },
         )?;
@@ -6607,44 +6666,183 @@ fn drag(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 "daemon returned unexpected drag response".to_owned(),
             ));
         };
-        print_drag_result(&args, metadata);
+        print_drag_result(&args, &target, metadata, None);
         return Ok(());
     }
 
     if args.dry_run {
         let backend = peekaboox_input::CommandInputBackend
-            .detect_backend_for(&action)
+            .detect_backend_for_with_selection(&action, args.backend)
             .map_err(|error| CliError::Failure(error.to_string()))?;
-        println!(
-            "would drag from {},{} to {},{} via {}",
-            args.from.x,
-            args.from.y,
-            args.to.x,
-            args.to.y,
-            backend.name()
+        print_drag_result(
+            &args,
+            &target,
+            ActionResultDto {
+                backend_name: backend.name().to_owned(),
+                backend_kind: format!("{:?}", backend.backend_kind()).to_ascii_lowercase(),
+            },
+            None,
         );
         return Ok(());
     }
 
-    let metadata =
-        peekaboox_input::drag(args.from, args.to, args.button, u64::from(args.duration_ms))
+    let restore_position = if args.restore {
+        Some(
+            peekaboox_input::current_mouse_position()
+                .map_err(|error| CliError::Failure(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    let metadata = peekaboox_input::drag_with_options(target.from, target.to, args.button, options)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    if let Some(position) = restore_position {
+        let restore_options = peekaboox_input::MoveMouseOptions {
+            duration_ms: args.duration_ms,
+            steps: args.steps,
+            bounds_policy: args.bounds_policy,
+            backend: args.backend,
+        };
+        peekaboox_input::move_mouse_with_options(position, restore_options)
             .map_err(|error| CliError::Failure(error.to_string()))?;
-    print_drag_result(&args, input_metadata_dto(metadata));
+    }
+    print_drag_result(
+        &args,
+        &target,
+        input_metadata_dto(metadata),
+        restore_position,
+    );
 
     Ok(())
 }
 
-fn print_drag_result(args: &DragArgs, metadata: ActionResultDto) {
+fn resolve_drag_target(args: &DragArgs) -> Result<ResolvedDragTarget, CliError> {
+    let (from, from_description) = resolve_drag_endpoint(&args.from, "from")?;
+    let (to, to_description) = resolve_drag_endpoint(&args.to, "to")?;
+    Ok(ResolvedDragTarget {
+        from,
+        to,
+        from_description,
+        to_description,
+    })
+}
+
+fn resolve_drag_endpoint(endpoint: &DragEndpoint, name: &str) -> Result<(Point, String), CliError> {
+    match endpoint {
+        DragEndpoint::Position(position) => {
+            Ok((*position, format!("{},{}", position.x, position.y)))
+        }
+        DragEndpoint::CurrentPosition => {
+            let position = peekaboox_input::current_mouse_position()
+                .map_err(|error| CliError::Failure(error.to_string()))?;
+            Ok((
+                position,
+                format!("current cursor at {},{}", position.x, position.y),
+            ))
+        }
+        DragEndpoint::ScopeRatio {
+            ratio,
+            region,
+            window_id,
+            app,
+            window_title,
+            title_regex,
+        } => {
+            let scope = resolve_move_scope(
+                *region,
+                window_id.as_deref(),
+                app.as_deref(),
+                window_title.as_deref(),
+                title_regex.as_deref(),
+            )?;
+            let position = point_from_ratio(scope, *ratio)?;
+            Ok((
+                position,
+                format!(
+                    "{name}-ratio {:.3},{:.3} in {}",
+                    ratio.0,
+                    ratio.1,
+                    format_rect(scope)
+                ),
+            ))
+        }
+    }
+}
+
+fn drag_options_from_args(args: &DragArgs) -> peekaboox_input::DragMouseOptions {
+    peekaboox_input::DragMouseOptions {
+        duration_ms: args.duration_ms,
+        steps: args.steps,
+        bounds_policy: args.bounds_policy,
+        backend: args.backend,
+    }
+}
+
+fn print_drag_result(
+    args: &DragArgs,
+    target: &ResolvedDragTarget,
+    metadata: ActionResultDto,
+    restored_to: Option<Point>,
+) {
+    if args.json {
+        let _ = print_json_pretty(&serde_json::json!({
+            "ok": true,
+            "dry_run": args.dry_run,
+            "from": {
+                "x": target.from.x,
+                "y": target.from.y,
+                "description": target.from_description,
+            },
+            "to": {
+                "x": target.to.x,
+                "y": target.to.y,
+                "description": target.to_description,
+            },
+            "button": mouse_button_label(args.button),
+            "backend_name": metadata.backend_name,
+            "backend_kind": metadata.backend_kind,
+            "requested_backend": args.backend.name(),
+            "bounds_policy": args.bounds_policy.name(),
+            "duration_ms": args.duration_ms,
+            "steps": args.steps,
+            "restore": args.restore,
+            "restored_to": restored_to.map(|point| serde_json::json!({
+                "x": point.x,
+                "y": point.y,
+            })),
+        }));
+        return;
+    }
+
     if args.dry_run {
         println!(
             "would drag from {},{} to {},{} via {}",
-            args.from.x, args.from.y, args.to.x, args.to.y, metadata.backend_name
+            target.from.x, target.from.y, target.to.x, target.to.y, metadata.backend_name
         );
     } else {
-        println!(
-            "dragged from {},{} to {},{} with {:?} via {}",
-            args.from.x, args.from.y, args.to.x, args.to.y, args.button, metadata.backend_name
-        );
+        if let Some(restored_to) = restored_to {
+            println!(
+                "dragged from {},{} to {},{} with {:?} via {} and restored to {},{}",
+                target.from.x,
+                target.from.y,
+                target.to.x,
+                target.to.y,
+                args.button,
+                metadata.backend_name,
+                restored_to.x,
+                restored_to.y
+            );
+        } else {
+            println!(
+                "dragged from {},{} to {},{} with {:?} via {}",
+                target.from.x,
+                target.from.y,
+                target.to.x,
+                target.to.y,
+                args.button,
+                metadata.backend_name
+            );
+        }
     }
 }
 
@@ -6655,72 +6853,98 @@ fn parse_drag_args(args: Vec<String>) -> Result<DragCommand, CliError> {
     let mut from_y = None;
     let mut to_x = None;
     let mut to_y = None;
+    let mut from_current = false;
+    let mut from_ratio = None;
+    let mut to_ratio = None;
+    let mut region = None;
+    let mut window_id = None;
+    let mut app = None;
+    let mut window_title = None;
+    let mut title_regex = None;
     let mut button = MouseButton::Left;
-    let mut duration_ms = 250_u32;
+    let mut duration_ms = 250_u64;
+    let mut steps = None;
+    let mut bounds_policy = peekaboox_input::MoveBoundsPolicy::Allow;
+    let mut backend = peekaboox_input::InputToolSelection::Auto;
+    let mut restore = false;
     let mut dry_run = false;
+    let mut json = false;
     let mut index = 0;
 
     while index < args.len() {
         match args[index].as_str() {
             "--from" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --from".to_owned()));
-                };
-                from = Some(parse_point("--from", value)?);
+                let value = parse_next_string(&args, &mut index, "--from")?;
+                from = Some(parse_point("--from", &value)?);
             }
             "--to" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --to".to_owned()));
-                };
-                to = Some(parse_point("--to", value)?);
+                let value = parse_next_string(&args, &mut index, "--to")?;
+                to = Some(parse_point("--to", &value)?);
             }
             "--from-x" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --from-x".to_owned()));
-                };
-                from_x = Some(parse_i32("--from-x", value)?);
+                let value = parse_next_string(&args, &mut index, "--from-x")?;
+                from_x = Some(parse_i32("--from-x", &value)?);
             }
             "--from-y" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --from-y".to_owned()));
-                };
-                from_y = Some(parse_i32("--from-y", value)?);
+                let value = parse_next_string(&args, &mut index, "--from-y")?;
+                from_y = Some(parse_i32("--from-y", &value)?);
             }
             "--to-x" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --to-x".to_owned()));
-                };
-                to_x = Some(parse_i32("--to-x", value)?);
+                let value = parse_next_string(&args, &mut index, "--to-x")?;
+                to_x = Some(parse_i32("--to-x", &value)?);
             }
             "--to-y" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --to-y".to_owned()));
-                };
-                to_y = Some(parse_i32("--to-y", value)?);
+                let value = parse_next_string(&args, &mut index, "--to-y")?;
+                to_y = Some(parse_i32("--to-y", &value)?);
+            }
+            "--from-current" => from_current = true,
+            "--from-ratio" => {
+                let value = parse_next_string(&args, &mut index, "--from-ratio")?;
+                from_ratio = Some(parse_ratio_pair("--from-ratio", &value)?);
+            }
+            "--to-ratio" => {
+                let value = parse_next_string(&args, &mut index, "--to-ratio")?;
+                to_ratio = Some(parse_ratio_pair("--to-ratio", &value)?);
+            }
+            "--region" | "-r" => {
+                let value = parse_next_string(&args, &mut index, "--region")?;
+                region = Some(parse_rect("--region", &value)?);
+            }
+            "--window-id" => {
+                window_id = Some(parse_next_string(&args, &mut index, "--window-id")?);
+            }
+            "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
+            "--window-title" => {
+                window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
+            }
+            "--title-regex" => {
+                title_regex = Some(parse_next_string(&args, &mut index, "--title-regex")?)
             }
             "--button" | "-b" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --button".to_owned()));
-                };
-                button = parse_mouse_button(value)?;
+                let value = parse_next_string(&args, &mut index, "--button")?;
+                button = parse_mouse_button(&value)?;
             }
             "--duration-ms" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure(
-                        "missing value for --duration-ms".to_owned(),
-                    ));
-                };
-                duration_ms = parse_u32("--duration-ms", value)?;
+                let value = parse_next_string(&args, &mut index, "--duration-ms")?;
+                duration_ms = parse_u64("--duration-ms", &value)?;
             }
+            "--steps" => {
+                let value = parse_next_string(&args, &mut index, "--steps")?;
+                steps = Some(parse_positive_u32("--steps", &value)?);
+            }
+            "--bounds" => {
+                let value = parse_next_string(&args, &mut index, "--bounds")?;
+                bounds_policy = parse_move_bounds_policy(&value)?;
+            }
+            "--clamp" => bounds_policy = peekaboox_input::MoveBoundsPolicy::Clamp,
+            "--fail-out-of-bounds" => bounds_policy = peekaboox_input::MoveBoundsPolicy::Fail,
+            "--backend" => {
+                let value = parse_next_string(&args, &mut index, "--backend")?;
+                backend = parse_drag_backend_selection(&value)?;
+            }
+            "--restore" => restore = true,
             "--dry-run" => dry_run = true,
+            "--json" => json = true,
             "--help" | "-h" => return Ok(DragCommand::Help),
             unknown => {
                 return Err(CliError::Failure(format!(
@@ -6732,31 +6956,82 @@ fn parse_drag_args(args: Vec<String>) -> Result<DragCommand, CliError> {
         index += 1;
     }
 
-    let from = merge_drag_point("--from", from, from_x, from_y)?;
-    let to = merge_drag_point("--to", to, to_x, to_y)?;
+    let from_point = merge_optional_drag_point("--from", from, from_x, from_y)?;
+    let to_point = merge_optional_drag_point("--to", to, to_x, to_y)?;
+    let scope = DragScopeParts {
+        region,
+        window_id,
+        app,
+        window_title,
+        title_regex,
+    };
 
-    Ok(DragCommand::Run(DragArgs {
+    if scope.has_scope() && from_ratio.is_none() && to_ratio.is_none() {
+        return Err(CliError::Failure(
+            "region/window drag scope requires --from-ratio or --to-ratio".to_owned(),
+        ));
+    }
+
+    let from =
+        drag_endpoint_from_parts("from", from_point, from_current, from_ratio, scope.clone())?;
+    let to = drag_endpoint_from_parts("to", to_point, false, to_ratio, scope)?;
+
+    Ok(DragCommand::Run(Box::new(DragArgs {
         from,
         to,
         button,
         duration_ms,
+        steps,
+        bounds_policy,
+        backend,
+        restore,
         dry_run,
-    }))
+        json,
+    })))
 }
 
-fn merge_drag_point(
+fn drag_endpoint_from_parts(
+    name: &str,
+    point: Option<Point>,
+    current: bool,
+    ratio: Option<(f32, f32)>,
+    scope: DragScopeParts,
+) -> Result<DragEndpoint, CliError> {
+    let count = usize::from(point.is_some()) + usize::from(current) + usize::from(ratio.is_some());
+    if count != 1 {
+        return Err(CliError::Failure(format!(
+            "provide exactly one {name} endpoint"
+        )));
+    }
+    if let Some(point) = point {
+        return Ok(DragEndpoint::Position(point));
+    }
+    if current {
+        return Ok(DragEndpoint::CurrentPosition);
+    }
+    Ok(DragEndpoint::ScopeRatio {
+        ratio: ratio.expect("count checked ratio endpoint"),
+        region: scope.region,
+        window_id: scope.window_id,
+        app: scope.app,
+        window_title: scope.window_title,
+        title_regex: scope.title_regex,
+    })
+}
+
+fn merge_optional_drag_point(
     name: &str,
     point: Option<Point>,
     x: Option<i32>,
     y: Option<i32>,
-) -> Result<Point, CliError> {
+) -> Result<Option<Point>, CliError> {
     match (point, x, y) {
-        (Some(point), None, None) => Ok(point),
-        (None, Some(x), Some(y)) => Ok(Point::new(x, y)),
+        (Some(point), None, None) => Ok(Some(point)),
+        (None, Some(x), Some(y)) => Ok(Some(Point::new(x, y))),
         (Some(_), Some(_), _) | (Some(_), _, Some(_)) => Err(CliError::Failure(format!(
             "provide either {name} or {name}-x/{name}-y, not both"
         ))),
-        (None, None, None) => Err(CliError::Failure(format!("missing required {name}"))),
+        (None, None, None) => Ok(None),
         (None, Some(_), None) => Err(CliError::Failure(format!("missing required {name}-y"))),
         (None, None, Some(_)) => Err(CliError::Failure(format!("missing required {name}-x"))),
     }
@@ -7244,6 +7519,19 @@ fn parse_input_backend_selection(
     }
 }
 
+fn parse_drag_backend_selection(
+    value: &str,
+) -> Result<peekaboox_input::InputToolSelection, CliError> {
+    match value {
+        "auto" => Ok(peekaboox_input::InputToolSelection::Auto),
+        "uinput" => Ok(peekaboox_input::InputToolSelection::Uinput),
+        "xdotool" => Ok(peekaboox_input::InputToolSelection::Xdotool),
+        _ => Err(CliError::Failure(format!(
+            "--backend must be auto, uinput, or xdotool for drag, got {value:?}"
+        ))),
+    }
+}
+
 fn parse_ratio_pair(name: &str, value: &str) -> Result<(f32, f32), CliError> {
     let parts = value
         .split([',', ':', ';', '/'])
@@ -7353,6 +7641,14 @@ fn mouse_button_dto(button: MouseButton) -> MouseButtonDto {
         MouseButton::Left => MouseButtonDto::Left,
         MouseButton::Middle => MouseButtonDto::Middle,
         MouseButton::Right => MouseButtonDto::Right,
+    }
+}
+
+fn mouse_button_label(button: MouseButton) -> &'static str {
+    match button {
+        MouseButton::Left => "left",
+        MouseButton::Middle => "middle",
+        MouseButton::Right => "right",
     }
 }
 
@@ -7562,7 +7858,7 @@ fn print_move_usage() {
 
 fn print_drag_usage() {
     println!(
-        "Usage: peekaboox drag (--from x,y --to x,y | --from-x <px> --from-y <px> --to-x <px> --to-y <px>) [--button left|middle|right] [--duration-ms <ms>] [--dry-run]"
+        "Usage: peekaboox drag (--from x,y|--from-x <px> --from-y <px>|--from-current|--from-ratio x,y) (--to x,y|--to-x <px> --to-y <px>|--to-ratio x,y) [--region x,y,w,h|--window-id <id>|--app <name>|--window-title <text>|--title-regex <regex>] [--button left|middle|right] [--duration-ms <ms>] [--steps <n>] [--bounds allow|clamp|fail] [--backend auto|uinput|xdotool] [--restore] [--dry-run] [--json]"
     );
 }
 
@@ -7591,15 +7887,15 @@ mod tests {
         CaptureOutputFormat, CliContext, CliError, ClickArgs, ClickCommand, ClickTarget,
         CompareArgs, CompareCommand, DesktopAssertArgs, DesktopClickArgs, DesktopCommand,
         DesktopDragArgs, DesktopFocusArgs, DesktopLocateArgs, DesktopProfilesArgs,
-        DesktopTypeIntoArgs, DragArgs, DragCommand, ElementsArgs, ElementsCommand, GlobalArgs,
-        HotkeyArgs, HotkeyCommand, MoveArgs, MoveCommand, MoveTarget, OcrArgs, OcrCommand,
-        PluginsArgs, PluginsCommand, TypeArgs, TypeCommand, UiStateArgs, UiStateCommand,
-        VisionElementsArgs, VisionElementsCommand, WindowsArgs, WindowsCommand, parse_capture_args,
-        parse_capture_backends_args, parse_capture_delta_args, parse_capture_dmabuf_args,
-        parse_click_args, parse_compare_args, parse_desktop_args, parse_drag_args,
-        parse_elements_args, parse_global_args, parse_hotkey_args, parse_move_args, parse_ocr_args,
-        parse_plugins_args, parse_type_args, parse_ui_state_args, parse_vision_elements_args,
-        parse_windows_args,
+        DesktopTypeIntoArgs, DragArgs, DragCommand, DragEndpoint, ElementsArgs, ElementsCommand,
+        GlobalArgs, HotkeyArgs, HotkeyCommand, MoveArgs, MoveCommand, MoveTarget, OcrArgs,
+        OcrCommand, PluginsArgs, PluginsCommand, TypeArgs, TypeCommand, UiStateArgs,
+        UiStateCommand, VisionElementsArgs, VisionElementsCommand, WindowsArgs, WindowsCommand,
+        parse_capture_args, parse_capture_backends_args, parse_capture_delta_args,
+        parse_capture_dmabuf_args, parse_click_args, parse_compare_args, parse_desktop_args,
+        parse_drag_args, parse_elements_args, parse_global_args, parse_hotkey_args,
+        parse_move_args, parse_ocr_args, parse_plugins_args, parse_type_args, parse_ui_state_args,
+        parse_vision_elements_args, parse_windows_args,
     };
     use peekaboox_core::{Point, Rect};
     use peekaboox_desktop::DesktopAssertion;
@@ -9227,13 +9523,18 @@ mod tests {
 
         assert_eq!(
             command,
-            DragCommand::Run(DragArgs {
-                from: Point::new(10, 20),
-                to: Point::new(40, 80),
+            DragCommand::Run(Box::new(DragArgs {
+                from: DragEndpoint::Position(Point::new(10, 20)),
+                to: DragEndpoint::Position(Point::new(40, 80)),
                 button: MouseButton::Middle,
                 duration_ms: 500,
-                dry_run: true
-            })
+                steps: None,
+                bounds_policy: MoveBoundsPolicy::Allow,
+                backend: InputToolSelection::Auto,
+                restore: false,
+                dry_run: true,
+                json: false
+            }))
         );
     }
 
@@ -9253,13 +9554,60 @@ mod tests {
 
         assert_eq!(
             command,
-            DragCommand::Run(DragArgs {
-                from: Point::new(10, 20),
-                to: Point::new(40, 80),
+            DragCommand::Run(Box::new(DragArgs {
+                from: DragEndpoint::Position(Point::new(10, 20)),
+                to: DragEndpoint::Position(Point::new(40, 80)),
                 button: MouseButton::Left,
                 duration_ms: 250,
-                dry_run: false
-            })
+                steps: None,
+                bounds_policy: MoveBoundsPolicy::Allow,
+                backend: InputToolSelection::Auto,
+                restore: false,
+                dry_run: false,
+                json: false
+            }))
+        );
+    }
+
+    #[test]
+    fn drag_accepts_current_ratio_scope_and_options() {
+        let command = parse_drag_args(vec![
+            "--from-current".to_owned(),
+            "--to-ratio".to_owned(),
+            "0.8,0.25".to_owned(),
+            "--region".to_owned(),
+            "10,20,300,200".to_owned(),
+            "--steps".to_owned(),
+            "8".to_owned(),
+            "--backend".to_owned(),
+            "xdotool".to_owned(),
+            "--clamp".to_owned(),
+            "--restore".to_owned(),
+            "--json".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DragCommand::Run(Box::new(DragArgs {
+                from: DragEndpoint::CurrentPosition,
+                to: DragEndpoint::ScopeRatio {
+                    ratio: (0.8, 0.25),
+                    region: Some(Rect::new(10, 20, 300, 200)),
+                    window_id: None,
+                    app: None,
+                    window_title: None,
+                    title_regex: None,
+                },
+                button: MouseButton::Left,
+                duration_ms: 250,
+                steps: Some(8),
+                bounds_policy: MoveBoundsPolicy::Clamp,
+                backend: InputToolSelection::Xdotool,
+                restore: true,
+                dry_run: false,
+                json: true
+            }))
         );
     }
 

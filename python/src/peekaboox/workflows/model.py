@@ -12,6 +12,11 @@ class WorkflowStep:
     from_y: int | None = None
     to_x: int | None = None
     to_y: int | None = None
+    from_current: bool = False
+    from_ratio_x: float | None = None
+    from_ratio_y: float | None = None
+    to_ratio_x: float | None = None
+    to_ratio_y: float | None = None
     button: str | None = None
     duration_ms: int | None = None
     relative_x: int | None = None

@@ -1643,29 +1643,63 @@ fn dispatch_request(
             to_y,
             button,
             duration_ms,
+            steps,
+            bounds_policy,
+            backend,
+            restore,
             dry_run,
         } => {
             let button = mouse_button(button);
+            let options = drag_options_from_fields(
+                Some(u64::from(duration_ms)),
+                steps,
+                Some(bounds_policy.as_str()),
+                Some(backend.as_str()),
+            )?;
+            let from = peekaboox_input::resolve_move_position(
+                Point::new(from_x, from_y),
+                options.bounds_policy,
+            )
+            .map_err(|error| error.to_string())?;
+            let to = peekaboox_input::resolve_move_position(
+                Point::new(to_x, to_y),
+                options.bounds_policy,
+            )
+            .map_err(|error| error.to_string())?;
             let action = peekaboox_input::InputAction::Drag {
-                from: Point::new(from_x, from_y),
-                to: Point::new(to_x, to_y),
+                from,
+                to,
                 button,
-                duration_ms: u64::from(duration_ms),
+                duration_ms: options.duration_ms,
             };
             let metadata = if dry_run {
                 let backend = peekaboox_input::CommandInputBackend
-                    .detect_backend_for(&action)
+                    .detect_backend_for_with_selection(&action, options.backend)
                     .map_err(|error| error.to_string())?;
                 detected_input_backend_dto(backend)
             } else {
                 ensure_input_allowed(config)?;
-                let metadata = peekaboox_input::drag(
-                    Point::new(from_x, from_y),
-                    Point::new(to_x, to_y),
-                    button,
-                    u64::from(duration_ms),
-                )
-                .map_err(|error| error.to_string())?;
+                let restore_position = if restore {
+                    Some(peekaboox_input::current_mouse_position().map_err(|error| {
+                        format!("failed to query cursor before drag restore: {error}")
+                    })?)
+                } else {
+                    None
+                };
+                let metadata = peekaboox_input::drag_with_options(from, to, button, options)
+                    .map_err(|error| error.to_string())?;
+                if let Some(position) = restore_position {
+                    peekaboox_input::move_mouse_with_options(
+                        position,
+                        peekaboox_input::MoveMouseOptions {
+                            duration_ms: options.duration_ms,
+                            steps: options.steps,
+                            bounds_policy: options.bounds_policy,
+                            backend: options.backend,
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
                 input_metadata_dto(metadata)
             };
             Ok(ApiResult::Drag(metadata))
@@ -2307,11 +2341,24 @@ impl PeekabooX for GrpcPeekabooXService {
         let details = json!({
             "has_from": request.from.is_some(),
             "has_to": request.to.is_some(),
+            "from_current": request.from_current,
+            "has_region": request.region.is_some(),
+            "has_from_ratio": request.from_ratio_x.is_some() || request.from_ratio_y.is_some(),
+            "has_to_ratio": request.to_ratio_x.is_some() || request.to_ratio_y.is_some(),
+            "has_window_filter": request.window_id.is_some()
+                || request.app.is_some()
+                || request.window_title.is_some()
+                || request.title_regex.is_some(),
             "button": request.button,
-            "duration_ms": request.duration_ms
+            "dry_run": request.dry_run,
+            "duration_ms": request.duration_ms,
+            "steps": request.steps,
+            "bounds_policy": request.bounds_policy.as_deref(),
+            "backend": request.backend.as_deref(),
+            "restore": request.restore
         });
 
-        let result = grpc_drag(request, &self.config);
+        let result = grpc_drag(request, &self.config, self.list_windows);
         audit_grpc_result(&self.audit, "grpc.drag", &result, details);
         result.map(Response::new)
     }
@@ -3918,32 +3965,258 @@ fn point_from_ratio_status(rect: Rect, ratio: (f32, f32)) -> Result<Point, Statu
 fn grpc_drag(
     request: proto::DragRequest,
     config: &ServerConfig,
+    list_windows: WindowListProvider,
 ) -> Result<proto::ActionResponse, Status> {
-    ensure_input_allowed(config).map_err(Status::permission_denied)?;
-    let from = request
-        .from
-        .ok_or_else(|| Status::invalid_argument("from coordinates are required"))?;
-    let to = request
-        .to
-        .ok_or_else(|| Status::invalid_argument("to coordinates are required"))?;
+    let options = drag_options_from_fields(
+        request.duration_ms.map(u64::from),
+        request.steps,
+        request.bounds_policy.as_deref(),
+        request.backend.as_deref(),
+    )
+    .map_err(Status::invalid_argument)?;
+    let resolved = resolve_grpc_drag_target(&request, list_windows)?;
     let button = proto_mouse_button(request.button)?;
-    let duration_ms = u64::from(request.duration_ms.unwrap_or(250));
-    let from = Point::new(from.x, from.y);
-    let to = Point::new(to.x, to.y);
-    let metadata = peekaboox_input::drag(from, to, button, duration_ms)
-        .map_err(|error| Status::internal(error.to_string()))?;
+    let from = peekaboox_input::resolve_move_position(resolved.from, options.bounds_policy)
+        .map_err(|error| Status::invalid_argument(error.to_string()))?;
+    let to = peekaboox_input::resolve_move_position(resolved.to, options.bounds_policy)
+        .map_err(|error| Status::invalid_argument(error.to_string()))?;
+    let action = peekaboox_input::InputAction::Drag {
+        from,
+        to,
+        button,
+        duration_ms: options.duration_ms,
+    };
+    let metadata = if request.dry_run {
+        let backend = peekaboox_input::CommandInputBackend
+            .detect_backend_for_with_selection(&action, options.backend)
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        peekaboox_input::InputExecutionMetadata {
+            backend_name: backend.name().to_owned(),
+            backend_kind: backend.backend_kind(),
+            action,
+        }
+    } else {
+        ensure_input_allowed(config).map_err(Status::permission_denied)?;
+        let restore_position = if request.restore {
+            Some(
+                peekaboox_input::current_mouse_position()
+                    .map_err(|error| Status::failed_precondition(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+        let metadata = peekaboox_input::drag_with_options(from, to, button, options)
+            .map_err(|error| Status::internal(error.to_string()))?;
+        if let Some(position) = restore_position {
+            peekaboox_input::move_mouse_with_options(
+                position,
+                peekaboox_input::MoveMouseOptions {
+                    duration_ms: options.duration_ms,
+                    steps: options.steps,
+                    bounds_policy: options.bounds_policy,
+                    backend: options.backend,
+                },
+            )
+            .map_err(|error| Status::internal(error.to_string()))?;
+        }
+        metadata
+    };
     let backend_kind = backend_kind_name(metadata.backend_kind);
     let backend_name = metadata.backend_name;
+    let action = if request.dry_run {
+        "would drag"
+    } else {
+        "dragged"
+    };
+    let restore_suffix = if request.restore && !request.dry_run {
+        " and restored"
+    } else {
+        ""
+    };
 
     Ok(proto::ActionResponse {
         ok: true,
         message: format!(
-            "dragged from {},{} to {},{} using {}/{}",
-            from.x, from.y, to.x, to.y, backend_name, backend_kind
+            "{action} from {},{} ({}) to {},{} ({}) using {}/{}{restore_suffix}",
+            from.x,
+            from.y,
+            resolved.from_description,
+            to.x,
+            to.y,
+            resolved.to_description,
+            backend_name,
+            backend_kind
         ),
         backend_name: Some(backend_name),
         backend_kind: Some(backend_kind),
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedDragTarget {
+    from: Point,
+    to: Point,
+    from_description: String,
+    to_description: String,
+}
+
+fn resolve_grpc_drag_target(
+    request: &proto::DragRequest,
+    list_windows: WindowListProvider,
+) -> Result<ResolvedDragTarget, Status> {
+    let has_scope = request.region.is_some()
+        || request.window_id.is_some()
+        || request.app.is_some()
+        || request.window_title.is_some()
+        || request.title_regex.is_some();
+    let has_from_ratio = request.from_ratio_x.is_some() || request.from_ratio_y.is_some();
+    let has_to_ratio = request.to_ratio_x.is_some() || request.to_ratio_y.is_some();
+    if has_scope && !has_from_ratio && !has_to_ratio {
+        return Err(Status::invalid_argument(
+            "drag region/window scope requires from_ratio or to_ratio",
+        ));
+    }
+
+    let from_count = usize::from(request.from.is_some())
+        + usize::from(request.from_current)
+        + usize::from(has_from_ratio);
+    if from_count != 1 {
+        return Err(Status::invalid_argument(
+            "provide exactly one drag from endpoint: from, from_current, or from_ratio",
+        ));
+    }
+
+    let to_count = usize::from(request.to.is_some()) + usize::from(has_to_ratio);
+    if to_count != 1 {
+        return Err(Status::invalid_argument(
+            "provide exactly one drag to endpoint: to or to_ratio",
+        ));
+    }
+
+    let (from, from_description) = if let Some(from) = request.from.as_ref() {
+        (Point::new(from.x, from.y), format!("{},{}", from.x, from.y))
+    } else if request.from_current {
+        let position = peekaboox_input::current_mouse_position()
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        (
+            position,
+            format!("current cursor at {},{}", position.x, position.y),
+        )
+    } else {
+        let ratio = (
+            request.from_ratio_x.unwrap_or(0.5),
+            request.from_ratio_y.unwrap_or(0.5),
+        );
+        validate_ratio_status("from_ratio_x", ratio.0)?;
+        validate_ratio_status("from_ratio_y", ratio.1)?;
+        let scope = resolve_grpc_drag_scope(request, list_windows)?;
+        (
+            point_from_ratio_status(scope, ratio)?,
+            format!(
+                "from-ratio {:.3},{:.3} in {}",
+                ratio.0,
+                ratio.1,
+                format_rect(scope)
+            ),
+        )
+    };
+
+    let (to, to_description) = if let Some(to) = request.to.as_ref() {
+        (Point::new(to.x, to.y), format!("{},{}", to.x, to.y))
+    } else {
+        let ratio = (
+            request.to_ratio_x.unwrap_or(0.5),
+            request.to_ratio_y.unwrap_or(0.5),
+        );
+        validate_ratio_status("to_ratio_x", ratio.0)?;
+        validate_ratio_status("to_ratio_y", ratio.1)?;
+        let scope = resolve_grpc_drag_scope(request, list_windows)?;
+        (
+            point_from_ratio_status(scope, ratio)?,
+            format!(
+                "to-ratio {:.3},{:.3} in {}",
+                ratio.0,
+                ratio.1,
+                format_rect(scope)
+            ),
+        )
+    };
+
+    Ok(ResolvedDragTarget {
+        from,
+        to,
+        from_description,
+        to_description,
+    })
+}
+
+fn resolve_grpc_drag_scope(
+    request: &proto::DragRequest,
+    list_windows: WindowListProvider,
+) -> Result<Rect, Status> {
+    let region = request.region.map(rect_from_proto);
+    let window = resolve_grpc_drag_window(request, list_windows)?;
+    match (window, region) {
+        (Some(window), Some(region)) => {
+            offset_window_relative_capture_region(window.bounds, region)
+                .map_err(Status::invalid_argument)
+        }
+        (Some(window), None) => Ok(window.bounds),
+        (None, Some(region)) => Ok(region),
+        (None, None) => {
+            let (width, height) = peekaboox_input::screen_size().ok_or_else(|| {
+                Status::failed_precondition(
+                    "drag ratio without region/window requires a detectable screen size",
+                )
+            })?;
+            Ok(Rect::new(
+                0,
+                0,
+                u32::try_from(width).map_err(|_| Status::internal("screen width overflows u32"))?,
+                u32::try_from(height)
+                    .map_err(|_| Status::internal("screen height overflows u32"))?,
+            ))
+        }
+    }
+}
+
+fn resolve_grpc_drag_window(
+    request: &proto::DragRequest,
+    list_windows: WindowListProvider,
+) -> Result<Option<WindowInfo>, Status> {
+    let id = clean_optional_string(request.window_id.clone());
+    let app = clean_optional_string(request.app.clone());
+    let title = clean_optional_string(request.window_title.clone());
+    let title_regex = clean_optional_string(request.title_regex.clone());
+    if id.is_none() && app.is_none() && title.is_none() && title_regex.is_none() {
+        return Ok(None);
+    }
+
+    let query = window_query_from_fields(WindowQueryFields {
+        id,
+        app,
+        title,
+        title_regex,
+        focused: false,
+        limit: Some(1),
+        sort: Some("focused".to_owned()),
+        backend: None,
+        diagnose: false,
+    })
+    .map_err(Status::invalid_argument)?;
+    let metadata = list_windows(query).map_err(|error| Status::internal(error.to_string()))?;
+    let window = metadata
+        .windows
+        .into_iter()
+        .next()
+        .ok_or_else(|| Status::not_found("no window matched drag filters"))?;
+    if window.bounds.width == 0 || window.bounds.height == 0 {
+        return Err(Status::failed_precondition(format!(
+            "window {} has empty bounds",
+            window.id
+        )));
+    }
+    Ok(Some(window))
 }
 
 fn resolve_click_target_with_optional_vision_fallback(
@@ -6011,6 +6284,24 @@ fn move_options_from_fields(
     })
 }
 
+fn drag_options_from_fields(
+    duration_ms: Option<u64>,
+    steps: Option<u32>,
+    bounds_policy: Option<&str>,
+    backend: Option<&str>,
+) -> Result<peekaboox_input::DragMouseOptions, String> {
+    if steps == Some(0) {
+        return Err("drag steps must be greater than zero".to_owned());
+    }
+
+    Ok(peekaboox_input::DragMouseOptions {
+        duration_ms: duration_ms.unwrap_or(250),
+        steps,
+        bounds_policy: parse_move_bounds_policy(bounds_policy.unwrap_or("allow"))?,
+        backend: parse_drag_backend_selection(backend.unwrap_or("auto"))?,
+    })
+}
+
 fn parse_move_bounds_policy(value: &str) -> Result<peekaboox_input::MoveBoundsPolicy, String> {
     match value.trim() {
         "" | "allow" => Ok(peekaboox_input::MoveBoundsPolicy::Allow),
@@ -6032,6 +6323,19 @@ fn parse_input_backend_selection(
         "xdotool" => Ok(peekaboox_input::InputToolSelection::Xdotool),
         value => Err(format!(
             "backend must be auto, uinput, ydotool, or xdotool, got {value:?}"
+        )),
+    }
+}
+
+fn parse_drag_backend_selection(
+    value: &str,
+) -> Result<peekaboox_input::InputToolSelection, String> {
+    match value.trim() {
+        "" | "auto" => Ok(peekaboox_input::InputToolSelection::Auto),
+        "uinput" => Ok(peekaboox_input::InputToolSelection::Uinput),
+        "xdotool" => Ok(peekaboox_input::InputToolSelection::Xdotool),
+        value => Err(format!(
+            "backend must be auto, uinput, or xdotool for drag, got {value:?}"
         )),
     }
 }
@@ -6335,6 +6639,10 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             to_y,
             button,
             duration_ms,
+            steps,
+            bounds_policy,
+            backend,
+            restore,
             dry_run,
         } => json!({
             "from_x": from_x,
@@ -6343,6 +6651,10 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             "to_y": to_y,
             "button": format!("{button:?}").to_ascii_lowercase(),
             "duration_ms": duration_ms,
+            "steps": steps,
+            "bounds_policy": bounds_policy,
+            "backend": backend,
+            "restore": restore,
             "dry_run": dry_run
         }),
         ApiRequest::TypeText { text, dry_run } => {

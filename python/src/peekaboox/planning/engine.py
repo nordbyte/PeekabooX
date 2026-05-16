@@ -221,15 +221,32 @@ def _validate_step(step: WorkflowStep, index: int) -> None:
         if step.steps is not None and step.steps <= 0:
             raise ValueError(f"steps[{index}].steps must be greater than zero")
     if action == "drag":
-        if (
-            step.from_x is None
-            or step.from_y is None
-            or step.to_x is None
-            or step.to_y is None
-        ):
-            raise ValueError(f"steps[{index}] drag requires from_x/from_y/to_x/to_y")
+        has_from_coordinates = step.from_x is not None or step.from_y is not None
+        has_from_ratio = step.from_ratio_x is not None or step.from_ratio_y is not None
+        from_count = sum(
+            1 for value in (has_from_coordinates, step.from_current, has_from_ratio) if value
+        )
+        if from_count != 1:
+            raise ValueError(f"steps[{index}] drag requires exactly one from endpoint")
+        if has_from_coordinates and (step.from_x is None or step.from_y is None):
+            raise ValueError(f"steps[{index}] drag from_x/from_y endpoint is incomplete")
+        if has_from_ratio and (step.from_ratio_x is None or step.from_ratio_y is None):
+            raise ValueError(f"steps[{index}] drag from_ratio_x/from_ratio_y endpoint is incomplete")
+
+        has_to_coordinates = step.to_x is not None or step.to_y is not None
+        has_to_ratio = step.to_ratio_x is not None or step.to_ratio_y is not None
+        if sum(1 for value in (has_to_coordinates, has_to_ratio) if value) != 1:
+            raise ValueError(f"steps[{index}] drag requires exactly one to endpoint")
+        if has_to_coordinates and (step.to_x is None or step.to_y is None):
+            raise ValueError(f"steps[{index}] drag to_x/to_y endpoint is incomplete")
+        if has_to_ratio and (step.to_ratio_x is None or step.to_ratio_y is None):
+            raise ValueError(f"steps[{index}] drag to_ratio_x/to_ratio_y endpoint is incomplete")
+        if step.region is not None and not has_from_ratio and not has_to_ratio:
+            raise ValueError(f"steps[{index}] drag region requires a ratio endpoint")
         if step.duration_ms is not None and step.duration_ms < 0:
             raise ValueError(f"steps[{index}].duration_ms must be non-negative")
+        if step.steps is not None and step.steps <= 0:
+            raise ValueError(f"steps[{index}].steps must be greater than zero")
         if step.button is not None and step.button.casefold() not in {"left", "middle", "right"}:
             raise ValueError(f"steps[{index}].button must be left, middle, or right")
     if action in {"type", "type_text", "paste", "paste_text"} and step.value is None:

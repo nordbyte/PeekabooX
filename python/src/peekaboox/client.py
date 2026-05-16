@@ -926,23 +926,97 @@ class PeekabooXClient:
 
     def drag(
         self,
-        from_x: int,
-        from_y: int,
-        to_x: int,
-        to_y: int,
+        from_x: int | None = None,
+        from_y: int | None = None,
+        to_x: int | None = None,
+        to_y: int | None = None,
+        *,
         button: str = "left",
         duration_ms: int = 250,
+        dry_run: bool = False,
+        steps: int | None = None,
+        bounds_policy: str | None = None,
+        backend: str | None = None,
+        restore: bool = False,
+        from_current: bool = False,
+        from_ratio: tuple[float, float] | None = None,
+        to_ratio: tuple[float, float] | None = None,
+        region: Rect | None = None,
+        window_id: str | None = None,
+        app: str | None = None,
+        window_title: str | None = None,
+        title_regex: str | None = None,
     ) -> ActionResult:
         if duration_ms < 0:
             raise ValueError("duration_ms must be non-negative")
-        request = self.messages.DragRequest(
-            **{
-                "from": self.messages.Point(x=from_x, y=from_y),
-                "to": self.messages.Point(x=to_x, y=to_y),
-                "button": _mouse_button_to_proto(self.messages, button),
-                "duration_ms": duration_ms,
-            }
+        if steps is not None and steps <= 0:
+            raise ValueError("steps must be greater than zero")
+        if bounds_policy is not None and bounds_policy not in {
+            "allow",
+            "clamp",
+            "fail",
+            "fail-out-of-bounds",
+        }:
+            raise ValueError("bounds_policy must be allow, clamp, fail, or fail-out-of-bounds")
+        if backend is not None and backend not in {"auto", "uinput", "xdotool"}:
+            raise ValueError("backend must be auto, uinput, or xdotool")
+        if from_ratio is not None:
+            _validate_ratio_pair("from_ratio", from_ratio)
+        if to_ratio is not None:
+            _validate_ratio_pair("to_ratio", to_ratio)
+
+        has_from_coordinates = from_x is not None or from_y is not None
+        has_to_coordinates = to_x is not None or to_y is not None
+        if sum(1 for value in (has_from_coordinates, from_current, from_ratio is not None) if value) != 1:
+            raise ValueError("provide exactly one drag from endpoint")
+        if sum(1 for value in (has_to_coordinates, to_ratio is not None) if value) != 1:
+            raise ValueError("provide exactly one drag to endpoint")
+        has_scope = any(
+            value is not None
+            for value in (region, window_id, app, window_title, title_regex)
         )
+        if has_scope and from_ratio is None and to_ratio is None:
+            raise ValueError("drag region/window scope requires from_ratio or to_ratio")
+
+        request_kwargs: dict[str, Any] = {
+            "button": _mouse_button_to_proto(self.messages, button),
+            "duration_ms": duration_ms,
+            "dry_run": dry_run,
+            "restore": restore,
+            "from_current": from_current,
+        }
+        if has_from_coordinates:
+            if from_x is None or from_y is None:
+                raise ValueError("from_x and from_y are required for coordinate drags")
+            request_kwargs["from"] = self.messages.Point(x=from_x, y=from_y)
+        if has_to_coordinates:
+            if to_x is None or to_y is None:
+                raise ValueError("to_x and to_y are required for coordinate drags")
+            request_kwargs["to"] = self.messages.Point(x=to_x, y=to_y)
+        if steps is not None:
+            request_kwargs["steps"] = steps
+        if bounds_policy is not None:
+            request_kwargs["bounds_policy"] = bounds_policy
+        if backend is not None:
+            request_kwargs["backend"] = backend
+        if region is not None:
+            request_kwargs["region"] = _rect_to_proto(self.messages, region)
+        if window_id is not None:
+            request_kwargs["window_id"] = window_id
+        if app is not None:
+            request_kwargs["app"] = app
+        if window_title is not None:
+            request_kwargs["window_title"] = window_title
+        if title_regex is not None:
+            request_kwargs["title_regex"] = title_regex
+        if from_ratio is not None:
+            request_kwargs["from_ratio_x"] = from_ratio[0]
+            request_kwargs["from_ratio_y"] = from_ratio[1]
+        if to_ratio is not None:
+            request_kwargs["to_ratio_x"] = to_ratio[0]
+            request_kwargs["to_ratio_y"] = to_ratio[1]
+
+        request = self.messages.DragRequest(**request_kwargs)
         return _action_result_from_proto(self._call("Drag", request))
 
     def type_text(
