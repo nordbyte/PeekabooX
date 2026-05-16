@@ -41,6 +41,7 @@ jobs:
       - run: python -m pip wheel --no-deps -w target/python-wheel ./python
       - run: cargo build --release -p peekaboox-cli -p peekabooxd
       - run: PEEKABOOX_BIN=target/release/peekaboox bash examples/cli/vision-smoke.sh
+      - run: PEEKABOOX_BIN=target/release/peekaboox bash examples/cli/vision_elements_fixture.sh
       - run: python packaging/debian/build_deb.py --skip-cargo-build
       - run: python packaging/smoke_install.py --skip-cargo-install
       - run: docker build --target smoke -t "peekaboox:${RELEASE_VERSION}" .

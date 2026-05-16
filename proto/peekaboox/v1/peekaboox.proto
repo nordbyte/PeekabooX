@@ -361,6 +361,16 @@ message DetectUiElementsRequest {
   optional uint32 min_component_pixels = 6;
   optional uint32 max_elements = 7;
   optional uint32 merge_distance = 8;
+  repeated Rect ignore_regions = 9;
+  optional float min_confidence = 10;
+  optional uint32 max_width = 11;
+  optional uint32 max_height = 12;
+  optional uint64 min_area = 13;
+  optional uint64 max_area = 14;
+  optional uint32 padding = 15;
+  optional string sort = 16;
+  optional string mask_output_path = 17;
+  optional string overlay_output_path = 18;
 }
 
 message DetectUiElementsResponse {

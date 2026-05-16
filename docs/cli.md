@@ -277,8 +277,16 @@ fallback regions:
 
 ```bash
 peekaboox vision-elements screenshot.png --min-width 8
-peekaboox --daemon vision-elements --image screenshot.png --max-elements 25
+peekaboox vision-elements --image screenshot.png --region 10,20,400,300 --ignore-region 10,20,80,24 --min-confidence 0.8 --sort confidence --mask-output mask.png --overlay-output overlay.png --json
+peekaboox --daemon vision-elements --image screenshot.png --max-elements 25 --padding 2
 ```
+
+`vision-elements` supports region scoping, repeated `--ignore-region`
+rectangles, threshold and component-size controls, `--min-confidence`,
+`--max-width`, `--max-height`, `--min-area`, `--max-area`, result `--padding`,
+and `--sort position|area|confidence`. `--mask-output` writes the detector
+saliency mask and `--overlay-output` writes a screenshot overlay with detected
+bounds.
 
 Regression image fixtures live in `tests/fixtures/vision`.
 

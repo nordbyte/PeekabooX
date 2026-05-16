@@ -9,6 +9,7 @@ local smoke tests and CI:
 
 ```bash
 bash examples/cli/vision-smoke.sh
+bash examples/cli/vision_elements_fixture.sh
 bash examples/cli/compare_visual_regression.sh
 bash examples/cli/ui_state_sequence.sh
 bash examples/cli/ocr-smoke.sh
@@ -30,6 +31,11 @@ cargo run -q -p peekaboox-cli -- doctor --json
 `examples/cli/vision-smoke.sh` uses the deterministic image fixtures under
 `tests/fixtures/vision`. Set `PEEKABOOX_BIN=/path/to/peekaboox` to test an
 installed or packaged binary instead of the local Cargo fallback.
+
+`examples/cli/vision_elements_fixture.sh` focuses on the standalone
+`vision-elements` command. It validates deterministic fixture detection,
+ignore regions, confidence/size/area filters, sorting, padding, and mask plus
+overlay debug outputs under `target/examples/vision-elements-fixture`.
 
 `examples/cli/compare_visual_regression.sh` exercises the visual regression
 surface on deterministic fixtures: strict failures, tolerated changed-pixel and

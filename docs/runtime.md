@@ -53,7 +53,15 @@ print(
         stable_max_changed_pixels=20,
     ).state
 )
-print(runtime.detect_ui_elements_from_image_file("screenshot.png").elements)
+print(
+    runtime.detect_ui_elements_from_image_file(
+        "screenshot.png",
+        ignore_regions=[Rect(x=10, y=20, width=80, height=24)],
+        min_confidence=0.8,
+        sort="confidence",
+        overlay_output_path="vision-elements-overlay.png",
+    ).elements
+)
 print(runtime.desktop_locate("telegram", "search-input"))
 runtime.desktop_click("telegram", "search-input", dry_run=True)
 runtime.desktop_type_into("telegram", "message-input", "PeekabooX", dry_run=True)

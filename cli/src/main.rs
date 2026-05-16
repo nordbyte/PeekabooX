@@ -22,7 +22,7 @@ use peekaboox_ipc::{
 };
 use peekaboox_vision::{
     OcrConfig, OcrOptions, OcrPreprocessingOptions, OcrResult, TesseractOcrBackend,
-    UiElementDetectionOptions, UiStateOptions, UiStateResult, VisualAlphaMode,
+    UiElementDetectionOptions, UiElementSort, UiStateOptions, UiStateResult, VisualAlphaMode,
     VisualCompareOptions, VisualDiffResult, VisualSizePolicy,
 };
 
@@ -513,12 +513,22 @@ enum UiStateCommand {
 struct VisionElementsArgs {
     image: PathBuf,
     region: Option<Rect>,
+    ignore_regions: Vec<Rect>,
     edge_threshold: u8,
     min_width: u32,
     min_height: u32,
     min_component_pixels: u32,
+    min_confidence: Option<f32>,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    min_area: Option<u64>,
+    max_area: Option<u64>,
     max_elements: u32,
     merge_distance: u32,
+    padding: u32,
+    sort: UiElementSort,
+    mask_output: Option<PathBuf>,
+    overlay_output: Option<PathBuf>,
     json: bool,
 }
 
@@ -2431,6 +2441,7 @@ fn element_vision_options_from_elements_args(
         merge_distance: args
             .vision_merge_distance
             .unwrap_or(defaults.merge_distance),
+        ..defaults
     })
 }
 
@@ -4022,12 +4033,33 @@ fn vision_elements(args: Vec<String>, context: &CliContext) -> Result<(), CliErr
             ApiRequest::DetectUiElements {
                 image_path: args.image.display().to_string(),
                 region: args.region.map(RectDto::from),
+                ignore_regions: args
+                    .ignore_regions
+                    .iter()
+                    .copied()
+                    .map(RectDto::from)
+                    .collect(),
                 edge_threshold: args.edge_threshold,
                 min_width: args.min_width,
                 min_height: args.min_height,
                 min_component_pixels: args.min_component_pixels,
+                min_confidence: args.min_confidence,
+                max_width: args.max_width,
+                max_height: args.max_height,
+                min_area: args.min_area,
+                max_area: args.max_area,
                 max_elements: args.max_elements,
                 merge_distance: args.merge_distance,
+                padding: args.padding,
+                sort: ui_element_sort_name(args.sort).to_owned(),
+                mask_output_path: args
+                    .mask_output
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                overlay_output_path: args
+                    .overlay_output
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
             },
         )?;
         let ApiResult::DetectUiElements(metadata) = result else {
@@ -4044,8 +4076,13 @@ fn vision_elements(args: Vec<String>, context: &CliContext) -> Result<(), CliErr
     }
 
     let options = vision_element_options(&args)?;
-    let elements = peekaboox_vision::detect_ui_elements_from_image_file(&args.image, &options)
-        .map_err(|error| CliError::Failure(error.to_string()))?;
+    let elements = peekaboox_vision::detect_ui_elements_from_image_file_with_outputs(
+        &args.image,
+        &options,
+        args.mask_output.as_deref(),
+        args.overlay_output.as_deref(),
+    )
+    .map_err(|error| CliError::Failure(error.to_string()))?;
     let metadata = AccessibilityTreeMetadata {
         backend_name: "heuristic_vision".to_owned(),
         backend_kind: BackendKind::Vision,
@@ -4064,12 +4101,22 @@ fn parse_vision_elements_args(args: Vec<String>) -> Result<VisionElementsCommand
     let defaults = UiElementDetectionOptions::default();
     let mut image = None;
     let mut region = None;
+    let mut ignore_regions = Vec::new();
     let mut edge_threshold = defaults.edge_threshold;
     let mut min_width = defaults.min_width;
     let mut min_height = defaults.min_height;
     let mut min_component_pixels = defaults.min_component_pixels;
+    let mut min_confidence = defaults.min_confidence;
+    let mut max_width = defaults.max_width;
+    let mut max_height = defaults.max_height;
+    let mut min_area = defaults.min_area;
+    let mut max_area = defaults.max_area;
     let mut max_elements = u32::try_from(defaults.max_elements).unwrap_or(100);
     let mut merge_distance = defaults.merge_distance;
+    let mut padding = defaults.padding;
+    let mut sort = defaults.sort;
+    let mut mask_output = None;
+    let mut overlay_output = None;
     let mut json = false;
     let mut positional = Vec::new();
     let mut index = 0;
@@ -4089,6 +4136,15 @@ fn parse_vision_elements_args(args: Vec<String>) -> Result<VisionElementsCommand
                     return Err(CliError::Failure("missing value for --region".to_owned()));
                 };
                 region = Some(parse_rect("--region", value)?);
+            }
+            "--ignore-region" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --ignore-region".to_owned(),
+                    ));
+                };
+                ignore_regions.push(parse_rect("--ignore-region", value)?);
             }
             "--threshold" | "--edge-threshold" | "-t" => {
                 index += 1;
@@ -4131,6 +4187,57 @@ fn parse_vision_elements_args(args: Vec<String>) -> Result<VisionElementsCommand
                 };
                 min_component_pixels = parse_positive_u32("--min-component-pixels", value)?;
             }
+            "--min-confidence" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --min-confidence".to_owned(),
+                    ));
+                };
+                min_confidence = Some(parse_unit_f32("--min-confidence", value)?);
+            }
+            "--max-width" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --max-width".to_owned(),
+                    ));
+                };
+                max_width = Some(parse_positive_u32("--max-width", value)?);
+            }
+            "--max-height" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --max-height".to_owned(),
+                    ));
+                };
+                max_height = Some(parse_positive_u32("--max-height", value)?);
+            }
+            "--min-area" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --min-area".to_owned()));
+                };
+                min_area = Some(parse_u64("--min-area", value)?);
+                if min_area == Some(0) {
+                    return Err(CliError::Failure(
+                        "--min-area must be greater than zero".to_owned(),
+                    ));
+                }
+            }
+            "--max-area" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --max-area".to_owned()));
+                };
+                max_area = Some(parse_u64("--max-area", value)?);
+                if max_area == Some(0) {
+                    return Err(CliError::Failure(
+                        "--max-area must be greater than zero".to_owned(),
+                    ));
+                }
+            }
             "--max-elements" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -4152,6 +4259,38 @@ fn parse_vision_elements_args(args: Vec<String>) -> Result<VisionElementsCommand
                         "--merge-distance must be an integer, got {value:?}"
                     ))
                 })?;
+            }
+            "--padding" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --padding".to_owned()));
+                };
+                padding = parse_u32("--padding", value)?;
+            }
+            "--sort" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --sort".to_owned()));
+                };
+                sort = parse_ui_element_sort(value)?;
+            }
+            "--mask-output" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --mask-output".to_owned(),
+                    ));
+                };
+                mask_output = Some(PathBuf::from(value));
+            }
+            "--overlay-output" | "--debug-output" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --overlay-output".to_owned(),
+                    ));
+                };
+                overlay_output = Some(PathBuf::from(value));
             }
             "--json" => json = true,
             "--help" | "-h" => return Ok(VisionElementsCommand::Help),
@@ -4176,16 +4315,47 @@ fn parse_vision_elements_args(args: Vec<String>) -> Result<VisionElementsCommand
         }
     }
     let image = image.ok_or_else(|| CliError::Failure("missing --image path".to_owned()))?;
+    if let Some(max_width) = max_width
+        && min_width > max_width
+    {
+        return Err(CliError::Failure(
+            "--min-width must be less than or equal to --max-width".to_owned(),
+        ));
+    }
+    if let Some(max_height) = max_height
+        && min_height > max_height
+    {
+        return Err(CliError::Failure(
+            "--min-height must be less than or equal to --max-height".to_owned(),
+        ));
+    }
+    if let (Some(min_area), Some(max_area)) = (min_area, max_area)
+        && min_area > max_area
+    {
+        return Err(CliError::Failure(
+            "--min-area must be less than or equal to --max-area".to_owned(),
+        ));
+    }
 
     Ok(VisionElementsCommand::Run(VisionElementsArgs {
         image,
         region,
+        ignore_regions,
         edge_threshold,
         min_width,
         min_height,
         min_component_pixels,
+        min_confidence,
+        max_width,
+        max_height,
+        min_area,
+        max_area,
         max_elements,
         merge_distance,
+        padding,
+        sort,
+        mask_output,
+        overlay_output,
         json,
     }))
 }
@@ -4195,13 +4365,21 @@ fn vision_element_options(
 ) -> Result<UiElementDetectionOptions, CliError> {
     Ok(UiElementDetectionOptions {
         region: args.region,
+        ignore_regions: args.ignore_regions.clone(),
         edge_threshold: args.edge_threshold,
         min_width: args.min_width,
         min_height: args.min_height,
         min_component_pixels: args.min_component_pixels,
+        min_confidence: args.min_confidence,
+        max_width: args.max_width,
+        max_height: args.max_height,
+        min_area: args.min_area,
+        max_area: args.max_area,
         max_elements: usize::try_from(args.max_elements)
             .map_err(|_| CliError::Failure("--max-elements is too large".to_owned()))?,
         merge_distance: args.merge_distance,
+        padding: args.padding,
+        sort: args.sort,
     })
 }
 
@@ -6357,6 +6535,25 @@ fn parse_unit_f32(name: &str, value: &str) -> Result<f32, CliError> {
     Ok(parsed)
 }
 
+fn parse_ui_element_sort(value: &str) -> Result<UiElementSort, CliError> {
+    match value {
+        "position" => Ok(UiElementSort::Position),
+        "area" => Ok(UiElementSort::Area),
+        "confidence" => Ok(UiElementSort::Confidence),
+        _ => Err(CliError::Failure(format!(
+            "--sort must be position, area, or confidence, got {value:?}"
+        ))),
+    }
+}
+
+fn ui_element_sort_name(sort: UiElementSort) -> &'static str {
+    match sort {
+        UiElementSort::Position => "position",
+        UiElementSort::Area => "area",
+        UiElementSort::Confidence => "confidence",
+    }
+}
+
 fn parse_visual_mae(name: &str, value: &str) -> Result<f32, CliError> {
     let parsed = value
         .parse::<f32>()
@@ -6678,7 +6875,7 @@ fn print_ui_state_usage() {
 
 fn print_vision_elements_usage() {
     println!(
-        "Usage: peekaboox vision-elements [--image <path>] [--region x,y,width,height] [--threshold 1..255] [--min-width <pixels>] [--min-height <pixels>] [--min-component-pixels <pixels>] [--max-elements <n>] [--merge-distance <pixels>] [--json]"
+        "Usage: peekaboox vision-elements [--image <path>] [--region x,y,width,height] [--ignore-region x,y,width,height]... [--threshold 1..255] [--min-width <pixels>] [--max-width <pixels>] [--min-height <pixels>] [--max-height <pixels>] [--min-component-pixels <pixels>] [--min-confidence 0.0..1.0] [--min-area <pixels>] [--max-area <pixels>] [--max-elements <n>] [--merge-distance <pixels>] [--padding <pixels>] [--sort position|area|confidence] [--mask-output <path>] [--overlay-output <path>] [--json]"
     );
     println!("       peekaboox vision-elements <image-path>");
 }
@@ -6761,7 +6958,9 @@ mod tests {
     };
     use peekaboox_core::{Point, Rect};
     use peekaboox_desktop::DesktopAssertion;
-    use peekaboox_vision::{OcrConfig, OcrPreprocessingOptions, VisualAlphaMode, VisualSizePolicy};
+    use peekaboox_vision::{
+        OcrConfig, OcrPreprocessingOptions, UiElementSort, VisualAlphaMode, VisualSizePolicy,
+    };
 
     #[test]
     fn capture_defaults_to_screenshot_png() {
@@ -7771,6 +7970,26 @@ mod tests {
             "3".to_owned(),
             "--region".to_owned(),
             "10,20,300,80".to_owned(),
+            "--ignore-region".to_owned(),
+            "10,20,30,40".to_owned(),
+            "--min-confidence".to_owned(),
+            "0.72".to_owned(),
+            "--max-width".to_owned(),
+            "200".to_owned(),
+            "--max-height".to_owned(),
+            "100".to_owned(),
+            "--min-area".to_owned(),
+            "63".to_owned(),
+            "--max-area".to_owned(),
+            "2000".to_owned(),
+            "--padding".to_owned(),
+            "4".to_owned(),
+            "--sort".to_owned(),
+            "confidence".to_owned(),
+            "--mask-output".to_owned(),
+            "mask.png".to_owned(),
+            "--overlay-output".to_owned(),
+            "overlay.png".to_owned(),
         ])
         .unwrap();
 
@@ -7779,12 +7998,22 @@ mod tests {
             VisionElementsCommand::Run(VisionElementsArgs {
                 image: PathBuf::from("screen.png"),
                 region: Some(Rect::new(10, 20, 300, 80)),
+                ignore_regions: vec![Rect::new(10, 20, 30, 40)],
                 edge_threshold: 32,
                 min_width: 9,
                 min_height: 7,
                 min_component_pixels: 20,
+                min_confidence: Some(0.72),
+                max_width: Some(200),
+                max_height: Some(100),
+                min_area: Some(63),
+                max_area: Some(2000),
                 max_elements: 12,
                 merge_distance: 3,
+                padding: 4,
+                sort: UiElementSort::Confidence,
+                mask_output: Some(PathBuf::from("mask.png")),
+                overlay_output: Some(PathBuf::from("overlay.png")),
                 json: false
             })
         );

@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Cursor;
@@ -177,27 +178,50 @@ impl UiStateResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UiElementDetectionOptions {
     pub region: Option<Rect>,
+    pub ignore_regions: Vec<Rect>,
     pub edge_threshold: u8,
     pub min_width: u32,
     pub min_height: u32,
     pub min_component_pixels: u32,
+    pub min_confidence: Option<f32>,
+    pub max_width: Option<u32>,
+    pub max_height: Option<u32>,
+    pub min_area: Option<u64>,
+    pub max_area: Option<u64>,
     pub max_elements: usize,
     pub merge_distance: u32,
+    pub padding: u32,
+    pub sort: UiElementSort,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiElementSort {
+    Position,
+    Area,
+    Confidence,
 }
 
 impl Default for UiElementDetectionOptions {
     fn default() -> Self {
         Self {
             region: None,
+            ignore_regions: Vec::new(),
             edge_threshold: 24,
             min_width: 8,
             min_height: 8,
             min_component_pixels: 12,
+            min_confidence: None,
+            max_width: None,
+            max_height: None,
+            min_area: None,
+            max_area: None,
             max_elements: 100,
             merge_distance: 2,
+            padding: 0,
+            sort: UiElementSort::Position,
         }
     }
 }
@@ -356,7 +380,7 @@ impl OcrBackend for TesseractOcrBackend {
 #[derive(Debug, Default)]
 pub struct UnimplementedVisionBackend;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct HeuristicVisionBackend {
     options: UiElementDetectionOptions,
 }
@@ -607,6 +631,17 @@ pub fn detect_ui_elements_from_image_file(
     detect_ui_elements(&frame, options)
 }
 
+pub fn detect_ui_elements_from_image_file_with_outputs(
+    path: impl AsRef<Path>,
+    options: &UiElementDetectionOptions,
+    mask_output: Option<&Path>,
+    overlay_output: Option<&Path>,
+) -> Result<Vec<UiElement>> {
+    let frame = load_image_file(path)?;
+
+    detect_ui_elements_with_outputs(&frame, options, mask_output, overlay_output)
+}
+
 pub fn detect_ui_elements_from_image_bytes(
     image: &[u8],
     options: &UiElementDetectionOptions,
@@ -616,40 +651,81 @@ pub fn detect_ui_elements_from_image_bytes(
     detect_ui_elements(&frame, options)
 }
 
+pub fn detect_ui_elements_from_image_bytes_with_outputs(
+    image: &[u8],
+    options: &UiElementDetectionOptions,
+    mask_output: Option<&Path>,
+    overlay_output: Option<&Path>,
+) -> Result<Vec<UiElement>> {
+    let frame = decode_image_bytes(image)?;
+
+    detect_ui_elements_with_outputs(&frame, options, mask_output, overlay_output)
+}
+
 pub fn detect_ui_elements(
     frame: &CaptureFrame,
     options: &UiElementDetectionOptions,
 ) -> Result<Vec<UiElement>> {
+    detect_ui_elements_internal(frame, options).map(|result| result.elements)
+}
+
+pub fn detect_ui_elements_with_outputs(
+    frame: &CaptureFrame,
+    options: &UiElementDetectionOptions,
+    mask_output: Option<&Path>,
+    overlay_output: Option<&Path>,
+) -> Result<Vec<UiElement>> {
+    let result = detect_ui_elements_internal(frame, options)?;
+    if let Some(mask_output) = mask_output {
+        write_ui_mask_image(
+            &result.mask,
+            result.region,
+            frame.width,
+            frame.height,
+            mask_output,
+        )?;
+    }
+    if let Some(overlay_output) = overlay_output {
+        write_ui_overlay_image(frame, &result.elements, overlay_output)?;
+    }
+
+    Ok(result.elements)
+}
+
+struct UiElementDetectionResult {
+    elements: Vec<UiElement>,
+    region: Rect,
+    mask: Vec<bool>,
+}
+
+fn detect_ui_elements_internal(
+    frame: &CaptureFrame,
+    options: &UiElementDetectionOptions,
+) -> Result<UiElementDetectionResult> {
     validate_frame(frame, "UI element detection")?;
     validate_ui_element_detection_options(options)?;
 
     let region = ui_detection_region(frame, options.region)?;
-    let mask = ui_saliency_mask(frame, region, options.edge_threshold)?;
+    let mask = ui_saliency_mask(frame, region, options)?;
     let mut components = connected_components(&mask, region)?;
     components.retain(|component| component_matches_options(component, options));
     merge_close_components(&mut components, options.merge_distance);
     components.retain(|component| component_matches_options(component, options));
-    components.sort_by(|left, right| {
-        component_area(right)
-            .cmp(&component_area(left))
-            .then_with(|| left.bounds.y.cmp(&right.bounds.y))
-            .then_with(|| left.bounds.x.cmp(&right.bounds.x))
-    });
+    sort_components(&mut components, options.sort);
     components.truncate(options.max_elements);
-    components.sort_by(|left, right| {
-        left.bounds
-            .y
-            .cmp(&right.bounds.y)
-            .then_with(|| left.bounds.x.cmp(&right.bounds.x))
-            .then_with(|| left.bounds.width.cmp(&right.bounds.width))
-            .then_with(|| left.bounds.height.cmp(&right.bounds.height))
-    });
+    apply_component_padding(&mut components, options.padding, frame.width, frame.height)?;
 
-    Ok(components
+    let elements = components
         .iter()
         .enumerate()
         .map(|(index, component)| ui_element_from_component(index, component))
-        .collect())
+        .collect();
+
+    Ok(UiElementDetectionResult {
+        elements,
+        region,
+        mask,
+    })
 }
 
 pub fn compare_frames(
@@ -1521,6 +1597,7 @@ fn rotate_rgba_nearest(source: &RgbaImage, degrees: f32) -> RgbaImage {
 struct VisualComponent {
     bounds: Rect,
     pixels: u32,
+    score_area: u64,
 }
 
 fn validate_ui_element_detection_options(options: &UiElementDetectionOptions) -> Result<()> {
@@ -1543,6 +1620,63 @@ fn validate_ui_element_detection_options(options: &UiElementDetectionOptions) ->
         return Err(PeekabooXError::new(
             "UI element detection max_elements must be greater than zero",
         ));
+    }
+    if options
+        .min_confidence
+        .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+    {
+        return Err(PeekabooXError::new(
+            "UI element detection min_confidence must be a finite value between 0.0 and 1.0",
+        ));
+    }
+    if options.max_width.is_some_and(|value| value == 0)
+        || options.max_height.is_some_and(|value| value == 0)
+    {
+        return Err(PeekabooXError::new(
+            "UI element detection max_width and max_height must be greater than zero",
+        ));
+    }
+    if let Some(max_width) = options.max_width
+        && options.min_width > max_width
+    {
+        return Err(PeekabooXError::new(
+            "UI element detection min_width must be less than or equal to max_width",
+        ));
+    }
+    if let Some(max_height) = options.max_height
+        && options.min_height > max_height
+    {
+        return Err(PeekabooXError::new(
+            "UI element detection min_height must be less than or equal to max_height",
+        ));
+    }
+    if options.min_area.is_some_and(|value| value == 0)
+        || options.max_area.is_some_and(|value| value == 0)
+    {
+        return Err(PeekabooXError::new(
+            "UI element detection min_area and max_area must be greater than zero",
+        ));
+    }
+    if let (Some(min_area), Some(max_area)) = (options.min_area, options.max_area)
+        && min_area > max_area
+    {
+        return Err(PeekabooXError::new(
+            "UI element detection min_area must be less than or equal to max_area",
+        ));
+    }
+    for region in &options.ignore_regions {
+        if region.width == 0 || region.height == 0 {
+            return Err(PeekabooXError::new(
+                "UI element detection ignore regions must be non-empty",
+            ));
+        }
+        if region.x < 0 || region.y < 0 {
+            return Err(PeekabooXError::new(
+                "UI element detection ignore regions must not use negative coordinates",
+            ));
+        }
+        region_end_i32(region.x, region.width)?;
+        region_end_i32(region.y, region.height)?;
     }
 
     Ok(())
@@ -1572,7 +1706,11 @@ fn ui_detection_region(frame: &CaptureFrame, region: Option<Rect>) -> Result<Rec
     Ok(region)
 }
 
-fn ui_saliency_mask(frame: &CaptureFrame, region: Rect, threshold: u8) -> Result<Vec<bool>> {
+fn ui_saliency_mask(
+    frame: &CaptureFrame,
+    region: Rect,
+    options: &UiElementDetectionOptions,
+) -> Result<Vec<bool>> {
     let width = usize::try_from(region.width)
         .map_err(|_| PeekabooXError::new("UI detection region width overflows usize"))?;
     let height = usize::try_from(region.height)
@@ -1590,11 +1728,26 @@ fn ui_saliency_mask(frame: &CaptureFrame, region: Rect, threshold: u8) -> Result
                 .ok()
                 .and_then(|y| y.checked_add(u32::try_from(relative_y).ok()?))
                 .ok_or_else(|| PeekabooXError::new("UI detection y coordinate overflows u32"))?;
+            if point_is_ignored(
+                &options.ignore_regions,
+                i32::try_from(absolute_x)
+                    .map_err(|_| PeekabooXError::new("UI detection x coordinate overflows i32"))?,
+                i32::try_from(absolute_y)
+                    .map_err(|_| PeekabooXError::new("UI detection y coordinate overflows i32"))?,
+            )? {
+                continue;
+            }
             let pixel = pixel_rgb(frame, absolute_x, absolute_y)?;
             let contrast = max_rgb_delta(pixel, background);
-            if contrast >= threshold
+            if contrast >= options.edge_threshold
                 || has_local_edge(
-                    frame, region, relative_x, relative_y, pixel, background, threshold,
+                    frame,
+                    region,
+                    relative_x,
+                    relative_y,
+                    pixel,
+                    background,
+                    options.edge_threshold,
                 )?
             {
                 mask[relative_y * width + relative_x] = true;
@@ -1751,11 +1904,13 @@ fn flood_fill_component(
         }
     }
 
+    let bounds = bounds
+        .into_rect()
+        .ok_or_else(|| PeekabooXError::new("UI detection component has no bounds"))?;
     Ok(VisualComponent {
-        bounds: bounds
-            .into_rect()
-            .ok_or_else(|| PeekabooXError::new("UI detection component has no bounds"))?,
+        bounds,
         pixels,
+        score_area: u64::from(bounds.width) * u64::from(bounds.height),
     })
 }
 
@@ -1763,9 +1918,21 @@ fn component_matches_options(
     component: &VisualComponent,
     options: &UiElementDetectionOptions,
 ) -> bool {
+    let area = component_area(component);
     component.bounds.width >= options.min_width
+        && options
+            .max_width
+            .is_none_or(|maximum| component.bounds.width <= maximum)
         && component.bounds.height >= options.min_height
+        && options
+            .max_height
+            .is_none_or(|maximum| component.bounds.height <= maximum)
         && component.pixels >= options.min_component_pixels
+        && options.min_area.is_none_or(|minimum| area >= minimum)
+        && options.max_area.is_none_or(|maximum| area <= maximum)
+        && options
+            .min_confidence
+            .is_none_or(|minimum| component_confidence(component) >= minimum)
 }
 
 fn merge_close_components(components: &mut Vec<VisualComponent>, merge_distance: u32) {
@@ -1781,6 +1948,7 @@ fn merge_close_components(components: &mut Vec<VisualComponent>, merge_distance:
                 let other = components.remove(other_index);
                 components[index].bounds = rect_union(components[index].bounds, other.bounds);
                 components[index].pixels = components[index].pixels.saturating_add(other.pixels);
+                components[index].score_area = component_area(&components[index]);
             } else {
                 other_index += 1;
             }
@@ -1806,11 +1974,75 @@ fn component_area(component: &VisualComponent) -> u64 {
     u64::from(component.bounds.width) * u64::from(component.bounds.height)
 }
 
-fn ui_element_from_component(index: usize, component: &VisualComponent) -> UiElement {
-    let area = component_area(component).max(1);
+fn component_confidence(component: &VisualComponent) -> f32 {
+    let area = component.score_area.max(1);
     let density = component.pixels as f32 / area as f32;
-    let confidence = (0.45 + density.min(1.0) * 0.45).min(0.95);
 
+    (0.45 + density.min(1.0) * 0.45).min(0.95)
+}
+
+fn apply_component_padding(
+    components: &mut [VisualComponent],
+    padding: u32,
+    frame_width: u32,
+    frame_height: u32,
+) -> Result<()> {
+    if padding == 0 {
+        return Ok(());
+    }
+
+    let frame_right = i64::from(frame_width);
+    let frame_bottom = i64::from(frame_height);
+    let padding = i64::from(padding);
+    for component in components {
+        let right = i64::from(component.bounds.x) + i64::from(component.bounds.width);
+        let bottom = i64::from(component.bounds.y) + i64::from(component.bounds.height);
+        let left = (i64::from(component.bounds.x) - padding).max(0);
+        let top = (i64::from(component.bounds.y) - padding).max(0);
+        let right = (right + padding).min(frame_right);
+        let bottom = (bottom + padding).min(frame_bottom);
+        component.bounds = Rect::new(
+            i32::try_from(left)
+                .map_err(|_| PeekabooXError::new("UI detection padded x overflows i32"))?,
+            i32::try_from(top)
+                .map_err(|_| PeekabooXError::new("UI detection padded y overflows i32"))?,
+            u32::try_from(right.saturating_sub(left))
+                .map_err(|_| PeekabooXError::new("UI detection padded width overflows u32"))?,
+            u32::try_from(bottom.saturating_sub(top))
+                .map_err(|_| PeekabooXError::new("UI detection padded height overflows u32"))?,
+        );
+    }
+
+    Ok(())
+}
+
+fn sort_components(components: &mut [VisualComponent], sort: UiElementSort) {
+    match sort {
+        UiElementSort::Position => components.sort_by(component_position_cmp),
+        UiElementSort::Area => components.sort_by(|left, right| {
+            component_area(right)
+                .cmp(&component_area(left))
+                .then_with(|| component_position_cmp(left, right))
+        }),
+        UiElementSort::Confidence => components.sort_by(|left, right| {
+            component_confidence(right)
+                .partial_cmp(&component_confidence(left))
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| component_position_cmp(left, right))
+        }),
+    }
+}
+
+fn component_position_cmp(left: &VisualComponent, right: &VisualComponent) -> Ordering {
+    left.bounds
+        .y
+        .cmp(&right.bounds.y)
+        .then_with(|| left.bounds.x.cmp(&right.bounds.x))
+        .then_with(|| left.bounds.width.cmp(&right.bounds.width))
+        .then_with(|| left.bounds.height.cmp(&right.bounds.height))
+}
+
+fn ui_element_from_component(index: usize, component: &VisualComponent) -> UiElement {
     UiElement {
         id: format!(
             "vision:{}:{}:{}:{}:{}",
@@ -1824,7 +2056,7 @@ fn ui_element_from_component(index: usize, component: &VisualComponent) -> UiEle
         label: None,
         bounds: component.bounds,
         center: component.bounds.center(),
-        confidence,
+        confidence: component_confidence(component),
         states: vec!["visible".to_owned()],
         window_id: None,
         window_title: None,
@@ -1832,6 +2064,131 @@ fn ui_element_from_component(index: usize, component: &VisualComponent) -> UiEle
         parent_id: None,
         child_ids: Vec::new(),
     }
+}
+
+fn write_ui_mask_image(
+    mask: &[bool],
+    region: Rect,
+    frame_width: u32,
+    frame_height: u32,
+    output_path: &Path,
+) -> Result<()> {
+    let region_width = usize::try_from(region.width)
+        .map_err(|_| PeekabooXError::new("UI detection mask width overflows usize"))?;
+    let region_height = usize::try_from(region.height)
+        .map_err(|_| PeekabooXError::new("UI detection mask height overflows usize"))?;
+    if mask.len() != region_width.saturating_mul(region_height) {
+        return Err(PeekabooXError::new(
+            "UI detection mask dimensions do not match detection region",
+        ));
+    }
+
+    let mut image = RgbaImage::from_pixel(frame_width, frame_height, Rgba([0, 0, 0, 255]));
+    for y in 0..region_height {
+        for x in 0..region_width {
+            if !mask[y * region_width + x] {
+                continue;
+            }
+            let absolute_x = region
+                .x
+                .checked_add(
+                    i32::try_from(x)
+                        .map_err(|_| PeekabooXError::new("UI detection mask x overflows i32"))?,
+                )
+                .ok_or_else(|| PeekabooXError::new("UI detection mask x coordinate overflows"))?;
+            let absolute_y = region
+                .y
+                .checked_add(
+                    i32::try_from(y)
+                        .map_err(|_| PeekabooXError::new("UI detection mask y overflows i32"))?,
+                )
+                .ok_or_else(|| PeekabooXError::new("UI detection mask y coordinate overflows"))?;
+            image.put_pixel(
+                u32::try_from(absolute_x)
+                    .map_err(|_| PeekabooXError::new("UI detection mask x is negative"))?,
+                u32::try_from(absolute_y)
+                    .map_err(|_| PeekabooXError::new("UI detection mask y is negative"))?,
+                Rgba([255, 255, 255, 255]),
+            );
+        }
+    }
+
+    write_rgba_image_file(output_path, &image, "UI detection mask")
+}
+
+fn write_ui_overlay_image(
+    frame: &CaptureFrame,
+    elements: &[UiElement],
+    output_path: &Path,
+) -> Result<()> {
+    let mut image = rgba_image_from_frame(frame)?;
+    let colors = [
+        Rgba([255, 0, 0, 255]),
+        Rgba([0, 160, 255, 255]),
+        Rgba([0, 190, 90, 255]),
+        Rgba([255, 180, 0, 255]),
+        Rgba([190, 70, 255, 255]),
+    ];
+    for (index, element) in elements.iter().enumerate() {
+        draw_rect_outline(&mut image, element.bounds, colors[index % colors.len()])?;
+    }
+
+    write_rgba_image_file(output_path, &image, "UI detection overlay")
+}
+
+fn draw_rect_outline(image: &mut RgbaImage, bounds: Rect, color: Rgba<u8>) -> Result<()> {
+    if bounds.width == 0 || bounds.height == 0 {
+        return Ok(());
+    }
+
+    let left = i64::from(bounds.x).clamp(0, i64::from(image.width()));
+    let top = i64::from(bounds.y).clamp(0, i64::from(image.height()));
+    let right = (i64::from(bounds.x) + i64::from(bounds.width)).clamp(0, i64::from(image.width()));
+    let bottom =
+        (i64::from(bounds.y) + i64::from(bounds.height)).clamp(0, i64::from(image.height()));
+    if left >= right || top >= bottom {
+        return Ok(());
+    }
+
+    let left = u32::try_from(left)
+        .map_err(|_| PeekabooXError::new("UI detection overlay left overflows u32"))?;
+    let top = u32::try_from(top)
+        .map_err(|_| PeekabooXError::new("UI detection overlay top overflows u32"))?;
+    let right = u32::try_from(right.saturating_sub(1))
+        .map_err(|_| PeekabooXError::new("UI detection overlay right overflows u32"))?;
+    let bottom = u32::try_from(bottom.saturating_sub(1))
+        .map_err(|_| PeekabooXError::new("UI detection overlay bottom overflows u32"))?;
+
+    for x in left..=right {
+        image.put_pixel(x, top, color);
+        image.put_pixel(x, bottom, color);
+    }
+    for y in top..=bottom {
+        image.put_pixel(left, y, color);
+        image.put_pixel(right, y, color);
+    }
+
+    Ok(())
+}
+
+fn write_rgba_image_file(output_path: &Path, image: &RgbaImage, description: &str) -> Result<()> {
+    if let Some(parent) = output_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            PeekabooXError::new(format!(
+                "failed to create {description} output directory {}: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    image.save(output_path).map_err(|error| {
+        PeekabooXError::new(format!(
+            "failed to write {description} image {}: {error}",
+            output_path.display()
+        ))
+    })
 }
 
 fn max_rgb_delta(left: [u8; 3], right: [u8; 3]) -> u8 {
@@ -2275,12 +2632,12 @@ mod tests {
 
     use super::{
         HeuristicVisionBackend, IncrementalCaptureOptions, OcrBackend, OcrOptions,
-        TesseractOcrBackend, UiElementDetectionOptions, UiStateKind, UiStateOptions, VisionBackend,
-        VisualAlphaMode, VisualCompareOptions, VisualSizePolicy, compare_frames,
+        TesseractOcrBackend, UiElementDetectionOptions, UiElementSort, UiStateKind, UiStateOptions,
+        VisionBackend, VisualAlphaMode, VisualCompareOptions, VisualSizePolicy, compare_frames,
         compare_image_files, detect_ui_elements, detect_ui_elements_from_image_file,
-        detect_ui_state, detect_ui_state_from_image_files, incremental_capture_delta,
-        load_image_file, rect_union, rects_intersect, tesseract_args, tesseract_result_from_tsv,
-        write_visual_diff_image_file,
+        detect_ui_elements_from_image_file_with_outputs, detect_ui_state,
+        detect_ui_state_from_image_files, incremental_capture_delta, load_image_file, rect_union,
+        rects_intersect, tesseract_args, tesseract_result_from_tsv, write_visual_diff_image_file,
     };
     use peekaboox_core::{CaptureFrame, PixelFormat, Rect};
 
@@ -2929,6 +3286,84 @@ mod tests {
 
         assert_eq!(elements.len(), 1);
         assert_eq!(elements[0].bounds, Rect::new(29, 16, 10, 7));
+    }
+
+    #[test]
+    fn ui_element_detection_respects_ignore_confidence_and_bounds_filters() {
+        let mut frame = solid_rgb_frame(48, 30, [255, 255, 255]);
+        fill_rect(&mut frame, Rect::new(4, 5, 14, 8), [210, 210, 210]);
+        fill_rect(&mut frame, Rect::new(29, 16, 10, 7), [20, 120, 220]);
+        let options = UiElementDetectionOptions {
+            ignore_regions: vec![Rect::new(4, 5, 14, 8)],
+            min_width: 6,
+            max_width: Some(12),
+            min_height: 5,
+            max_height: Some(8),
+            min_component_pixels: 20,
+            min_confidence: Some(0.85),
+            min_area: Some(60),
+            max_area: Some(100),
+            ..UiElementDetectionOptions::default()
+        };
+
+        let elements = detect_ui_elements(&frame, &options).unwrap();
+
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[0].bounds, Rect::new(29, 16, 10, 7));
+    }
+
+    #[test]
+    fn ui_element_detection_sorts_by_area_and_applies_padding() {
+        let mut frame = solid_rgb_frame(40, 24, [255, 255, 255]);
+        fill_rect(&mut frame, Rect::new(4, 4, 4, 4), [20, 20, 20]);
+        fill_rect(&mut frame, Rect::new(20, 10, 8, 6), [20, 120, 220]);
+        let options = UiElementDetectionOptions {
+            min_width: 3,
+            min_height: 3,
+            min_component_pixels: 8,
+            max_elements: 1,
+            padding: 2,
+            sort: UiElementSort::Area,
+            ..UiElementDetectionOptions::default()
+        };
+
+        let elements = detect_ui_elements(&frame, &options).unwrap();
+
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[0].bounds, Rect::new(18, 8, 12, 10));
+    }
+
+    #[test]
+    fn ui_element_detection_writes_mask_and_overlay_outputs() {
+        let input = fixture_path("ui_controls.pbm");
+        let mask = std::env::temp_dir().join(format!(
+            "peekaboox-ui-mask-{}-{}.png",
+            std::process::id(),
+            super::monotonic_ms()
+        ));
+        let overlay = std::env::temp_dir().join(format!(
+            "peekaboox-ui-overlay-{}-{}.png",
+            std::process::id(),
+            super::monotonic_ms()
+        ));
+
+        let elements = detect_ui_elements_from_image_file_with_outputs(
+            &input,
+            &UiElementDetectionOptions::default(),
+            Some(mask.as_path()),
+            Some(overlay.as_path()),
+        )
+        .unwrap();
+
+        assert_eq!(elements.len(), 2);
+        assert!(mask.is_file());
+        assert!(overlay.is_file());
+        let mask_frame = load_image_file(&mask).unwrap();
+        let overlay_frame = load_image_file(&overlay).unwrap();
+        assert_eq!((mask_frame.width, mask_frame.height), (32, 20));
+        assert_eq!((overlay_frame.width, overlay_frame.height), (32, 20));
+        let _ = std::fs::remove_file(mask);
+        let _ = std::fs::remove_file(overlay);
     }
 
     #[test]

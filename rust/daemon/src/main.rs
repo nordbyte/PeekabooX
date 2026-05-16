@@ -39,8 +39,8 @@ use peekaboox_ipc::{
 use peekaboox_vision::{
     IncrementalCaptureDelta, IncrementalCaptureOptions, OcrConfig, OcrOptions,
     OcrPreprocessingOptions, OcrResult, TesseractOcrBackend, UiElementDetectionOptions,
-    UiStateKind, UiStateOptions, UiStateResult, VisualAlphaMode, VisualCompareOptions,
-    VisualDiffResult, VisualSizePolicy,
+    UiElementSort, UiStateKind, UiStateOptions, UiStateResult, VisualAlphaMode,
+    VisualCompareOptions, VisualDiffResult, VisualSizePolicy,
 };
 use serde_json::json;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
@@ -1873,26 +1873,48 @@ fn dispatch_request(
         ApiRequest::DetectUiElements {
             image_path,
             region,
+            ignore_regions,
             edge_threshold,
             min_width,
             min_height,
             min_component_pixels,
+            min_confidence,
+            max_width,
+            max_height,
+            min_area,
+            max_area,
             max_elements,
             merge_distance,
+            padding,
+            sort,
+            mask_output_path,
+            overlay_output_path,
         } => {
-            let options = ui_element_detection_options(
-                region.map(Rect::from),
-                Some(u32::from(edge_threshold)),
-                Some(min_width),
-                Some(min_height),
-                Some(min_component_pixels),
-                Some(max_elements),
-                Some(merge_distance),
-            )
+            let options = ui_element_detection_options(UiElementDetectionRequestOptions {
+                region: region.map(Rect::from),
+                ignore_regions: ignore_regions.into_iter().map(Rect::from).collect(),
+                edge_threshold: Some(u32::from(edge_threshold)),
+                min_width: Some(min_width),
+                min_height: Some(min_height),
+                min_component_pixels: Some(min_component_pixels),
+                min_confidence,
+                max_width,
+                max_height,
+                min_area,
+                max_area,
+                max_elements: Some(max_elements),
+                merge_distance: Some(merge_distance),
+                padding: Some(padding),
+                sort: Some(sort.as_str()),
+            })
             .map_err(|status| status.message().to_owned())?;
-            let elements =
-                peekaboox_vision::detect_ui_elements_from_image_file(&image_path, &options)
-                    .map_err(|error| error.to_string())?;
+            let elements = peekaboox_vision::detect_ui_elements_from_image_file_with_outputs(
+                &image_path,
+                &options,
+                mask_output_path.as_deref().map(Path::new),
+                overlay_output_path.as_deref().map(Path::new),
+            )
+            .map_err(|error| error.to_string())?;
             Ok(ApiResult::DetectUiElements(ui_element_list_dto(&elements)))
         }
         ApiRequest::DesktopFocus {
@@ -2440,12 +2462,22 @@ impl PeekabooX for GrpcPeekabooXService {
         let details = json!({
             "image_bytes": request.image.len(),
             "has_region": request.region.is_some(),
+            "ignore_region_count": request.ignore_regions.len(),
             "edge_threshold": request.edge_threshold,
             "min_width": request.min_width,
             "min_height": request.min_height,
             "min_component_pixels": request.min_component_pixels,
+            "min_confidence": request.min_confidence,
+            "max_width": request.max_width,
+            "max_height": request.max_height,
+            "min_area": request.min_area,
+            "max_area": request.max_area,
             "max_elements": request.max_elements,
-            "merge_distance": request.merge_distance
+            "merge_distance": request.merge_distance,
+            "padding": request.padding,
+            "sort": request.sort,
+            "has_mask_output": request.mask_output_path.is_some(),
+            "has_overlay_output": request.overlay_output_path.is_some()
         });
         let result = grpc_detect_ui_elements(request);
         audit_grpc_result(&self.audit, "grpc.detect_ui_elements", &result, details);
@@ -4031,21 +4063,55 @@ fn grpc_detect_ui_state(
 fn grpc_detect_ui_elements(
     request: proto::DetectUiElementsRequest,
 ) -> Result<proto::DetectUiElementsResponse, Status> {
-    if request.image.is_empty() {
+    let proto::DetectUiElementsRequest {
+        image,
+        region,
+        edge_threshold,
+        min_width,
+        min_height,
+        min_component_pixels,
+        max_elements,
+        merge_distance,
+        ignore_regions,
+        min_confidence,
+        max_width,
+        max_height,
+        min_area,
+        max_area,
+        padding,
+        sort,
+        mask_output_path,
+        overlay_output_path,
+    } = request;
+
+    if image.is_empty() {
         return Err(Status::invalid_argument("image must not be empty"));
     }
 
-    let options = ui_element_detection_options(
-        request.region.map(rect_from_proto),
-        request.edge_threshold,
-        request.min_width,
-        request.min_height,
-        request.min_component_pixels,
-        request.max_elements,
-        request.merge_distance,
-    )?;
-    let elements = peekaboox_vision::detect_ui_elements_from_image_bytes(&request.image, &options)
-        .map_err(|error| Status::invalid_argument(error.to_string()))?;
+    let options = ui_element_detection_options(UiElementDetectionRequestOptions {
+        region: region.map(rect_from_proto),
+        ignore_regions: ignore_regions.into_iter().map(rect_from_proto).collect(),
+        edge_threshold,
+        min_width,
+        min_height,
+        min_component_pixels,
+        min_confidence,
+        max_width,
+        max_height,
+        min_area,
+        max_area,
+        max_elements,
+        merge_distance,
+        padding,
+        sort: sort.as_deref(),
+    })?;
+    let elements = peekaboox_vision::detect_ui_elements_from_image_bytes_with_outputs(
+        &image,
+        &options,
+        mask_output_path.as_deref().map(Path::new),
+        overlay_output_path.as_deref().map(Path::new),
+    )
+    .map_err(|error| Status::invalid_argument(error.to_string()))?;
 
     Ok(proto_detect_ui_elements_response(&elements))
 }
@@ -4404,41 +4470,76 @@ fn visual_alpha_mode_from_name(value: &str) -> Result<VisualAlphaMode, Status> {
     }
 }
 
-fn ui_element_detection_options(
+struct UiElementDetectionRequestOptions<'a> {
     region: Option<Rect>,
+    ignore_regions: Vec<Rect>,
     edge_threshold: Option<u32>,
     min_width: Option<u32>,
     min_height: Option<u32>,
     min_component_pixels: Option<u32>,
+    min_confidence: Option<f32>,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    min_area: Option<u64>,
+    max_area: Option<u64>,
     max_elements: Option<u32>,
     merge_distance: Option<u32>,
+    padding: Option<u32>,
+    sort: Option<&'a str>,
+}
+
+fn ui_element_detection_options(
+    input: UiElementDetectionRequestOptions<'_>,
 ) -> Result<UiElementDetectionOptions, Status> {
     let mut options = UiElementDetectionOptions {
-        region,
+        region: input.region,
+        ignore_regions: input.ignore_regions,
         ..UiElementDetectionOptions::default()
     };
-    if let Some(edge_threshold) = edge_threshold {
+    if let Some(edge_threshold) = input.edge_threshold {
         options.edge_threshold = u8::try_from(edge_threshold)
             .map_err(|_| Status::invalid_argument("edge_threshold must be between 0 and 255"))?;
     }
-    if let Some(min_width) = min_width {
+    if let Some(min_width) = input.min_width {
         options.min_width = min_width;
     }
-    if let Some(min_height) = min_height {
+    if let Some(min_height) = input.min_height {
         options.min_height = min_height;
     }
-    if let Some(min_component_pixels) = min_component_pixels {
+    if let Some(min_component_pixels) = input.min_component_pixels {
         options.min_component_pixels = min_component_pixels;
     }
-    if let Some(max_elements) = max_elements {
+    options.min_confidence = input.min_confidence;
+    options.max_width = input.max_width;
+    options.max_height = input.max_height;
+    options.min_area = input.min_area;
+    options.max_area = input.max_area;
+    if let Some(max_elements) = input.max_elements {
         options.max_elements = usize::try_from(max_elements)
             .map_err(|_| Status::invalid_argument("max_elements is too large"))?;
     }
-    if let Some(merge_distance) = merge_distance {
+    if let Some(merge_distance) = input.merge_distance {
         options.merge_distance = merge_distance;
+    }
+    if let Some(padding) = input.padding {
+        options.padding = padding;
+    }
+    if let Some(sort) = input.sort {
+        options.sort = ui_element_sort_from_name(sort)?;
     }
 
     Ok(options)
+}
+
+fn ui_element_sort_from_name(value: &str) -> Result<UiElementSort, Status> {
+    match value {
+        "position" => Ok(UiElementSort::Position),
+        "area" => Ok(UiElementSort::Area),
+        "confidence" => Ok(UiElementSort::Confidence),
+        _ => Err(Status::invalid_argument(format!(
+            "sort must be position, area, or confidence, got {value:?}"
+        ))),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5929,22 +6030,42 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
         ApiRequest::DetectUiElements {
             image_path,
             region,
+            ignore_regions,
             edge_threshold,
             min_width,
             min_height,
             min_component_pixels,
+            min_confidence,
+            max_width,
+            max_height,
+            min_area,
+            max_area,
             max_elements,
             merge_distance,
+            padding,
+            sort,
+            mask_output_path,
+            overlay_output_path,
         } => {
             json!({
                 "image_path": image_path,
                 "has_region": region.is_some(),
+                "ignore_region_count": ignore_regions.len(),
                 "edge_threshold": edge_threshold,
                 "min_width": min_width,
                 "min_height": min_height,
                 "min_component_pixels": min_component_pixels,
+                "min_confidence": min_confidence,
+                "max_width": max_width,
+                "max_height": max_height,
+                "min_area": min_area,
+                "max_area": max_area,
                 "max_elements": max_elements,
-                "merge_distance": merge_distance
+                "merge_distance": merge_distance,
+                "padding": padding,
+                "sort": sort,
+                "has_mask_output": mask_output_path.is_some(),
+                "has_overlay_output": overlay_output_path.is_some()
             })
         }
         ApiRequest::DesktopFocus {

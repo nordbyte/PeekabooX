@@ -661,10 +661,25 @@ class PeekabooXClient:
         min_component_pixels: int | None = None,
         max_elements: int | None = None,
         merge_distance: int | None = None,
+        ignore_regions: Iterable[Rect] | None = None,
+        min_confidence: float | None = None,
+        max_width: int | None = None,
+        max_height: int | None = None,
+        min_area: int | None = None,
+        max_area: int | None = None,
+        padding: int | None = None,
+        sort: str | None = None,
+        mask_output_path: str | PathLike[str] | None = None,
+        overlay_output_path: str | PathLike[str] | None = None,
     ) -> DetectUiElementsResult:
         request_kwargs: dict[str, Any] = {"image": image}
         if region is not None:
             request_kwargs["region"] = _rect_to_proto(self.messages, region)
+        if ignore_regions is not None:
+            request_kwargs["ignore_regions"] = [
+                _rect_to_proto(self.messages, ignore_region)
+                for ignore_region in ignore_regions
+            ]
         if edge_threshold is not None:
             request_kwargs["edge_threshold"] = edge_threshold
         if min_width is not None:
@@ -673,10 +688,28 @@ class PeekabooXClient:
             request_kwargs["min_height"] = min_height
         if min_component_pixels is not None:
             request_kwargs["min_component_pixels"] = min_component_pixels
+        if min_confidence is not None:
+            request_kwargs["min_confidence"] = min_confidence
+        if max_width is not None:
+            request_kwargs["max_width"] = max_width
+        if max_height is not None:
+            request_kwargs["max_height"] = max_height
+        if min_area is not None:
+            request_kwargs["min_area"] = min_area
+        if max_area is not None:
+            request_kwargs["max_area"] = max_area
         if max_elements is not None:
             request_kwargs["max_elements"] = max_elements
         if merge_distance is not None:
             request_kwargs["merge_distance"] = merge_distance
+        if padding is not None:
+            request_kwargs["padding"] = padding
+        if sort is not None:
+            request_kwargs["sort"] = sort
+        if mask_output_path is not None:
+            request_kwargs["mask_output_path"] = str(mask_output_path)
+        if overlay_output_path is not None:
+            request_kwargs["overlay_output_path"] = str(overlay_output_path)
         response = self._call(
             "DetectUiElements",
             self.messages.DetectUiElementsRequest(**request_kwargs),
@@ -693,18 +726,38 @@ class PeekabooXClient:
         min_component_pixels: int | None = None,
         max_elements: int | None = None,
         merge_distance: int | None = None,
+        ignore_regions: Iterable[Rect] | None = None,
+        min_confidence: float | None = None,
+        max_width: int | None = None,
+        max_height: int | None = None,
+        min_area: int | None = None,
+        max_area: int | None = None,
+        padding: int | None = None,
+        sort: str | None = None,
+        mask_output_path: str | PathLike[str] | None = None,
+        overlay_output_path: str | PathLike[str] | None = None,
     ) -> DetectUiElementsResult:
         with open(image_path, "rb") as image_file:
             image = image_file.read()
         return self.detect_ui_elements(
             image,
             region=region,
+            ignore_regions=ignore_regions,
             edge_threshold=edge_threshold,
             min_width=min_width,
             min_height=min_height,
             min_component_pixels=min_component_pixels,
+            min_confidence=min_confidence,
+            max_width=max_width,
+            max_height=max_height,
+            min_area=min_area,
+            max_area=max_area,
             max_elements=max_elements,
             merge_distance=merge_distance,
+            padding=padding,
+            sort=sort,
+            mask_output_path=mask_output_path,
+            overlay_output_path=overlay_output_path,
         )
 
     def click(

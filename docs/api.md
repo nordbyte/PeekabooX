@@ -500,9 +500,10 @@ The current tool surface includes:
 
 `click` accepts either `x`/`y` coordinates or `selector`/`semantic_selector`.
 `find_elements` and `elements` are CLI-compatible aliases around semantic
-lookup and add `limit`; `vision_elements` aliases `detect_ui_elements`,
-`ocr`/`ocr_image` alias the OCR surface, and `capture_dmabuf` aliases
-`probe_dmabuf`.
+lookup and add `limit`; `vision_elements` aliases `detect_ui_elements` and
+accepts the same image path, region, ignore-region, confidence/size/area,
+sorting, padding, mask-output, and overlay-output arguments; `ocr`/`ocr_image`
+alias the OCR surface; and `capture_dmabuf` aliases `probe_dmabuf`.
 `list_windows` supports `id`, `app`, `title`, `title_regex`, `focused`,
 `limit`, `sort`, `backend`, and `diagnose` arguments through MCP, matching the
 daemon CLI and Python runtime client.
@@ -726,7 +727,7 @@ Vision-only UI element detection through the CLI:
 
 ```bash
 cargo run -q -p peekaboox-cli -- vision-elements screenshot.png
-cargo run -q -p peekaboox-cli -- vision-elements --image screenshot.png --region 10,20,400,300 --threshold 24 --min-width 8 --max-elements 25
+cargo run -q -p peekaboox-cli -- vision-elements --image screenshot.png --region 10,20,400,300 --ignore-region 10,20,80,24 --threshold 24 --min-width 8 --min-confidence 0.8 --sort confidence --mask-output mask.png --overlay-output overlay.png --max-elements 25
 cargo run -q -p peekaboox-cli -- --daemon vision-elements screenshot.png
 ```
 
@@ -853,15 +854,20 @@ on the same frame comparison primitives:
 `peekaboox-vision` includes a first deterministic UI-element detection
 foundation for accessibility fallback scenarios:
 
-- `UiElementDetectionOptions` selects an optional `Rect` region, edge/contrast
-  threshold, minimum component size, maximum result count, and merge distance.
+- `UiElementDetectionOptions` selects an optional `Rect` region, repeated
+  ignore regions, edge/contrast threshold, minimum and maximum component
+  dimensions/area, minimum confidence, result padding, maximum result count,
+  merge distance, and `position`, `area`, or `confidence` sorting.
 - `detect_ui_elements(frame, options)` finds salient visual components and
   returns them as `UiElement` values with role `visual-region`, bounds,
   confidence, and visible state.
 - `detect_ui_elements_from_image_file` and `detect_ui_elements_from_image_bytes`
   provide decoder-backed helpers for fixtures and API bindings.
+- `detect_ui_elements_*_with_outputs` can write a saliency mask image and an
+  overlay image with detected bounds for debugging and fixture examples.
 - `HeuristicVisionBackend` implements `VisionBackend::detect_ui_elements` with
   this fallback detector while frame OCR remains delegated to the OCR pipeline.
-- `DetectUiElements` exposes the same detector over gRPC using image bytes.
+- `DetectUiElements` exposes the same detector over gRPC using image bytes,
+  including filter options and optional output paths.
 - The local daemon IPC and CLI detect elements from image file paths and return
   the same `UiElement` shape used by accessibility queries.

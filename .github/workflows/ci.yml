@@ -53,6 +53,7 @@ jobs:
       - run: python -m pip wheel --no-deps -w target/python-wheel ./python
       - run: cargo build --release -p peekaboox-cli -p peekabooxd
       - run: PEEKABOOX_BIN=target/release/peekaboox bash examples/cli/vision-smoke.sh
+      - run: PEEKABOOX_BIN=target/release/peekaboox bash examples/cli/vision_elements_fixture.sh
       - run: PEEKABOOX_BIN=target/release/peekaboox bash examples/cli/compare_visual_regression.sh
       - run: PEEKABOOX_BIN=target/release/peekaboox bash examples/cli/ui_state_sequence.sh
       - run: PEEKABOOX_BIN=target/release/peekaboox bash examples/cli/ocr-smoke.sh

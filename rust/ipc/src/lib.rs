@@ -16,6 +16,10 @@ fn default_visual_alpha_mode() -> String {
     "ignore".to_owned()
 }
 
+fn default_ui_element_sort() -> String {
+    "position".to_owned()
+}
+
 pub mod proto {
     tonic::include_proto!("peekaboox.v1");
 }
@@ -299,13 +303,34 @@ pub enum ApiRequest {
     },
     DetectUiElements {
         image_path: String,
+        #[serde(default)]
         region: Option<RectDto>,
+        #[serde(default)]
+        ignore_regions: Vec<RectDto>,
         edge_threshold: u8,
         min_width: u32,
         min_height: u32,
         min_component_pixels: u32,
+        #[serde(default)]
+        min_confidence: Option<f32>,
+        #[serde(default)]
+        max_width: Option<u32>,
+        #[serde(default)]
+        max_height: Option<u32>,
+        #[serde(default)]
+        min_area: Option<u64>,
+        #[serde(default)]
+        max_area: Option<u64>,
         max_elements: u32,
         merge_distance: u32,
+        #[serde(default)]
+        padding: u32,
+        #[serde(default = "default_ui_element_sort")]
+        sort: String,
+        #[serde(default)]
+        mask_output_path: Option<String>,
+        #[serde(default)]
+        overlay_output_path: Option<String>,
     },
     DesktopFocus {
         app: String,
@@ -1446,12 +1471,27 @@ mod tests {
                 width: 100,
                 height: 40,
             }),
+            ignore_regions: vec![super::RectDto {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 10,
+            }],
             edge_threshold: 24,
             min_width: 8,
             min_height: 8,
             min_component_pixels: 12,
+            min_confidence: Some(0.75),
+            max_width: Some(300),
+            max_height: Some(200),
+            min_area: Some(64),
+            max_area: Some(20_000),
             max_elements: 25,
             merge_distance: 2,
+            padding: 3,
+            sort: "area".to_owned(),
+            mask_output_path: Some("target/mask.png".to_owned()),
+            overlay_output_path: Some("target/overlay.png".to_owned()),
         });
         let payload = serde_json::to_string(&request).unwrap();
 

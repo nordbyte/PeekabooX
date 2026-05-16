@@ -490,6 +490,16 @@ class FakeClient:
         min_component_pixels: int | None = None,
         max_elements: int | None = None,
         merge_distance: int | None = None,
+        ignore_regions: tuple[Rect, ...] | None = None,
+        min_confidence: float | None = None,
+        max_width: int | None = None,
+        max_height: int | None = None,
+        min_area: int | None = None,
+        max_area: int | None = None,
+        padding: int | None = None,
+        sort: str | None = None,
+        mask_output_path: str | None = None,
+        overlay_output_path: str | None = None,
     ) -> DetectUiElementsResult:
         return DetectUiElementsResult(
             backend_name="heuristic_vision",
@@ -517,6 +527,16 @@ class FakeClient:
         min_component_pixels: int | None = None,
         max_elements: int | None = None,
         merge_distance: int | None = None,
+        ignore_regions: tuple[Rect, ...] | None = None,
+        min_confidence: float | None = None,
+        max_width: int | None = None,
+        max_height: int | None = None,
+        min_area: int | None = None,
+        max_area: int | None = None,
+        padding: int | None = None,
+        sort: str | None = None,
+        mask_output_path: str | None = None,
+        overlay_output_path: str | None = None,
     ) -> DetectUiElementsResult:
         return self.detect_ui_elements(
             b"image",
@@ -527,6 +547,16 @@ class FakeClient:
             min_component_pixels=min_component_pixels,
             max_elements=max_elements,
             merge_distance=merge_distance,
+            ignore_regions=ignore_regions,
+            min_confidence=min_confidence,
+            max_width=max_width,
+            max_height=max_height,
+            min_area=min_area,
+            max_area=max_area,
+            padding=padding,
+            sort=sort,
+            mask_output_path=mask_output_path,
+            overlay_output_path=overlay_output_path,
         )
 
     def type_text(
@@ -854,6 +884,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("loading_min_changed_pixels", state_schema)
         self.assertIn("size_policy", state_schema)
         self.assertIn("alpha", state_schema)
+        vision_schema = server.tools["detect_ui_elements"].input_schema["properties"]
+        self.assertIn("ignore_regions", vision_schema)
+        self.assertIn("min_confidence", vision_schema)
+        self.assertIn("max_width", vision_schema)
+        self.assertIn("max_height", vision_schema)
+        self.assertIn("min_area", vision_schema)
+        self.assertIn("max_area", vision_schema)
+        self.assertIn("padding", vision_schema)
+        self.assertIn("sort", vision_schema)
+        self.assertIn("mask_output_path", vision_schema)
+        self.assertIn("overlay_output_path", vision_schema)
         window_schema = server.tools["list_windows"].input_schema["properties"]
         self.assertIn("title_regex", window_schema)
         self.assertIn("diagnose", window_schema)
@@ -2797,7 +2838,20 @@ class RuntimeTests(unittest.TestCase):
         )
         ui_elements = server.call_tool(
             "detect_ui_elements",
-            {"image_path": "screen.png", "region": {"x": 1, "y": 2, "width": 3, "height": 4}},
+            {
+                "image_path": "screen.png",
+                "region": {"x": 1, "y": 2, "width": 3, "height": 4},
+                "ignore_regions": [{"x": 9, "y": 9, "width": 2, "height": 2}],
+                "min_confidence": 0.5,
+                "max_width": 20,
+                "max_height": 20,
+                "min_area": 4,
+                "max_area": 400,
+                "padding": 2,
+                "sort": "confidence",
+                "mask_output_path": "target/mask.png",
+                "overlay_output_path": "target/overlay.png",
+            },
         )
 
         self.assertEqual(ui_state["state"], "stable")
@@ -4393,22 +4447,42 @@ class RuntimeTests(unittest.TestCase):
         result = client.detect_ui_elements(
             b"image",
             region=Rect(x=10, y=20, width=100, height=40),
+            ignore_regions=[Rect(x=0, y=0, width=5, height=5)],
             edge_threshold=24,
             min_width=8,
             min_height=8,
             min_component_pixels=12,
+            min_confidence=0.75,
+            max_width=300,
+            max_height=200,
+            min_area=64,
+            max_area=20_000,
             max_elements=25,
             merge_distance=2,
+            padding=3,
+            sort="area",
+            mask_output_path="target/mask.png",
+            overlay_output_path="target/overlay.png",
         )
 
         self.assertEqual(stub.request.image, b"image")
         self.assertEqual(stub.request.region.x, 10)
+        self.assertEqual(stub.request.ignore_regions[0].width, 5)
         self.assertEqual(stub.request.edge_threshold, 24)
         self.assertEqual(stub.request.min_width, 8)
         self.assertEqual(stub.request.min_height, 8)
         self.assertEqual(stub.request.min_component_pixels, 12)
+        self.assertAlmostEqual(stub.request.min_confidence, 0.75)
+        self.assertEqual(stub.request.max_width, 300)
+        self.assertEqual(stub.request.max_height, 200)
+        self.assertEqual(stub.request.min_area, 64)
+        self.assertEqual(stub.request.max_area, 20_000)
         self.assertEqual(stub.request.max_elements, 25)
         self.assertEqual(stub.request.merge_distance, 2)
+        self.assertEqual(stub.request.padding, 3)
+        self.assertEqual(stub.request.sort, "area")
+        self.assertEqual(stub.request.mask_output_path, "target/mask.png")
+        self.assertEqual(stub.request.overlay_output_path, "target/overlay.png")
         self.assertEqual(result.backend_name, "heuristic_vision")
         self.assertEqual(result.backend_kind, "vision")
         self.assertEqual(result.warnings, ("low contrast",))
