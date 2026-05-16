@@ -4,6 +4,22 @@ All notable PeekabooX changes are recorded here.
 
 Release entries use `## VERSION - YYYY-MM-DD`. Git tags use `vVERSION`.
 
+## 1.1.1 - 2026-05-16
+
+- bbf4975 Bump version to 1.1.1
+- fe3294b Fix clawpatch report bugs
+- b1defef Add desktop action diagnostics examples
+- 0d03e3f Add Python desktop focus diagnostics example
+- 0ac1605 Add MCP desktop focus diagnostics example
+- e30f2f3 Extend MCP gRPC timeout for desktop focus
+- 11979f4 Expose desktop focus diagnostics in MCP
+- 63c6e7d Expose focus diagnostics over gRPC
+- 1b4dda2 Add desktop focus diagnostics
+- 3ebb693 Focus desktop actions before locating targets
+- 8e3976c Improve desktop focus fallbacks
+- 4812277 Fix launcher command clippy lint
+- 685dbd4 Add Peekaboo parity CLI and MCP surfaces
+
 ## 1.1.0 - 2026-05-16
 
 - 22ee6bc Refresh example smoke coverage list

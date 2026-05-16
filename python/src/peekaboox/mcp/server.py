@@ -33,7 +33,7 @@ from peekaboox.workflows import dump_workflow_text, workflow_from_dict, workflow
 
 MCP_PROTOCOL_VERSION = "2025-11-25"
 SERVER_NAME = "peekaboox-mcp"
-SERVER_VERSION = "1.1.0"
+SERVER_VERSION = "1.1.1"
 
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
