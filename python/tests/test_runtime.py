@@ -796,6 +796,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("annotations", server.tools["click"].descriptor())
         self.assertTrue(server.tools["capture_screen"].descriptor()["annotations"]["readOnlyHint"])
         self.assertTrue(server.tools["click"].descriptor()["annotations"]["destructiveHint"])
+        capture_schema = server.tools["capture_screen"].input_schema["properties"]
+        self.assertIn("app", capture_schema)
+        self.assertIn("window_title", capture_schema)
+        self.assertIn("title_regex", capture_schema)
         window_schema = server.tools["list_windows"].input_schema["properties"]
         self.assertIn("title_regex", window_schema)
         self.assertIn("diagnose", window_schema)

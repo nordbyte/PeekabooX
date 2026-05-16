@@ -412,7 +412,9 @@ impl ApiResponseEnvelope {
     pub fn ok(result: ApiResult) -> Self {
         Self {
             version: API_VERSION.to_owned(),
-            response: ApiResponse::Ok { result },
+            response: ApiResponse::Ok {
+                result: Box::new(result),
+            },
         }
     }
 
@@ -429,7 +431,7 @@ impl ApiResponseEnvelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ApiResponse {
-    Ok { result: ApiResult },
+    Ok { result: Box<ApiResult> },
     Error { message: String },
 }
 

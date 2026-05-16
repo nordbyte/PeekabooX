@@ -6254,7 +6254,7 @@ fn daemon_request(context: &CliContext, request: ApiRequest) -> Result<ApiResult
     })?;
 
     match response.response {
-        ApiResponse::Ok { result } => Ok(result),
+        ApiResponse::Ok { result } => Ok(*result),
         ApiResponse::Error { message } => Err(CliError::Failure(message)),
     }
 }
