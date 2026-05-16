@@ -112,6 +112,9 @@ Denied runtime calls raise `CapabilityDeniedError`. MCP JSON-RPC tool calls
 surface the same denial as a tool result with `isError: true`, so clients can
 distinguish policy denial from protocol errors. Every capability check appends
 an in-memory audit event available through `runtime.capability_audit()`.
+MCP denial results include structured `capability`, `operation`, and
+`next_action` fields so clients can recommend a capability-profile change
+without parsing error text.
 Preflight denials are also surfaced as tool results with `isError: true`, but
 include structured `blocked_categories`, `warning_categories`, `next_action`,
 and `preflight` fields so clients do not need to parse the message text.
@@ -164,7 +167,8 @@ runtime = AgentRuntime.connect(
 If confirmation is required but no confirmer is configured, the runtime raises
 `ConfirmationRequiredError`. If the confirmer rejects the request, it raises
 `ConfirmationDeniedError`. MCP JSON-RPC tool calls surface both as tool results
-with `isError: true`. Confirmation checks append in-memory audit events
+with `isError: true` and structured `action`, `operation`, `retryable`, and
+`next_action` fields. Confirmation checks append in-memory audit events
 available through `runtime.confirmation_audit()`.
 
 Run the MCP server with persistent runtime audit enabled:

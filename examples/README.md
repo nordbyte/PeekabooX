@@ -17,6 +17,11 @@ PYTHONPATH=python/src bash examples/mcp/jsonrpc_list_tools.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_doctor.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_preflight.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_preflight_error_client.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_resources.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_prompts.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_recovery_matrix.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_tool_parity.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_image_content.sh
 cargo run -q -p peekaboox-cli -- doctor --json
 ```
 
@@ -45,6 +50,12 @@ category rollups, then write JSON under
 failure, calls `click` through MCP with strict preflight, and shows how an MCP
 client can branch on `PreflightError.next_action` and `blocked_categories`
 without parsing prose error text.
+`examples/mcp/jsonrpc_resources.sh`, `jsonrpc_prompts.sh`,
+`jsonrpc_recovery_matrix.sh`, `jsonrpc_tool_parity.sh`, and
+`jsonrpc_image_content.sh` cover the wider MCP surface: resources/templates,
+prompts, completion, logging, structured recovery for security/preflight
+failures, CLI-compatible tool aliases, tool annotations/output schemas, and MCP
+image content blocks.
 
 ## Live desktop examples
 

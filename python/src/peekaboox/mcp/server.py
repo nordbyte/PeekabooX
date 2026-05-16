@@ -10,13 +10,16 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
-from peekaboox.agent import AgentRuntime, PreflightError
+from peekaboox.agent import AgentRuntime, PreflightError, WorkflowExecutionResult
 from peekaboox.agent.runtime import WINDOW_BACKEND_CHOICES, WINDOW_SORT_CHOICES
 from peekaboox.client import Rect
 from peekaboox.security import (
     KNOWN_CAPABILITY_PROFILES,
     CapabilityPolicy,
+    CapabilityDeniedError,
+    ConfirmationDeniedError,
     ConfirmationPolicy,
+    ConfirmationRequiredError,
     JsonlAuditLogger,
 )
 from peekaboox.workflows import dump_workflow_text, workflow_from_dict, workflow_to_dict
@@ -31,6 +34,116 @@ INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
+
+LOG_LEVELS = (
+    "debug",
+    "info",
+    "notice",
+    "warning",
+    "error",
+    "critical",
+    "alert",
+    "emergency",
+)
+
+PREFLIGHT_CATEGORIES = ("desktop", "capture", "input", "ocr", "python")
+WORKFLOW_ACTIONS = (
+    "observe",
+    "capture_screen",
+    "find_element",
+    "click",
+    "type_text",
+    "paste_text",
+    "hotkey",
+    "list_windows",
+    "get_desktop_state",
+)
+
+DESKTOP_PROFILES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "telegram",
+        "aliases": ("telegram", "telegram-desktop", "org.telegram.desktop"),
+        "search_name": "Telegram",
+        "desktop_ids": (
+            "telegram-desktop",
+            "org.telegram.desktop",
+            "telegram-desktop_telegram-desktop",
+        ),
+        "commands": ("telegram-desktop", "telegram", "flatpak"),
+        "targets": (
+            "overview-icon",
+            "search-input",
+            "search-clear",
+            "search-result",
+            "message-input",
+            "send-button",
+            "header",
+        ),
+    },
+    {
+        "id": "paint",
+        "aliases": (
+            "paint",
+            "drawing",
+            "pinta",
+            "kolourpaint",
+            "org.gnome.Drawing",
+            "com.github.maoschanz.drawing",
+        ),
+        "search_name": "Drawing",
+        "desktop_ids": (
+            "drawing",
+            "com.github.maoschanz.drawing",
+            "pinta",
+            "com.github.PintaProject.Pinta",
+            "org.kde.kolourpaint",
+            "kolourpaint",
+        ),
+        "commands": ("drawing", "pinta", "kolourpaint"),
+        "targets": ("canvas", "save-button"),
+    },
+    {
+        "id": "drawing",
+        "aliases": ("drawing", "org.gnome.Drawing", "com.github.maoschanz.drawing"),
+        "search_name": "Drawing",
+        "desktop_ids": ("drawing", "com.github.maoschanz.drawing"),
+        "commands": ("drawing",),
+        "targets": ("canvas", "save-button"),
+    },
+    {
+        "id": "pinta",
+        "aliases": ("pinta", "com.github.PintaProject.Pinta"),
+        "search_name": "Pinta",
+        "desktop_ids": ("pinta", "com.github.PintaProject.Pinta"),
+        "commands": ("pinta",),
+        "targets": ("canvas", "save-button"),
+    },
+    {
+        "id": "kolourpaint",
+        "aliases": ("kolourpaint", "org.kde.kolourpaint"),
+        "search_name": "KolourPaint",
+        "desktop_ids": ("org.kde.kolourpaint", "kolourpaint"),
+        "commands": ("kolourpaint",),
+        "targets": ("canvas", "save-button"),
+    },
+    {
+        "id": "text-editor",
+        "aliases": ("text-editor", "gnome-text-editor", "org.gnome.TextEditor"),
+        "search_name": "Text Editor",
+        "desktop_ids": ("org.gnome.TextEditor", "gnome-text-editor"),
+        "commands": ("gnome-text-editor",),
+        "targets": ("document", "save-button"),
+    },
+)
+
+DOC_RESOURCES = {
+    "api": "docs/api.md",
+    "runtime": "docs/runtime.md",
+    "security": "docs/security.md",
+    "plugins": "docs/plugins.md",
+    "cli": "docs/cli.md",
+    "examples": "examples/README.md",
+}
 
 RECT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -81,13 +194,23 @@ class McpTool:
     description: str
     input_schema: dict[str, Any]
     handler: Callable[[dict[str, Any]], Any] | None = None
+    title: str | None = None
+    output_schema: dict[str, Any] | None = None
+    annotations: dict[str, Any] | None = None
 
     def descriptor(self) -> dict[str, Any]:
-        return {
+        descriptor = {
             "name": self.name,
             "description": self.description,
             "inputSchema": self.input_schema,
         }
+        if self.title:
+            descriptor["title"] = self.title
+        if self.output_schema is not None:
+            descriptor["outputSchema"] = self.output_schema
+        if self.annotations is not None:
+            descriptor["annotations"] = self.annotations
+        return descriptor
 
     def call(self, arguments: dict[str, Any] | None = None) -> Any:
         if self.handler is None:
@@ -98,12 +221,77 @@ class McpTool:
         return self.call(arguments)
 
 
+@dataclass(frozen=True, slots=True)
+class McpResource:
+    uri: str
+    name: str
+    title: str
+    description: str
+    mime_type: str = "application/json"
+
+    def descriptor(self) -> dict[str, Any]:
+        return {
+            "uri": self.uri,
+            "name": self.name,
+            "title": self.title,
+            "description": self.description,
+            "mimeType": self.mime_type,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class McpResourceTemplate:
+    uri_template: str
+    name: str
+    title: str
+    description: str
+    mime_type: str = "text/markdown"
+
+    def descriptor(self) -> dict[str, Any]:
+        return {
+            "uriTemplate": self.uri_template,
+            "name": self.name,
+            "title": self.title,
+            "description": self.description,
+            "mimeType": self.mime_type,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class McpPromptArgument:
+    name: str
+    description: str
+    required: bool = False
+
+    def descriptor(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "required": self.required,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class McpPrompt:
+    name: str
+    description: str
+    arguments: tuple[McpPromptArgument, ...] = ()
+
+    def descriptor(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "arguments": [argument.descriptor() for argument in self.arguments],
+        }
+
+
 @dataclass(slots=True)
 class McpServer:
     """Registry and dispatcher for PeekabooX MCP tool handlers."""
 
     runtime: AgentRuntime | None = None
     tools: dict[str, McpTool] = field(default_factory=dict)
+    log_level: str = "info"
 
     def register_default_tools(self) -> None:
         for tool in self._default_tools():
@@ -125,6 +313,15 @@ class McpServer:
         except KeyError as error:
             raise ValueError(f"unknown MCP tool: {name}") from error
         return tool.call(arguments)
+
+    def list_resources(self) -> list[dict[str, Any]]:
+        return [resource.descriptor() for resource in self._default_resources()]
+
+    def list_resource_templates(self) -> list[dict[str, Any]]:
+        return [template.descriptor() for template in self._default_resource_templates()]
+
+    def list_prompts(self) -> list[dict[str, Any]]:
+        return [prompt.descriptor() for prompt in self._default_prompts()]
 
     def handle_jsonrpc(self, message: Any) -> dict[str, Any] | list[dict[str, Any]] | None:
         if isinstance(message, list):
@@ -190,7 +387,13 @@ class McpServer:
                 protocol_version = params["protocolVersion"]
             return {
                 "protocolVersion": protocol_version,
-                "capabilities": {"tools": {"listChanged": False}},
+                "capabilities": {
+                    "tools": {"listChanged": False},
+                    "resources": {"subscribe": False, "listChanged": False},
+                    "prompts": {"listChanged": False},
+                    "logging": {},
+                    "completions": {},
+                },
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 "instructions": (
                     "PeekabooX exposes Linux desktop observation and action tools. "
@@ -203,6 +406,20 @@ class McpServer:
             return {"tools": self.list_tools()}
         if method == "tools/call":
             return self._handle_tools_call(params)
+        if method == "resources/list":
+            return {"resources": self.list_resources()}
+        if method == "resources/read":
+            return self._handle_resources_read(params)
+        if method == "resources/templates/list":
+            return {"resourceTemplates": self.list_resource_templates()}
+        if method == "prompts/list":
+            return {"prompts": self.list_prompts()}
+        if method == "prompts/get":
+            return self._handle_prompts_get(params)
+        if method == "logging/setLevel":
+            return self._handle_logging_set_level(params)
+        if method == "completion/complete":
+            return self._handle_completion_complete(params)
         raise JsonRpcProtocolError(METHOD_NOT_FOUND, f"unsupported MCP method: {method}")
 
     def _handle_tools_call(self, params: Any) -> dict[str, Any]:
@@ -223,20 +440,359 @@ class McpServer:
         except PreflightError as error:
             structured = _preflight_error_content(error, name)
             is_error = True
+        except CapabilityDeniedError as error:
+            structured = _capability_error_content(error, name)
+            is_error = True
+        except ConfirmationRequiredError as error:
+            structured = _confirmation_error_content(error, name, required=True)
+            is_error = True
+        except ConfirmationDeniedError as error:
+            structured = _confirmation_error_content(error, name, required=False)
+            is_error = True
         except Exception as error:
-            structured = {
-                "error": type(error).__name__,
-                "message": str(error),
-                "tool": name,
-            }
+            structured = _generic_error_content(error, name)
             is_error = True
 
-        text = json.dumps(structured, ensure_ascii=False, sort_keys=True)
         return {
-            "content": [{"type": "text", "text": text}],
+            "content": _tool_result_content(structured),
             "structuredContent": structured,
             "isError": is_error,
         }
+
+    def _handle_resources_read(self, params: Any) -> dict[str, Any]:
+        if not isinstance(params, dict):
+            raise ValueError("resources/read params must be an object")
+        uri = params.get("uri")
+        if not isinstance(uri, str) or not uri:
+            raise ValueError("resources/read params.uri must be a non-empty string")
+        content = self._read_resource(uri)
+        return {"contents": [content]}
+
+    def _handle_prompts_get(self, params: Any) -> dict[str, Any]:
+        if not isinstance(params, dict):
+            raise ValueError("prompts/get params must be an object")
+        name = params.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError("prompts/get params.name must be a non-empty string")
+        arguments = params.get("arguments") or {}
+        if not isinstance(arguments, dict):
+            raise ValueError("prompts/get params.arguments must be an object")
+        prompt = self._prompt_by_name(name)
+        text = _render_prompt(prompt, arguments)
+        return {
+            "description": prompt.description,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": {"type": "text", "text": text},
+                }
+            ],
+        }
+
+    def _handle_logging_set_level(self, params: Any) -> dict[str, Any]:
+        if not isinstance(params, dict):
+            raise ValueError("logging/setLevel params must be an object")
+        level = params.get("level")
+        if not isinstance(level, str):
+            raise ValueError("logging/setLevel params.level must be a string")
+        normalized = level.strip().lower()
+        if normalized not in LOG_LEVELS:
+            raise ValueError(f"logging level must be one of: {', '.join(LOG_LEVELS)}")
+        self.log_level = normalized
+        return {}
+
+    def _handle_completion_complete(self, params: Any) -> dict[str, Any]:
+        if not isinstance(params, dict):
+            raise ValueError("completion/complete params must be an object")
+        argument = params.get("argument")
+        if not isinstance(argument, dict):
+            raise ValueError("completion/complete params.argument must be an object")
+        name = argument.get("name")
+        value = argument.get("value", "")
+        if not isinstance(name, str) or not name:
+            raise ValueError("completion/complete argument.name must be a non-empty string")
+        if not isinstance(value, str):
+            raise ValueError("completion/complete argument.value must be a string")
+        values = self._completion_values(name, params)
+        matches = _completion_matches(values, value)
+        return {
+            "completion": {
+                "values": matches[:100],
+                "total": len(matches),
+                "hasMore": len(matches) > 100,
+            }
+        }
+
+    def _read_resource(self, uri: str) -> dict[str, Any]:
+        if uri == "peekaboox://server/info":
+            return _json_resource(uri, self._server_info())
+        if uri == "peekaboox://tools":
+            return _json_resource(uri, {"tools": self.list_tools()})
+        if uri == "peekaboox://desktop/profiles":
+            return _json_resource(uri, {"profiles": _desktop_profiles()})
+        if uri == "peekaboox://doctor/latest":
+            doctor = self.runtime._preflight_doctor_result if self.runtime is not None else None
+            return _json_resource(uri, {"available": doctor is not None, "doctor": _to_mcp_value(doctor)})
+        if uri == "peekaboox://preflight/latest":
+            audits = self.runtime.preflight_audit() if self.runtime is not None else ()
+            return _json_resource(
+                uri,
+                {
+                    "available": bool(audits),
+                    "preflight": _to_mcp_value(audits[-1]) if audits else None,
+                },
+            )
+        if uri == "peekaboox://desktop/latest-snapshot":
+            snapshot = self._require_runtime().latest_desktop_snapshot()
+            return _json_resource(uri, {"available": snapshot is not None, "snapshot": _to_mcp_value(snapshot)})
+        if uri == "peekaboox://desktop/graph/status":
+            return _json_resource(uri, _to_mcp_value(self._require_runtime().desktop_graph_status()))
+        if uri == "peekaboox://plugins":
+            return _json_resource(uri, _to_mcp_value(self._require_runtime().list_plugins()))
+        if uri == "peekaboox://audit/capabilities":
+            audits = self.runtime.capability_audit() if self.runtime is not None else ()
+            return _json_resource(uri, {"events": _to_mcp_value(audits)})
+        if uri == "peekaboox://audit/confirmations":
+            audits = self.runtime.confirmation_audit() if self.runtime is not None else ()
+            return _json_resource(uri, {"events": _to_mcp_value(audits)})
+        if uri == "peekaboox://audit/preflight":
+            audits = self.runtime.preflight_audit() if self.runtime is not None else ()
+            return _json_resource(uri, {"events": _to_mcp_value(audits)})
+        if uri.startswith("peekaboox://docs/"):
+            name = uri.removeprefix("peekaboox://docs/")
+            path = DOC_RESOURCES.get(name)
+            if path is None:
+                raise JsonRpcProtocolError(INVALID_PARAMS, f"unknown MCP resource: {uri}")
+            return _text_resource(uri, _read_repo_text(path), mime_type="text/markdown")
+        raise JsonRpcProtocolError(INVALID_PARAMS, f"unknown MCP resource: {uri}")
+
+    def _server_info(self) -> dict[str, Any]:
+        return {
+            "name": SERVER_NAME,
+            "version": SERVER_VERSION,
+            "protocol_version": MCP_PROTOCOL_VERSION,
+            "log_level": self.log_level,
+            "tool_count": len(self.tools),
+            "resource_count": len(self._default_resources()),
+            "prompt_count": len(self._default_prompts()),
+            "capabilities": {
+                "tools": True,
+                "resources": True,
+                "prompts": True,
+                "logging": True,
+                "completions": True,
+            },
+            "runtime": {
+                "available": self.runtime is not None,
+                "preflight_mode": self.runtime.preflight_mode if self.runtime is not None else None,
+                "preflight_timeout_seconds": (
+                    self.runtime.preflight_timeout_seconds if self.runtime is not None else None
+                ),
+            },
+        }
+
+    def _completion_values(self, name: str, params: dict[str, Any]) -> tuple[str, ...]:
+        normalized = name.strip().lower().replace("-", "_")
+        if normalized in {"tool", "tools", "tool_name", "name"}:
+            return tuple(sorted(self.tools))
+        if normalized in {"prompt", "prompt_name"}:
+            return tuple(prompt.name for prompt in self._default_prompts())
+        if normalized in {"resource", "uri", "resource_uri"}:
+            return tuple(resource.uri for resource in self._default_resources())
+        if normalized in {"app", "application"}:
+            return _desktop_profile_completion_values()
+        if normalized in {"target", "desktop_target"}:
+            app = _completion_context_value(params, "app")
+            return _desktop_target_completion_values(app)
+        if normalized in {"category", "categories", "preflight_category"}:
+            return PREFLIGHT_CATEGORIES
+        if normalized in {"capability_profile", "profile"}:
+            return KNOWN_CAPABILITY_PROFILES
+        if normalized in {"workflow_action", "action"}:
+            return WORKFLOW_ACTIONS
+        if normalized == "format":
+            return ("json", "yaml")
+        if normalized == "level":
+            return LOG_LEVELS
+        return ()
+
+    def _default_resources(self) -> tuple[McpResource, ...]:
+        resources = [
+            McpResource(
+                uri="peekaboox://server/info",
+                name="server-info",
+                title="PeekabooX MCP Server Info",
+                description="Server version, protocol capabilities, runtime status, and counts.",
+            ),
+            McpResource(
+                uri="peekaboox://tools",
+                name="tools",
+                title="PeekabooX MCP Tools",
+                description="Current MCP tool descriptors, schemas, annotations, and output schemas.",
+            ),
+            McpResource(
+                uri="peekaboox://desktop/profiles",
+                name="desktop-profiles",
+                title="Desktop App Profiles",
+                description="Supported desktop helper app profiles and target names.",
+            ),
+            McpResource(
+                uri="peekaboox://doctor/latest",
+                name="doctor-latest",
+                title="Latest Doctor Result",
+                description="Most recent Doctor result cached by runtime preflight or doctor calls.",
+            ),
+            McpResource(
+                uri="peekaboox://preflight/latest",
+                name="preflight-latest",
+                title="Latest Preflight Decision",
+                description="Most recent runtime preflight audit event.",
+            ),
+            McpResource(
+                uri="peekaboox://desktop/latest-snapshot",
+                name="desktop-latest-snapshot",
+                title="Latest Desktop Graph Snapshot",
+                description="Latest semantic desktop graph snapshot from the runtime memory store.",
+            ),
+            McpResource(
+                uri="peekaboox://desktop/graph/status",
+                name="desktop-graph-status",
+                title="Desktop Graph Status",
+                description="Semantic desktop graph freshness and invalidation status.",
+            ),
+            McpResource(
+                uri="peekaboox://plugins",
+                name="plugins",
+                title="PeekabooX Plugins",
+                description="Discovered local plugins and declared tools.",
+            ),
+            McpResource(
+                uri="peekaboox://audit/capabilities",
+                name="capability-audit",
+                title="Capability Audit",
+                description="In-memory capability audit events for this MCP runtime.",
+            ),
+            McpResource(
+                uri="peekaboox://audit/confirmations",
+                name="confirmation-audit",
+                title="Confirmation Audit",
+                description="In-memory confirmation audit events for this MCP runtime.",
+            ),
+            McpResource(
+                uri="peekaboox://audit/preflight",
+                name="preflight-audit",
+                title="Preflight Audit",
+                description="In-memory preflight audit events for this MCP runtime.",
+            ),
+        ]
+        resources.extend(
+            McpResource(
+                uri=f"peekaboox://docs/{name}",
+                name=f"docs-{name}",
+                title=f"PeekabooX {name.title()} Docs",
+                description=f"Repository documentation from {path}.",
+                mime_type="text/markdown",
+            )
+            for name, path in DOC_RESOURCES.items()
+        )
+        return tuple(resources)
+
+    def _default_resource_templates(self) -> tuple[McpResourceTemplate, ...]:
+        return (
+            McpResourceTemplate(
+                uri_template="peekaboox://docs/{document}",
+                name="docs",
+                title="PeekabooX Documentation",
+                description=(
+                    "Read repository documentation; document is one of "
+                    + ", ".join(sorted(DOC_RESOURCES))
+                    + "."
+                ),
+            ),
+            McpResourceTemplate(
+                uri_template="peekaboox://audit/{kind}",
+                name="audit",
+                title="PeekabooX Runtime Audit",
+                description="Read runtime audit events; kind is capabilities, confirmations, or preflight.",
+                mime_type="application/json",
+            ),
+        )
+
+    def _default_prompts(self) -> tuple[McpPrompt, ...]:
+        return (
+            McpPrompt(
+                "diagnose-desktop",
+                "Diagnose the current desktop/capture/input/OCR environment.",
+                (
+                    McpPromptArgument("problem", "Observed failure or symptom.", False),
+                    McpPromptArgument("strict", "Whether the caller wants release-blocking checks.", False),
+                ),
+            ),
+            McpPrompt(
+                "safe-desktop-action",
+                "Plan a gated desktop action using preflight, capability, and confirmation checks.",
+                (
+                    McpPromptArgument("goal", "The user-visible desktop goal.", True),
+                    McpPromptArgument("app", "Optional desktop app profile.", False),
+                    McpPromptArgument("target", "Optional app target name.", False),
+                ),
+            ),
+            McpPrompt(
+                "inspect-window",
+                "Inspect a visible window before choosing capture, OCR, elements, or input tools.",
+                (
+                    McpPromptArgument("app", "Optional app id/name filter.", False),
+                    McpPromptArgument("title", "Optional title substring or regex.", False),
+                    McpPromptArgument("window_id", "Optional exact window id.", False),
+                ),
+            ),
+            McpPrompt(
+                "build-workflow",
+                "Create an editable PeekabooX workflow plan from a goal.",
+                (
+                    McpPromptArgument("goal", "The workflow goal.", True),
+                    McpPromptArgument("format", "json or yaml.", False),
+                ),
+            ),
+            McpPrompt(
+                "recover-from-tool-error",
+                "Recover from a structured MCP tool error without parsing prose.",
+                (
+                    McpPromptArgument("error_json", "The MCP structuredContent error object.", True),
+                ),
+            ),
+            McpPrompt(
+                "plugin-development",
+                "Design or validate a PeekabooX plugin SDK package.",
+                (
+                    McpPromptArgument("plugin_id", "Optional plugin id.", False),
+                    McpPromptArgument("tool", "Optional plugin tool name.", False),
+                ),
+            ),
+            McpPrompt(
+                "ocr-visible-text",
+                "Extract and verify visible text from a screen, window, or image.",
+                (
+                    McpPromptArgument("text_goal", "Text to find or verify.", False),
+                    McpPromptArgument("app", "Optional desktop app scope.", False),
+                ),
+            ),
+            McpPrompt(
+                "semantic-click-plan",
+                "Plan a semantic click using accessibility, graph cache, and vision fallback.",
+                (
+                    McpPromptArgument("selector", "Optional semantic selector.", False),
+                    McpPromptArgument("app", "Optional app scope.", False),
+                    McpPromptArgument("target", "Optional desktop helper target.", False),
+                ),
+            ),
+        )
+
+    def _prompt_by_name(self, name: str) -> McpPrompt:
+        for prompt in self._default_prompts():
+            if prompt.name == name:
+                return prompt
+        raise JsonRpcProtocolError(INVALID_PARAMS, f"unknown MCP prompt: {name}")
 
     def _default_tools(self) -> list[McpTool]:
         return [
@@ -947,6 +1503,177 @@ class McpServer:
                 ),
                 self._detect_ui_elements,
             ),
+            self._tool(
+                "find_elements",
+                "Find semantic UI elements by selector and optionally limit the result count.",
+                _schema(
+                    {
+                        "selector": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1},
+                        "vision_fallback": {"type": "boolean", "default": False},
+                        "app": {"type": "string"},
+                        "window_title": {"type": "string"},
+                        "window_id": {"type": "string"},
+                        "vision_region": RECT_SCHEMA,
+                        "vision_edge_threshold": {"type": "integer", "minimum": 1, "maximum": 255},
+                        "vision_min_width": {"type": "integer", "minimum": 1},
+                        "vision_min_height": {"type": "integer", "minimum": 1},
+                        "vision_min_component_pixels": {"type": "integer", "minimum": 1},
+                        "vision_max_elements": {"type": "integer", "minimum": 1},
+                        "vision_merge_distance": {"type": "integer", "minimum": 0},
+                    },
+                    required=["selector"],
+                ),
+                self._find_elements,
+            ),
+            self._tool(
+                "elements",
+                "CLI-compatible alias for find_elements.",
+                _schema(
+                    {
+                        "selector": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1},
+                        "vision_fallback": {"type": "boolean", "default": False},
+                        "app": {"type": "string"},
+                        "window_title": {"type": "string"},
+                        "window_id": {"type": "string"},
+                    },
+                    required=["selector"],
+                ),
+                self._find_elements,
+            ),
+            self._tool(
+                "vision_elements",
+                "CLI-compatible alias for detect_ui_elements.",
+                _schema(
+                    {
+                        "image_path": {"type": "string"},
+                        "region": RECT_SCHEMA,
+                        "edge_threshold": {"type": "integer", "minimum": 1},
+                        "min_width": {"type": "integer", "minimum": 1},
+                        "min_height": {"type": "integer", "minimum": 1},
+                        "min_component_pixels": {"type": "integer", "minimum": 1},
+                        "max_elements": {"type": "integer", "minimum": 1},
+                        "merge_distance": {"type": "integer", "minimum": 0},
+                    },
+                    required=["image_path"],
+                ),
+                self._detect_ui_elements,
+            ),
+            self._tool(
+                "ocr",
+                "CLI-compatible OCR alias for screen, window, region, or image OCR.",
+                _ocr_input_schema(),
+                self._ocr_screen,
+            ),
+            self._tool(
+                "ocr_image",
+                "Run OCR over an existing image file.",
+                _ocr_input_schema(),
+                self._ocr_screen,
+            ),
+            self._tool(
+                "capture_dmabuf",
+                "CLI-compatible alias for the DMA-BUF capture/import probe.",
+                _schema(
+                    {
+                        "import_target": {
+                            "type": "string",
+                            "enum": ["compute", "egl", "egl_texture"],
+                            "default": "compute",
+                        },
+                    }
+                ),
+                self._probe_dmabuf,
+            ),
+            self._tool(
+                "desktop_profiles",
+                "List supported desktop helper app profiles and target names.",
+                _schema({"app": {"type": "string"}}),
+                self._desktop_profiles,
+            ),
+            self._tool(
+                "plan",
+                "Decompose a goal into high-level planning steps.",
+                _schema({"goal": {"type": "string"}}, required=["goal"]),
+                self._plan,
+            ),
+            self._tool(
+                "plan_workflow",
+                "Create a simple workflow draft from a goal.",
+                _schema(
+                    {
+                        "goal": {"type": "string"},
+                        "format": {"type": "string", "enum": ["json", "yaml"]},
+                    },
+                    required=["goal"],
+                ),
+                self._plan_workflow,
+            ),
+            self._tool(
+                "replan_workflow",
+                "Generate a replacement workflow after a failed workflow result.",
+                _schema(
+                    {
+                        "goal": {"type": "string"},
+                        "failed_workflow": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "steps": {
+                                    "type": "array",
+                                    "items": WORKFLOW_STEP_SCHEMA,
+                                    "minItems": 1,
+                                },
+                            },
+                            "required": ["steps"],
+                            "additionalProperties": False,
+                        },
+                        "failed_result": {"type": "object"},
+                        "refresh_desktop_graph": {"type": "boolean", "default": False},
+                        "format": {"type": "string", "enum": ["json", "yaml"]},
+                    },
+                    required=["goal", "failed_workflow", "failed_result"],
+                ),
+                self._replan_workflow,
+            ),
+            self._tool(
+                "load_workflow_file",
+                "Load a JSON or YAML workflow file without executing it.",
+                _schema({"path": {"type": "string"}}, required=["path"]),
+                self._load_workflow_file,
+            ),
+            self._tool(
+                "query_desktop_edges",
+                "Query edges from the runtime semantic desktop graph.",
+                _schema(
+                    {
+                        "source": {"type": "string"},
+                        "target": {"type": "string"},
+                        "kind": {"type": "string"},
+                        "latest_only": {"type": "boolean", "default": True},
+                    }
+                ),
+                self._query_desktop_edges,
+            ),
+            self._tool(
+                "capability_audit",
+                "Return in-memory runtime capability audit events.",
+                _schema({}),
+                self._capability_audit,
+            ),
+            self._tool(
+                "confirmation_audit",
+                "Return in-memory runtime confirmation audit events.",
+                _schema({}),
+                self._confirmation_audit,
+            ),
+            self._tool(
+                "preflight_audit",
+                "Return in-memory runtime preflight audit events.",
+                _schema({}),
+                self._preflight_audit,
+            ),
         ]
 
     def _tool(
@@ -961,6 +1688,9 @@ class McpServer:
             description=description,
             input_schema=input_schema,
             handler=handler if self.runtime is not None else None,
+            title=_tool_title(name),
+            output_schema=_tool_output_schema(name),
+            annotations=_tool_annotations(name),
         )
 
     def _require_runtime(self) -> AgentRuntime:
@@ -1477,6 +2207,76 @@ class McpServer:
             )
         )
 
+    def _find_elements(self, arguments: dict[str, Any]) -> list[dict[str, Any]]:
+        elements = self._find_element(arguments)
+        limit = _optional_positive_int(arguments, "limit")
+        if limit is not None:
+            elements = elements[:limit]
+        return elements
+
+    def _desktop_profiles(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        app = _optional_string(arguments, "app")
+        profiles = _desktop_profiles(app)
+        return {"profiles": profiles, "count": len(profiles)}
+
+    def _plan(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        steps = self._require_runtime().plan(_required_str(arguments, "goal"))
+        return {"steps": steps}
+
+    def _plan_workflow(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        workflow = self._require_runtime().plan_workflow(_required_str(arguments, "goal"))
+        format_name = _optional_string(arguments, "format") or "json"
+        return {
+            "workflow": workflow_to_dict(workflow),
+            "format": format_name,
+            "text": dump_workflow_text(workflow, format_name=format_name),
+        }
+
+    def _replan_workflow(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        failed_workflow = workflow_from_dict(
+            _required_object(arguments, "failed_workflow"),
+            default_name="failed workflow",
+        )
+        failed_result = _workflow_execution_result_from_mcp(
+            _required_str(arguments, "goal"),
+            arguments.get("failed_result"),
+        )
+        workflow = self._require_runtime().replan_workflow(
+            _required_str(arguments, "goal"),
+            failed_workflow,
+            failed_result,
+            refresh_desktop_graph=bool(arguments.get("refresh_desktop_graph", False)),
+        )
+        format_name = _optional_string(arguments, "format") or "json"
+        return {
+            "workflow": workflow_to_dict(workflow),
+            "format": format_name,
+            "text": dump_workflow_text(workflow, format_name=format_name),
+        }
+
+    def _load_workflow_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        workflow = self._require_runtime().load_workflow_file(_required_str(arguments, "path"))
+        return {"workflow": workflow_to_dict(workflow)}
+
+    def _query_desktop_edges(self, arguments: dict[str, Any]) -> list[dict[str, Any]]:
+        return _to_mcp_value(
+            self._require_runtime().query_desktop_edges(
+                source=_optional_string(arguments, "source"),
+                target=_optional_string(arguments, "target"),
+                kind=_optional_string(arguments, "kind"),
+                latest_only=bool(arguments.get("latest_only", True)),
+            )
+        )
+
+    def _capability_audit(self, _arguments: dict[str, Any]) -> dict[str, Any]:
+        return {"events": _to_mcp_value(self._require_runtime().capability_audit())}
+
+    def _confirmation_audit(self, _arguments: dict[str, Any]) -> dict[str, Any]:
+        return {"events": _to_mcp_value(self._require_runtime().confirmation_audit())}
+
+    def _preflight_audit(self, _arguments: dict[str, Any]) -> dict[str, Any]:
+        return {"events": _to_mcp_value(self._require_runtime().preflight_audit())}
+
 
 def _schema(
     properties: dict[str, Any],
@@ -1493,6 +2293,46 @@ def _schema(
     if any_of:
         schema["anyOf"] = any_of
     return schema
+
+
+def _ocr_input_schema() -> dict[str, Any]:
+    return _schema(
+        {
+            "region": RECT_SCHEMA,
+            "language": {"type": "string"},
+            "image_path": {"type": "string"},
+            "window_id": {"type": "string"},
+            "window_title": {"type": "string"},
+            "app": {"type": "string"},
+            "page_segmentation_mode": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 13,
+            },
+            "engine_mode": {"type": "integer", "minimum": 0, "maximum": 3},
+            "dpi": {"type": "integer", "minimum": 1},
+            "min_confidence": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0,
+            },
+            "whitelist": {"type": "string"},
+            "config": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "scale": {"type": "number", "minimum": 0.1, "maximum": 8.0},
+            "grayscale": {"type": "boolean", "default": False},
+            "threshold": {"type": "integer", "minimum": 0, "maximum": 255},
+            "invert": {"type": "boolean", "default": False},
+            "contrast": {
+                "type": "number",
+                "minimum": -255.0,
+                "maximum": 255.0,
+            },
+            "deskew": {"type": "boolean", "default": False},
+        }
+    )
 
 
 def _optional_rect(arguments: dict[str, Any], name: str) -> Rect | None:
@@ -1515,6 +2355,13 @@ def _required_str(arguments: dict[str, Any], name: str) -> str:
     value = arguments.get(name)
     if not isinstance(value, str) or not value:
         raise ValueError(f"{name} must be a non-empty string")
+    return value
+
+
+def _required_object(arguments: dict[str, Any], name: str) -> dict[str, Any]:
+    value = arguments.get(name)
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be an object")
     return value
 
 
@@ -1657,6 +2504,315 @@ def _preflight_error_content(error: PreflightError, tool: str) -> dict[str, Any]
         "category_severity": preflight["category_severity"],
         "preflight": preflight,
     }
+
+
+def _capability_error_content(error: CapabilityDeniedError, tool: str) -> dict[str, Any]:
+    return {
+        "error": type(error).__name__,
+        "message": str(error),
+        "tool": tool,
+        "capability": error.capability,
+        "operation": error.operation,
+        "retryable": False,
+        "category": "capability",
+        "next_action": "adjust_capability_profile",
+        "suggested_tools": ("capability_audit",),
+    }
+
+
+def _confirmation_error_content(
+    error: ConfirmationRequiredError | ConfirmationDeniedError,
+    tool: str,
+    *,
+    required: bool,
+) -> dict[str, Any]:
+    return {
+        "error": type(error).__name__,
+        "message": str(error),
+        "tool": tool,
+        "action": error.action,
+        "operation": error.operation,
+        "retryable": required,
+        "category": "confirmation",
+        "next_action": "request_confirmation" if required else "stop",
+        "suggested_tools": ("confirmation_audit",),
+    }
+
+
+def _generic_error_content(error: Exception, tool: str) -> dict[str, Any]:
+    return {
+        "error": type(error).__name__,
+        "message": str(error),
+        "tool": tool,
+        "retryable": False,
+        "category": "runtime",
+        "next_action": "inspect_error",
+    }
+
+
+def _tool_result_content(structured: Any) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = []
+    if isinstance(structured, dict):
+        image_base64 = structured.get("image_base64")
+        mime_type = structured.get("mime_type")
+        if isinstance(image_base64, str) and isinstance(mime_type, str):
+            if mime_type.startswith("image/"):
+                content.append(
+                    {
+                        "type": "image",
+                        "data": image_base64,
+                        "mimeType": mime_type,
+                    }
+                )
+    content.append(
+        {
+            "type": "text",
+            "text": json.dumps(structured, ensure_ascii=False, sort_keys=True),
+        }
+    )
+    return content
+
+
+def _json_resource(uri: str, value: Any) -> dict[str, Any]:
+    return {
+        "uri": uri,
+        "mimeType": "application/json",
+        "text": json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True),
+    }
+
+
+def _text_resource(uri: str, text: str, *, mime_type: str) -> dict[str, Any]:
+    return {"uri": uri, "mimeType": mime_type, "text": text}
+
+
+def _repo_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "Cargo.toml").is_file() and (parent / "python").is_dir():
+            return parent
+    return Path.cwd()
+
+
+def _read_repo_text(path: str) -> str:
+    root = _repo_root()
+    target = (root / path).resolve()
+    try:
+        target.relative_to(root.resolve())
+    except ValueError as error:
+        raise JsonRpcProtocolError(INVALID_PARAMS, f"resource path escapes repository: {path}") from error
+    if not target.is_file():
+        raise JsonRpcProtocolError(INVALID_PARAMS, f"resource file not found: {path}")
+    return target.read_text(encoding="utf-8")
+
+
+def _desktop_profiles(app: str | None = None) -> list[dict[str, Any]]:
+    profiles = [_to_mcp_value(profile) for profile in DESKTOP_PROFILES]
+    if app is None:
+        return profiles
+    needle = app.casefold()
+    return [
+        profile
+        for profile in profiles
+        if profile["id"].casefold() == needle
+        or any(alias.casefold() == needle for alias in profile["aliases"])
+        or any(desktop_id.casefold() == needle for desktop_id in profile["desktop_ids"])
+    ]
+
+
+def _desktop_profile_completion_values() -> tuple[str, ...]:
+    values: list[str] = []
+    for profile in DESKTOP_PROFILES:
+        values.append(str(profile["id"]))
+        values.extend(str(alias) for alias in profile["aliases"])
+    return tuple(dict.fromkeys(values))
+
+
+def _desktop_target_completion_values(app: str | None = None) -> tuple[str, ...]:
+    profiles = _desktop_profiles(app)
+    values: list[str] = []
+    for profile in profiles:
+        values.extend(str(target) for target in profile["targets"])
+    return tuple(dict.fromkeys(values))
+
+
+def _completion_context_value(params: dict[str, Any], name: str) -> str | None:
+    for key in ("context", "arguments"):
+        value = params.get(key)
+        if isinstance(value, dict) and isinstance(value.get(name), str):
+            return value[name]
+    ref = params.get("ref")
+    if isinstance(ref, dict):
+        arguments = ref.get("arguments")
+        if isinstance(arguments, dict) and isinstance(arguments.get(name), str):
+            return arguments[name]
+    return None
+
+
+def _completion_matches(values: tuple[str, ...], value: str) -> list[str]:
+    needle = value.casefold()
+    if not needle:
+        return list(values)
+    prefix = [item for item in values if item.casefold().startswith(needle)]
+    contains = [
+        item
+        for item in values
+        if needle in item.casefold() and item not in prefix
+    ]
+    return prefix + contains
+
+
+def _render_prompt(prompt: McpPrompt, arguments: dict[str, Any]) -> str:
+    missing = [
+        argument.name
+        for argument in prompt.arguments
+        if argument.required and not arguments.get(argument.name)
+    ]
+    if missing:
+        raise ValueError(f"prompt {prompt.name} missing required argument(s): {', '.join(missing)}")
+    rendered_args = {
+        argument.name: arguments.get(argument.name)
+        for argument in prompt.arguments
+        if arguments.get(argument.name) is not None
+    }
+    header = f"Use PeekabooX MCP prompt `{prompt.name}`."
+    body = {
+        "diagnose-desktop": (
+            "Run `doctor` first, then use `preflight` for the required categories. "
+            "Read `peekaboox://doctor/latest` and explain blocked checks with concrete next actions."
+        ),
+        "safe-desktop-action": (
+            "Plan the desktop action without hard-coded coordinates. Prefer desktop helper tools, "
+            "scope by app/window, run strict preflight for required categories, and request "
+            "confirmation before mutating input."
+        ),
+        "inspect-window": (
+            "Use `list_windows`, `capture_screen` with `window_id`, `elements`, and OCR as needed. "
+            "Summarize the target window, visible controls, and safest next tool call."
+        ),
+        "build-workflow": (
+            "Generate an editable workflow with semantic selectors where possible. Do not execute it "
+            "until the user confirms; include recovery expectations for failed selector replay."
+        ),
+        "recover-from-tool-error": (
+            "Inspect structuredContent.error, next_action, capability/action fields, and preflight "
+            "categories. Recommend the deterministic recovery path without parsing prose."
+        ),
+        "plugin-development": (
+            "Use the PeekabooX plugin SDK manifest format, declare bounded process tools, and "
+            "validate execution through list_plugins and call_plugin_tool."
+        ),
+        "ocr-visible-text": (
+            "Use window-scoped capture or image OCR where possible. Include language, PSM, confidence, "
+            "and preprocessing choices when text is small or noisy."
+        ),
+        "semantic-click-plan": (
+            "Resolve semantic targets through the graph cache or elements first, use vision fallback "
+            "only when accessibility misses, then perform a dry run or verified desktop_click."
+        ),
+    }[prompt.name]
+    if rendered_args:
+        return f"{header}\n\nArguments:\n{json.dumps(rendered_args, ensure_ascii=False, indent=2, sort_keys=True)}\n\n{body}"
+    return f"{header}\n\n{body}"
+
+
+def _workflow_execution_result_from_mcp(
+    goal: str,
+    value: Any,
+) -> WorkflowExecutionResult:
+    if isinstance(value, WorkflowExecutionResult):
+        return value
+    if not isinstance(value, dict):
+        raise ValueError("failed_result must be an object")
+    recovery = value.get("recovery")
+    if recovery is None:
+        recovery = {
+            "failed_step": value.get("failed_step", 0),
+            "reason": value.get("reason", "workflow failed"),
+            "attempts": value.get("attempts", 0),
+        }
+    if not isinstance(recovery, dict):
+        raise ValueError("failed_result.recovery must be an object")
+    return WorkflowExecutionResult(
+        goal=goal,
+        ok=bool(value.get("ok", False)),
+        steps=(),
+        recovery=recovery,
+    )
+
+
+def _tool_title(name: str) -> str:
+    return name.replace("_", " ").title()
+
+
+def _tool_annotations(name: str) -> dict[str, Any]:
+    mutating = {
+        "call_plugin_tool",
+        "capture_backends",
+        "click",
+        "move_mouse",
+        "drag",
+        "type_text",
+        "paste_text",
+        "hotkey",
+        "desktop_focus",
+        "desktop_click",
+        "desktop_drag",
+        "desktop_type_into",
+        "execute_goal",
+        "execute_workflow",
+        "execute_workflow_file",
+    }
+    stateful = {
+        "ingest_desktop_snapshot",
+        "record_desktop_event",
+        "refresh_desktop_graph",
+        "start_workflow_recording",
+        "stop_workflow_recording",
+        "save_generated_workflow",
+        "save_refined_workflow",
+        "save_recorded_workflow",
+    }
+    generating = {
+        "generate_workflow",
+        "refine_workflow",
+        "replan_workflow",
+    }
+    read_only = name not in mutating and name not in stateful and name not in generating
+    return {
+        "readOnlyHint": read_only,
+        "destructiveHint": name in mutating,
+        "idempotentHint": read_only,
+        "openWorldHint": name not in {"compare_images", "detect_ui_state", "detect_ui_elements", "vision_elements"},
+    }
+
+
+def _tool_output_schema(name: str) -> dict[str, Any]:
+    object_schema = {"type": "object", "additionalProperties": True}
+    array_schema = {"type": "array", "items": {"type": "object", "additionalProperties": True}}
+    if name == "capture_screen":
+        return {
+            "type": "object",
+            "properties": {
+                "image_base64": {"type": "string"},
+                "mime_type": {"type": "string"},
+                "semantic_tree": array_schema,
+                "metadata": object_schema,
+            },
+            "required": ["image_base64", "mime_type", "metadata"],
+            "additionalProperties": True,
+        }
+    if name in {"find_element", "find_elements", "elements", "list_windows", "query_desktop_graph", "query_desktop_edges"}:
+        return {"oneOf": [array_schema, object_schema]}
+    if name in {"click", "move_mouse", "drag", "type_text", "paste_text", "hotkey"}:
+        return {
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "message": {"type": "string"},
+            },
+            "required": ["ok", "message"],
+            "additionalProperties": True,
+        }
+    return object_schema
 
 
 def _jsonrpc_error(request_id: Any, code: int, message: str) -> dict[str, Any]:

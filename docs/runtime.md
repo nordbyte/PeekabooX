@@ -203,6 +203,8 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server --preflight-mode strict
 Tool execution through MCP requires Python runtime dependencies and a running
 `peekabooxd` reachable at `PEEKABOOX_GRPC_TARGET` or `--target`. Without those
 dependencies, the server can still list tool descriptors for inspection.
+The server also exposes MCP resources, resource templates, prompts, completion,
+and logging level negotiation alongside the tool registry.
 Use `--preflight-mode off|warn|strict` and `--preflight-timeout <seconds>` to
 control Doctor-backed preflight gates without changing application code.
 When preflight blocks an MCP tool call, the tool result keeps `isError: true`
@@ -215,10 +217,17 @@ The current tool surface includes capture, capture delta, DMA-BUF probe,
 click, text and paste input, semantic lookup, window listing, desktop state,
 desktop app-target tools, OCR, visual diff, UI-state and UI-element detection,
 plugin discovery/execution, semantic desktop graph ingestion/querying,
-workflow generation/refinement/execution, and workflow recording tools.
+workflow generation/refinement/replanning/execution, workflow recording tools,
+runtime audit tools, and CLI-compatible aliases such as `elements`, `ocr`,
+`vision_elements`, and `capture_dmabuf`.
 `list_windows` accepts the same filtering and diagnostics fields as the daemon
 CLI: `id`, `app`, `title`, `title_regex`, `focused`, `limit`, `sort`,
 `backend`, and `diagnose`.
+Resources under `peekaboox://server`, `peekaboox://desktop`,
+`peekaboox://audit`, and `peekaboox://docs` expose server metadata, desktop
+profile data, latest graph/preflight state, audit events, and documentation.
+Prompts cover diagnosis, safe actions, workflow generation, structured error
+recovery, plugin development, OCR, and semantic click planning.
 
 For local inspection without an MCP client:
 

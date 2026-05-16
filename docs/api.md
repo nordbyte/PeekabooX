@@ -381,17 +381,22 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server --preflight-mode strict
 ```
 
 The stdio transport handles `initialize`, `ping`, `tools/list`, `tools/call`,
-and `notifications/initialized`. Tool calls return `structuredContent` plus a
-serialized JSON text content block for compatibility.
+`resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`,
+`prompts/get`, `completion/complete`, `logging/setLevel`, and
+`notifications/initialized`. Tool calls return `structuredContent` plus a
+serialized JSON text content block for compatibility. Image-producing tools
+such as `capture_screen` also return an MCP `image` content block.
 Tool execution requires the Python runtime dependencies and a reachable
 PeekabooX daemon at `PEEKABOOX_GRPC_TARGET` or the `--target` address; without
 those dependencies the server can still list tool descriptors for inspection.
 MCP tools are bound to the runtime's `CapabilityPolicy`; denied tool execution
-returns a normal `tools/call` result with `isError: true` and
-`structuredContent.error` set to `CapabilityDeniedError`.
+returns a normal `tools/call` result with `isError: true`,
+`structuredContent.error` set to `CapabilityDeniedError`, and structured
+`capability`, `operation`, and `next_action` fields.
 When the runtime has a `ConfirmationPolicy`, missing or denied confirmations are
 reported the same way with `ConfirmationRequiredError` or
-`ConfirmationDeniedError`.
+`ConfirmationDeniedError`, including `action`, `operation`, `retryable`, and
+`next_action`.
 Doctor-backed preflight blocks return `PreflightError` with
 `blocked_categories`, `warning_categories`, `next_action`, and the full
 `preflight` result in `structuredContent`.
@@ -404,22 +409,39 @@ reusable runtime allowlist to MCP tool calls.
 Set `--preflight-mode off|warn|strict` and `--preflight-timeout <seconds>` to
 enable Doctor-backed preflight checks directly at MCP server startup.
 
+MCP resources expose server state, tool descriptors, desktop profile metadata,
+latest Doctor/preflight state, desktop graph status/snapshots, plugin discovery,
+runtime audit events, and selected repository docs under `peekaboox://...`
+URIs. MCP prompts provide reusable guidance for diagnostics, safe desktop
+actions, window inspection, workflow building, structured error recovery, plugin
+development, OCR, and semantic click planning. Completion supports common
+arguments such as tools, prompts, resources, app profiles, desktop targets,
+preflight categories, capability profiles, workflow actions, formats, and log
+levels.
+
 The current tool surface includes:
 
 - `capture_screen`
 - `capture_delta`
 - `capture_backends`
+- `capture_dmabuf`
 - `doctor`
 - `preflight`
 - `probe_dmabuf`
 - `click`
+- `move_mouse`
+- `drag`
 - `type_text`
 - `paste_text`
+- `hotkey`
 - `find_element`
+- `find_elements`
+- `elements`
 - `list_windows`
 - `list_plugins`
 - `call_plugin_tool`
 - `get_desktop_state`
+- `desktop_profiles`
 - `desktop_focus`
 - `desktop_locate`
 - `desktop_click`
@@ -432,23 +454,38 @@ The current tool surface includes:
 - `desktop_graph_status`
 - `refresh_desktop_graph`
 - `query_desktop_graph`
+- `query_desktop_edges`
+- `ocr`
+- `ocr_image`
 - `ocr_screen`
 - `compare_images`
 - `detect_ui_state`
 - `detect_ui_elements`
+- `vision_elements`
+- `plan`
+- `plan_workflow`
 - `execute_goal`
 - `generate_workflow`
 - `save_generated_workflow`
 - `refine_workflow`
 - `save_refined_workflow`
+- `replan_workflow`
+- `load_workflow_file`
 - `execute_workflow`
 - `execute_workflow_file`
 - `start_workflow_recording`
 - `stop_workflow_recording`
 - `get_recorded_workflow`
 - `save_recorded_workflow`
+- `capability_audit`
+- `confirmation_audit`
+- `preflight_audit`
 
 `click` accepts either `x`/`y` coordinates or `selector`/`semantic_selector`.
+`find_elements` and `elements` are CLI-compatible aliases around semantic
+lookup and add `limit`; `vision_elements` aliases `detect_ui_elements`,
+`ocr`/`ocr_image` alias the OCR surface, and `capture_dmabuf` aliases
+`probe_dmabuf`.
 `list_windows` supports `id`, `app`, `title`, `title_regex`, `focused`,
 `limit`, `sort`, `backend`, and `diagnose` arguments through MCP, matching the
 daemon CLI and Python runtime client.
@@ -481,9 +518,14 @@ change and invalidates the graph; `desktop_graph_status` reports stale state and
 the latest invalidation; `refresh_desktop_graph` samples a fresh graph snapshot.
 `query_desktop_graph` filters stored graph nodes by `kind`, `label_contains`,
 `role`, `attribute_equals`, `contained_by`, `latest_only`, and optionally
-`refresh_if_stale`.
+`refresh_if_stale`. `query_desktop_edges` filters stored graph edges by
+`source`, `target`, `kind`, and `latest_only`.
 `execute_goal` accepts a `goal` string plus optional `replan_on_failure` and
 `max_replans`, then runs the runtime planner plus workflow loop.
+`plan` returns high-level planning steps, `plan_workflow` returns a draft
+workflow, `replan_workflow` accepts a failed workflow plus structured recovery
+metadata, and `load_workflow_file` loads JSON/YAML workflows without executing
+them.
 `generate_workflow` accepts `goal`, optional
 `refresh_desktop_graph`, and optional `format` of `json` or `yaml`; it returns
 the workflow object plus serialized text. `save_generated_workflow` writes the
@@ -508,6 +550,8 @@ the saved step can replay through `selector` instead of fixed `x`/`y`.
 Workflow tool results include the same per-attempt verification and recovery
 metadata as the Python runtime API, including selector self-healing strategies
 such as `refresh_desktop_graph` and `vision_fallback`.
+Use `capability_audit`, `confirmation_audit`, and `preflight_audit` when MCP
+clients need in-band inspection of the runtime security decisions.
 
 The client uses the checked-in generated modules from
 `proto/peekaboox/v1/peekaboox.proto`. Regenerate them after proto changes with:

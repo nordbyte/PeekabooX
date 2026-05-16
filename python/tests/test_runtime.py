@@ -769,8 +769,27 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("desktop_graph_status", server.tools)
         self.assertIn("refresh_desktop_graph", server.tools)
         self.assertIn("query_desktop_graph", server.tools)
+        self.assertIn("query_desktop_edges", server.tools)
+        self.assertIn("find_elements", server.tools)
+        self.assertIn("elements", server.tools)
+        self.assertIn("vision_elements", server.tools)
+        self.assertIn("ocr", server.tools)
+        self.assertIn("ocr_image", server.tools)
+        self.assertIn("capture_dmabuf", server.tools)
+        self.assertIn("desktop_profiles", server.tools)
+        self.assertIn("plan", server.tools)
+        self.assertIn("plan_workflow", server.tools)
+        self.assertIn("replan_workflow", server.tools)
+        self.assertIn("load_workflow_file", server.tools)
+        self.assertIn("capability_audit", server.tools)
+        self.assertIn("confirmation_audit", server.tools)
+        self.assertIn("preflight_audit", server.tools)
         self.assertIn("hotkey", server.tools)
         self.assertIn("vision_fallback", server.tools["find_element"].input_schema["properties"])
+        self.assertIn("outputSchema", server.tools["capture_screen"].descriptor())
+        self.assertIn("annotations", server.tools["click"].descriptor())
+        self.assertTrue(server.tools["capture_screen"].descriptor()["annotations"]["readOnlyHint"])
+        self.assertTrue(server.tools["click"].descriptor()["annotations"]["destructiveHint"])
         window_schema = server.tools["list_windows"].input_schema["properties"]
         self.assertIn("title_regex", window_schema)
         self.assertIn("diagnose", window_schema)
@@ -2968,9 +2987,203 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("capture_delta", names)
         self.assertIn("capture_backends", names)
         self.assertIn("doctor", names)
+        self.assertIn("desktop_profiles", names)
+        self.assertIn("find_elements", names)
         capture_screen = next(tool for tool in tool_descriptors if tool["name"] == "capture_screen")
         self.assertIn("inputSchema", capture_screen)
+        self.assertIn("outputSchema", capture_screen)
+        self.assertTrue(capture_screen["annotations"]["readOnlyHint"])
+        self.assertIn("resources", initialized["result"]["capabilities"])
+        self.assertIn("prompts", initialized["result"]["capabilities"])
+        self.assertIn("logging", initialized["result"]["capabilities"])
+        self.assertIn("completions", initialized["result"]["capabilities"])
         self.assertIsNone(notification)
+
+    def test_mcp_server_handles_resources_read_templates(self) -> None:
+        server = McpServer(runtime=AgentRuntime(client=FakeClient()))
+        server.register_default_tools()
+
+        listed = server.handle_jsonrpc({"jsonrpc": "2.0", "id": 1, "method": "resources/list"})
+        uris = {resource["uri"] for resource in listed["result"]["resources"]}
+        self.assertIn("peekaboox://server/info", uris)
+        self.assertIn("peekaboox://tools", uris)
+        self.assertIn("peekaboox://docs/runtime", uris)
+
+        read = server.handle_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "resources/read",
+                "params": {"uri": "peekaboox://server/info"},
+            }
+        )
+        info = json.loads(read["result"]["contents"][0]["text"])
+        self.assertEqual(info["name"], "peekaboox-mcp")
+        self.assertTrue(info["capabilities"]["resources"])
+        self.assertEqual(info["runtime"]["preflight_mode"], "off")
+
+        docs = server.handle_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "resources/read",
+                "params": {"uri": "peekaboox://docs/runtime"},
+            }
+        )
+        self.assertIn("Python Runtime", docs["result"]["contents"][0]["text"])
+        self.assertEqual(docs["result"]["contents"][0]["mimeType"], "text/markdown")
+
+        templates = server.handle_jsonrpc(
+            {"jsonrpc": "2.0", "id": 4, "method": "resources/templates/list"}
+        )
+        template_names = {
+            template["name"]
+            for template in templates["result"]["resourceTemplates"]
+        }
+        self.assertIn("docs", template_names)
+
+    def test_mcp_server_handles_prompts_logging_and_completion(self) -> None:
+        server = McpServer(runtime=AgentRuntime(client=FakeClient()))
+        server.register_default_tools()
+
+        prompts = server.handle_jsonrpc({"jsonrpc": "2.0", "id": 1, "method": "prompts/list"})
+        prompt_names = {prompt["name"] for prompt in prompts["result"]["prompts"]}
+        self.assertIn("build-workflow", prompt_names)
+        self.assertIn("recover-from-tool-error", prompt_names)
+
+        prompt = server.handle_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "prompts/get",
+                "params": {
+                    "name": "build-workflow",
+                    "arguments": {"goal": "Open Telegram Saved Messages"},
+                },
+            }
+        )
+        text = prompt["result"]["messages"][0]["content"]["text"]
+        self.assertIn("Open Telegram Saved Messages", text)
+        self.assertIn("editable workflow", text)
+
+        missing = server.handle_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "prompts/get",
+                "params": {"name": "build-workflow", "arguments": {}},
+            }
+        )
+        self.assertEqual(missing["error"]["code"], -32602)
+
+        logged = server.handle_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "logging/setLevel",
+                "params": {"level": "warning"},
+            }
+        )
+        self.assertEqual(logged["result"], {})
+        self.assertEqual(server.log_level, "warning")
+
+        completion = server.handle_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "completion/complete",
+                "params": {
+                    "argument": {"name": "target", "value": "search"},
+                    "context": {"app": "telegram"},
+                },
+            }
+        )
+        self.assertIn("search-input", completion["result"]["completion"]["values"])
+
+    def test_mcp_server_tool_aliases_call_runtime_surface(self) -> None:
+        fake_client = FakeClient()
+        server = McpServer(runtime=AgentRuntime(client=fake_client))
+        server.register_default_tools()
+
+        profiles = server.call_tool("desktop_profiles", {"app": "telegram"})
+        self.assertEqual(profiles["profiles"][0]["id"], "telegram")
+        self.assertIn("message-input", profiles["profiles"][0]["targets"])
+
+        elements = server.call_tool(
+            "find_elements",
+            {"selector": "role=push button", "limit": 1, "vision_fallback": True},
+        )
+        self.assertEqual(len(elements), 1)
+        self.assertEqual(elements[0]["label"], "Submit")
+        self.assertTrue(fake_client.last_vision_fallback)
+
+        ocr = server.call_tool("ocr", {"image_path": "tests/fixtures/ocr/ocr_sample.png"})
+        self.assertEqual(ocr["text"], "Submit")
+        dmabuf = server.call_tool("capture_dmabuf", {"import_target": "egl_texture"})
+        self.assertEqual(dmabuf["import_target"], "egl_texture")
+
+    def test_mcp_server_exposes_planning_workflow_audit_and_graph_tools(self) -> None:
+        runtime = AgentRuntime(client=FakeClient())
+        server = McpServer(runtime=runtime)
+        server.register_default_tools()
+
+        plan = server.call_tool("plan", {"goal": "Open settings"})
+        self.assertTrue(plan["steps"])
+        workflow = server.call_tool(
+            "plan_workflow",
+            {"goal": "Observe desktop", "format": "yaml"},
+        )
+        self.assertEqual(workflow["format"], "yaml")
+        self.assertIn("workflow", workflow)
+
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "workflow.yaml"
+            path.write_text(workflow["text"], encoding="utf-8")
+            loaded = server.call_tool("load_workflow_file", {"path": str(path)})
+        self.assertIn("steps", loaded["workflow"])
+
+        replanned = server.call_tool(
+            "replan_workflow",
+            {
+                "goal": "Observe desktop",
+                "failed_workflow": loaded["workflow"],
+                "failed_result": {
+                    "recovery": {
+                        "failed_step": 0,
+                        "reason": "selector miss",
+                        "attempts": 2,
+                    }
+                },
+            },
+        )
+        self.assertIn("workflow", replanned)
+
+        runtime.ingest_desktop_snapshot()
+        edges = server.call_tool("query_desktop_edges", {"latest_only": True})
+        self.assertIsInstance(edges, list)
+        self.assertIn("events", server.call_tool("capability_audit", {}))
+        self.assertIn("events", server.call_tool("confirmation_audit", {}))
+        self.assertIn("events", server.call_tool("preflight_audit", {}))
+
+    def test_mcp_server_returns_image_content_for_capture_screen(self) -> None:
+        server = McpServer(runtime=AgentRuntime(client=FakeClient()))
+        server.register_default_tools()
+
+        response = server.handle_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 12,
+                "method": "tools/call",
+                "params": {"name": "capture_screen", "arguments": {}},
+            }
+        )
+
+        self.assertFalse(response["result"]["isError"])
+        content = response["result"]["content"]
+        self.assertEqual(content[0]["type"], "image")
+        self.assertEqual(content[0]["mimeType"], "image/png")
+        text_payload = json.loads(content[1]["text"])
+        self.assertEqual(text_payload["image_base64"], "cG5n")
 
     def test_mcp_server_handles_jsonrpc_tool_call_with_structured_content(self) -> None:
         fake_client = FakeClient()
@@ -3115,6 +3328,12 @@ class RuntimeTests(unittest.TestCase):
             response["result"]["structuredContent"]["error"],
             "CapabilityDeniedError",
         )
+        self.assertEqual(response["result"]["structuredContent"]["capability"], Capability.CLICK)
+        self.assertEqual(response["result"]["structuredContent"]["operation"], "click")
+        self.assertEqual(
+            response["result"]["structuredContent"]["next_action"],
+            "adjust_capability_profile",
+        )
         self.assertEqual(runtime.capability_audit()[-1].capability, Capability.CLICK)
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
@@ -3175,9 +3394,47 @@ class RuntimeTests(unittest.TestCase):
             "ConfirmationRequiredError",
         )
         self.assertEqual(
+            response["result"]["structuredContent"]["action"],
+            DangerousAction.TYPE_TEXT,
+        )
+        self.assertEqual(
+            response["result"]["structuredContent"]["next_action"],
+            "request_confirmation",
+        )
+        self.assertEqual(
             runtime.confirmation_audit()[-1].action,
             DangerousAction.TYPE_TEXT,
         )
+
+    def test_mcp_server_reports_confirmation_denials_as_structured_tool_errors(self) -> None:
+        runtime = AgentRuntime(
+            client=FakeClient(),
+            confirmation_policy=ConfirmationPolicy.require_for(
+                [DangerousAction.WORKFLOW_EXECUTE],
+                confirmer=lambda _request: False,
+            ),
+        )
+        server = McpServer(runtime=runtime)
+        server.register_default_tools()
+
+        response = server.handle_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 13,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute_workflow",
+                    "arguments": {"steps": [{"action": "observe"}]},
+                },
+            }
+        )
+
+        content = response["result"]["structuredContent"]
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual(content["error"], "ConfirmationDeniedError")
+        self.assertEqual(content["action"], DangerousAction.WORKFLOW_EXECUTE)
+        self.assertEqual(content["next_action"], "stop")
+        self.assertFalse(content["retryable"])
 
     def test_mcp_server_persists_runtime_audit_for_tool_calls(self) -> None:
         with TemporaryDirectory() as tmpdir:
