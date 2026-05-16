@@ -241,6 +241,7 @@ class DesktopActionResult:
     backend_name: str
     verified: bool = False
     verification_detail: str | None = None
+    focus_diagnostics: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2008,6 +2009,7 @@ def _desktop_action_from_proto(response: Any) -> DesktopActionResult:
         backend_name=response.backend_name,
         verified=getattr(response, "verified", False),
         verification_detail=_optional_scalar(response, "verification_detail"),
+        focus_diagnostics=[],
     )
 
 

@@ -145,6 +145,7 @@ pub struct DesktopActionResult {
     pub backend_name: String,
     pub verified: bool,
     pub verification_detail: Option<String>,
+    pub focus_diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -689,143 +690,250 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
         options.window_title.as_deref(),
         options.window_id.as_deref(),
     );
+    let mut diagnostics = Vec::new();
 
-    if let Ok(metadata) = peekaboox_windows::list_windows()
-        && let Some(window) = preferred_profile_window(profile, &metadata.windows, window_scope)
-    {
-        if window.focused {
-            sleep_after_focus(options);
-            let result = DesktopActionResult {
-                app: profile.id.to_owned(),
-                action: "focus".to_owned(),
-                detail: "already focused".to_owned(),
-                backend_name: metadata.backend_name,
-                verified: true,
-                verification_detail: Some(format!("window {} is focused", window.id)),
-            };
-            return maybe_verify_action(result, options.verify, || {
-                verify_focused_window(profile, window_scope)
-            });
-        }
+    match peekaboox_windows::list_windows() {
+        Ok(metadata) => {
+            diagnostics.push(format!(
+                "windows: listed {} windows via {}",
+                metadata.windows.len(),
+                metadata.backend_name
+            ));
 
-        let mut last_result = None;
+            if let Some(window) = preferred_profile_window(profile, &metadata.windows, window_scope)
+            {
+                diagnostics.push(format!(
+                    "windows: selected {} title {:?} focused={}",
+                    window.id, window.title, window.focused
+                ));
 
-        if peekaboox_windows::focus_window(&window.id).is_ok() {
-            let result = DesktopActionResult {
-                app: profile.id.to_owned(),
-                action: "focus".to_owned(),
-                detail: format!("focused existing window {}", window.id),
-                backend_name: "window-manager".to_owned(),
-                verified: false,
-                verification_detail: None,
-            };
-            if let Some(result) = confirmed_focus_result(&result, options, profile, window_scope) {
-                return Ok(result);
-            }
-            last_result = Some(unconfirmed_focus_result(result, profile, window_scope));
-        }
+                if window.focused {
+                    sleep_after_focus(options);
+                    diagnostics.push(format!("already-focused: window {}", window.id));
+                    let result = DesktopActionResult {
+                        app: profile.id.to_owned(),
+                        action: "focus".to_owned(),
+                        detail: "already focused".to_owned(),
+                        backend_name: metadata.backend_name,
+                        verified: true,
+                        verification_detail: Some(format!("window {} is focused", window.id)),
+                        focus_diagnostics: diagnostics,
+                    };
+                    return maybe_verify_action(result, options.verify, || {
+                        verify_focused_window(profile, window_scope)
+                    });
+                }
 
-        if let Ok(detail) = focus_window_via_accessibility(window) {
-            let result = DesktopActionResult {
-                app: profile.id.to_owned(),
-                action: "focus".to_owned(),
-                detail,
-                backend_name: "at-spi".to_owned(),
-                verified: false,
-                verification_detail: None,
-            };
-            if let Some(result) = confirmed_focus_result(&result, options, profile, window_scope) {
-                return Ok(result);
-            }
-            last_result = Some(unconfirmed_focus_result(result, profile, window_scope));
-        }
+                let mut last_result = None;
 
-        if let Ok(detail) = focus_from_gnome_dock(profile) {
-            let result = DesktopActionResult {
-                app: profile.id.to_owned(),
-                action: "focus".to_owned(),
-                detail,
-                backend_name: "gnome-dock".to_owned(),
-                verified: false,
-                verification_detail: None,
-            };
-            if let Some(result) = confirmed_focus_result(&result, options, profile, window_scope) {
-                return Ok(result);
-            }
-            last_result = Some(unconfirmed_focus_result(result, profile, window_scope));
-        }
+                match peekaboox_windows::focus_window(&window.id) {
+                    Ok(()) => {
+                        diagnostics
+                            .push(format!("window-manager: requested focus for {}", window.id));
+                        let result = DesktopActionResult {
+                            app: profile.id.to_owned(),
+                            action: "focus".to_owned(),
+                            detail: format!("focused existing window {}", window.id),
+                            backend_name: "window-manager".to_owned(),
+                            verified: false,
+                            verification_detail: None,
+                            focus_diagnostics: Vec::new(),
+                        };
+                        if let Some(result) = confirmed_focus_result(
+                            &result,
+                            options,
+                            profile,
+                            window_scope,
+                            &mut diagnostics,
+                        ) {
+                            return Ok(result);
+                        }
+                        last_result = Some(unconfirmed_focus_result(result, &diagnostics));
+                    }
+                    Err(error) => diagnostics.push(format!("window-manager: {error}")),
+                }
 
-        if options.use_gnome_overview && focus_from_gnome_overview(profile, options).is_ok() {
-            let result = DesktopActionResult {
-                app: profile.id.to_owned(),
-                action: "focus".to_owned(),
-                detail: "focused existing app via GNOME overview".to_owned(),
-                backend_name: "gnome-overview".to_owned(),
-                verified: false,
-                verification_detail: None,
-            };
-            if let Some(result) = confirmed_focus_result(&result, options, profile, window_scope) {
-                return Ok(result);
-            }
-            last_result = Some(unconfirmed_focus_result(result, profile, window_scope));
-        }
+                match focus_window_via_accessibility(window) {
+                    Ok(detail) => {
+                        diagnostics.push(format!("at-spi: {detail}"));
+                        let result = DesktopActionResult {
+                            app: profile.id.to_owned(),
+                            action: "focus".to_owned(),
+                            detail,
+                            backend_name: "at-spi".to_owned(),
+                            verified: false,
+                            verification_detail: None,
+                            focus_diagnostics: Vec::new(),
+                        };
+                        if let Some(result) = confirmed_focus_result(
+                            &result,
+                            options,
+                            profile,
+                            window_scope,
+                            &mut diagnostics,
+                        ) {
+                            return Ok(result);
+                        }
+                        last_result = Some(unconfirmed_focus_result(result, &diagnostics));
+                    }
+                    Err(error) => diagnostics.push(format!("at-spi: {error}")),
+                }
 
-        if window.bounds.width > 0 && window.bounds.height > 0 {
-            let center = Point::new(
-                window.bounds.x + i32::try_from(window.bounds.width / 2).unwrap_or(0),
-                window.bounds.y + i32::try_from(window.bounds.height / 2).unwrap_or(0),
-            );
-            let metadata = peekaboox_input::click(center, MouseButton::Left)?;
-            let result = DesktopActionResult {
-                app: profile.id.to_owned(),
-                action: "focus".to_owned(),
-                detail: format!("clicked existing window at {},{}", center.x, center.y),
-                backend_name: metadata.backend_name,
-                verified: false,
-                verification_detail: None,
-            };
-            if let Some(result) = confirmed_focus_result(&result, options, profile, window_scope) {
-                return Ok(result);
-            }
-            last_result = Some(unconfirmed_focus_result(result, profile, window_scope));
-        }
+                match focus_from_gnome_dock(profile) {
+                    Ok(detail) => {
+                        diagnostics.push(format!("gnome-dock: {detail}"));
+                        let result = DesktopActionResult {
+                            app: profile.id.to_owned(),
+                            action: "focus".to_owned(),
+                            detail,
+                            backend_name: "gnome-dock".to_owned(),
+                            verified: false,
+                            verification_detail: None,
+                            focus_diagnostics: Vec::new(),
+                        };
+                        if let Some(result) = confirmed_focus_result(
+                            &result,
+                            options,
+                            profile,
+                            window_scope,
+                            &mut diagnostics,
+                        ) {
+                            return Ok(result);
+                        }
+                        last_result = Some(unconfirmed_focus_result(result, &diagnostics));
+                    }
+                    Err(error) => diagnostics.push(format!("gnome-dock: {error}")),
+                }
 
-        if let Some(result) = last_result {
-            if options.verify {
-                return Err(PeekabooXError::new(
-                    result
-                        .verification_detail
-                        .unwrap_or_else(|| format!("could not verify focused {}", profile.id)),
+                if options.use_gnome_overview {
+                    match focus_from_gnome_overview(profile, options) {
+                        Ok(()) => {
+                            diagnostics.push("gnome-overview: requested activation".to_owned());
+                            let result = DesktopActionResult {
+                                app: profile.id.to_owned(),
+                                action: "focus".to_owned(),
+                                detail: "focused existing app via GNOME overview".to_owned(),
+                                backend_name: "gnome-overview".to_owned(),
+                                verified: false,
+                                verification_detail: None,
+                                focus_diagnostics: Vec::new(),
+                            };
+                            if let Some(result) = confirmed_focus_result(
+                                &result,
+                                options,
+                                profile,
+                                window_scope,
+                                &mut diagnostics,
+                            ) {
+                                return Ok(result);
+                            }
+                            last_result = Some(unconfirmed_focus_result(result, &diagnostics));
+                        }
+                        Err(error) => diagnostics.push(format!("gnome-overview: {error}")),
+                    }
+                } else {
+                    diagnostics.push("gnome-overview: skipped (--no-overview)".to_owned());
+                }
+
+                if window.bounds.width > 0 && window.bounds.height > 0 {
+                    let center = Point::new(
+                        window.bounds.x + i32::try_from(window.bounds.width / 2).unwrap_or(0),
+                        window.bounds.y + i32::try_from(window.bounds.height / 2).unwrap_or(0),
+                    );
+                    match peekaboox_input::click(center, MouseButton::Left) {
+                        Ok(metadata) => {
+                            diagnostics.push(format!(
+                                "coordinate-click: clicked {},{} via {}",
+                                center.x, center.y, metadata.backend_name
+                            ));
+                            let result = DesktopActionResult {
+                                app: profile.id.to_owned(),
+                                action: "focus".to_owned(),
+                                detail: format!(
+                                    "clicked existing window at {},{}",
+                                    center.x, center.y
+                                ),
+                                backend_name: metadata.backend_name,
+                                verified: false,
+                                verification_detail: None,
+                                focus_diagnostics: Vec::new(),
+                            };
+                            if let Some(result) = confirmed_focus_result(
+                                &result,
+                                options,
+                                profile,
+                                window_scope,
+                                &mut diagnostics,
+                            ) {
+                                return Ok(result);
+                            }
+                            last_result = Some(unconfirmed_focus_result(result, &diagnostics));
+                        }
+                        Err(error) => diagnostics.push(format!("coordinate-click: {error}")),
+                    }
+                } else {
+                    diagnostics.push("coordinate-click: skipped; window has no bounds".to_owned());
+                }
+
+                if let Some(result) = last_result {
+                    if options.verify {
+                        return Err(PeekabooXError::new(focus_error_with_diagnostics(
+                            result.verification_detail.unwrap_or_else(|| {
+                                format!("could not verify focused {}", profile.id)
+                            }),
+                            &result.focus_diagnostics,
+                        )));
+                    }
+                    return Ok(result);
+                }
+            } else {
+                diagnostics.push(format!(
+                    "windows: no matching visible {} window for {}",
+                    profile.id,
+                    window_scope.description()
                 ));
             }
-            return Ok(result);
         }
+        Err(error) => diagnostics.push(format!("windows: {error}")),
     }
 
     if window_scope.has_constraints() {
-        return Err(PeekabooXError::new(format!(
-            "could not find visible app {app:?} window matching {}",
-            window_scope.description()
+        return Err(PeekabooXError::new(focus_error_with_diagnostics(
+            format!(
+                "could not find visible app {app:?} window matching {}",
+                window_scope.description()
+            ),
+            &diagnostics,
         )));
     }
 
-    if options.use_gnome_overview && focus_from_gnome_overview(profile, options).is_ok() {
-        sleep_after_focus(options);
-        let result = DesktopActionResult {
-            app: profile.id.to_owned(),
-            action: "focus".to_owned(),
-            detail: "focused via GNOME overview".to_owned(),
-            backend_name: "gnome-overview".to_owned(),
-            verified: false,
-            verification_detail: None,
-        };
-        return maybe_verify_action(result, options.verify, || {
-            verify_focused_window(profile, window_scope)
-        });
+    if options.use_gnome_overview {
+        match focus_from_gnome_overview(profile, options) {
+            Ok(()) => {
+                diagnostics.push("gnome-overview: requested activation".to_owned());
+                sleep_after_focus(options);
+                let result = DesktopActionResult {
+                    app: profile.id.to_owned(),
+                    action: "focus".to_owned(),
+                    detail: "focused via GNOME overview".to_owned(),
+                    backend_name: "gnome-overview".to_owned(),
+                    verified: false,
+                    verification_detail: None,
+                    focus_diagnostics: diagnostics.clone(),
+                };
+                return maybe_verify_action(result, options.verify, || {
+                    verify_focused_window(profile, window_scope)
+                });
+            }
+            Err(error) => diagnostics.push(format!("gnome-overview: {error}")),
+        }
+    } else {
+        diagnostics.push("gnome-overview: skipped (--no-overview)".to_owned());
     }
 
     if options.launch_if_needed {
         if let Some(desktop_id) = launch_desktop_entry(profile) {
+            diagnostics.push(format!("gtk-launch: launched desktop entry {desktop_id}"));
             sleep_after_focus(options);
             let result = DesktopActionResult {
                 app: profile.id.to_owned(),
@@ -834,6 +942,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                 backend_name: "gtk-launch".to_owned(),
                 verified: false,
                 verification_detail: None,
+                focus_diagnostics: diagnostics.clone(),
             };
             return maybe_verify_action(result, options.verify, || {
                 verify_focused_window(profile, window_scope)
@@ -841,6 +950,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
         }
 
         if let Some(command) = launch_command(profile) {
+            diagnostics.push(format!("command: launched {}", command.program));
             sleep_after_focus(options);
             let result = DesktopActionResult {
                 app: profile.id.to_owned(),
@@ -849,16 +959,19 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                 backend_name: "command".to_owned(),
                 verified: false,
                 verification_detail: None,
+                focus_diagnostics: diagnostics.clone(),
             };
             return maybe_verify_action(result, options.verify, || {
                 verify_focused_window(profile, window_scope)
             });
         }
+    } else {
+        diagnostics.push("launch: skipped (--no-launch)".to_owned());
     }
 
-    Err(PeekabooXError::new(format!(
-        "could not focus or launch app {:?}",
-        app
+    Err(PeekabooXError::new(focus_error_with_diagnostics(
+        format!("could not focus or launch app {:?}", app),
+        &diagnostics,
     )))
 }
 
@@ -912,6 +1025,7 @@ pub fn click_target(
             backend_name: "dry-run".to_owned(),
             verified: false,
             verification_detail: None,
+            focus_diagnostics: Vec::new(),
         });
     }
 
@@ -932,6 +1046,7 @@ pub fn click_target(
         backend_name: metadata.backend_name,
         verified: false,
         verification_detail: None,
+        focus_diagnostics: focus_diagnostics_from(focus.as_ref()),
     };
     maybe_verify_action(result, options.verify, || {
         locate_target(app, target, &options.locate).map(|verified| {
@@ -977,6 +1092,7 @@ pub fn drag_target(
             backend_name: "dry-run".to_owned(),
             verified: false,
             verification_detail: None,
+            focus_diagnostics: Vec::new(),
         });
     }
 
@@ -999,6 +1115,7 @@ pub fn drag_target(
         backend_name: metadata.backend_name,
         verified: false,
         verification_detail: None,
+        focus_diagnostics: focus_diagnostics_from(focus.as_ref()),
     };
     maybe_verify_action(result, options.verify, || {
         locate_target(app, target, &options.locate).map(|verified| {
@@ -1036,6 +1153,7 @@ pub fn type_into_target(
             backend_name: "dry-run".to_owned(),
             verified: false,
             verification_detail: None,
+            focus_diagnostics: Vec::new(),
         });
     }
 
@@ -1053,6 +1171,7 @@ pub fn type_into_target(
         backend_name: metadata.backend_name,
         verified: false,
         verification_detail: None,
+        focus_diagnostics: focus_diagnostics_from(focus.as_ref()),
     };
     maybe_verify_action(result, options.verify, || {
         if text.trim().is_empty() {
@@ -1167,6 +1286,7 @@ pub fn assert_target(
         backend_name: "desktop-guard".to_owned(),
         verified: true,
         verification_detail: Some("assertion passed".to_owned()),
+        focus_diagnostics: Vec::new(),
     })
 }
 
@@ -1182,7 +1302,24 @@ fn maybe_verify_action(
     verifier: impl FnOnce() -> Result<String>,
 ) -> Result<DesktopActionResult> {
     if verify {
-        result.verification_detail = Some(verifier()?);
+        match verifier() {
+            Ok(detail) => {
+                if result.action == "focus" {
+                    result.focus_diagnostics.push(format!("verify: {detail}"));
+                }
+                result.verification_detail = Some(detail);
+            }
+            Err(error) => {
+                if result.action == "focus" {
+                    result.focus_diagnostics.push(format!("verify: {error}"));
+                    return Err(PeekabooXError::new(focus_error_with_diagnostics(
+                        error.to_string(),
+                        &result.focus_diagnostics,
+                    )));
+                }
+                return Err(error);
+            }
+        }
         result.verified = true;
     }
     Ok(result)
@@ -1223,31 +1360,58 @@ fn action_detail_with_focus(focus: Option<&DesktopActionResult>, action_detail: 
     }
 }
 
+fn focus_diagnostics_from(focus: Option<&DesktopActionResult>) -> Vec<String> {
+    focus
+        .map(|result| result.focus_diagnostics.clone())
+        .unwrap_or_default()
+}
+
 fn confirmed_focus_result(
     result: &DesktopActionResult,
     options: &FocusOptions,
     profile: &AppProfile,
     scope: WindowScope<'_>,
+    diagnostics: &mut Vec<String>,
 ) -> Option<DesktopActionResult> {
     sleep_after_focus(options);
-    if let Ok(detail) = verify_focused_window(profile, scope) {
-        let mut result = result.clone();
-        result.verified = true;
-        result.verification_detail = Some(detail);
-        return Some(result);
+    match verify_focused_window(profile, scope) {
+        Ok(detail) => {
+            diagnostics.push(format!("verify: {detail}"));
+            let mut result = result.clone();
+            result.verified = true;
+            result.verification_detail = Some(detail);
+            result.focus_diagnostics = diagnostics.clone();
+            Some(result)
+        }
+        Err(error) => {
+            diagnostics.push(format!("verify: {error}"));
+            None
+        }
     }
-    None
 }
 
 fn unconfirmed_focus_result(
     mut result: DesktopActionResult,
-    profile: &AppProfile,
-    scope: WindowScope<'_>,
+    diagnostics: &[String],
 ) -> DesktopActionResult {
-    if let Err(error) = verify_focused_window(profile, scope) {
-        result.verification_detail = Some(format!("focus not confirmed: {error}"));
-    }
+    result.verification_detail = latest_focus_verification_failure(diagnostics);
+    result.focus_diagnostics = diagnostics.to_vec();
     result
+}
+
+fn latest_focus_verification_failure(diagnostics: &[String]) -> Option<String> {
+    diagnostics.iter().rev().find_map(|entry| {
+        entry
+            .strip_prefix("verify: ")
+            .map(|detail| format!("focus not confirmed: {detail}"))
+    })
+}
+
+fn focus_error_with_diagnostics(message: String, diagnostics: &[String]) -> String {
+    if diagnostics.is_empty() {
+        return message;
+    }
+    format!("{message}; focus diagnostics: {}", diagnostics.join(" | "))
 }
 
 fn verify_focused_window(profile: &AppProfile, scope: WindowScope<'_>) -> Result<String> {
@@ -2851,6 +3015,7 @@ mod tests {
                 backend_name: "at-spi".to_owned(),
                 verified: true,
                 verification_detail: Some("window focused".to_owned()),
+                focus_diagnostics: vec!["at-spi: grabbed focus".to_owned()],
             }),
             "typed into document".to_owned(),
         );
@@ -2863,6 +3028,31 @@ mod tests {
             action_detail_with_focus(None, "clicked target".to_owned()),
             "clicked target"
         );
+    }
+
+    #[test]
+    fn focus_diagnostics_are_carried_from_pre_action_focus() {
+        let focus = DesktopActionResult {
+            app: "text-editor".to_owned(),
+            action: "focus".to_owned(),
+            detail: "already focused".to_owned(),
+            backend_name: "window-manager".to_owned(),
+            verified: true,
+            verification_detail: Some("window focused".to_owned()),
+            focus_diagnostics: vec![
+                "windows: selected window-1".to_owned(),
+                "verify: window window-1 is focused".to_owned(),
+            ],
+        };
+
+        assert_eq!(
+            focus_diagnostics_from(Some(&focus)),
+            vec![
+                "windows: selected window-1".to_owned(),
+                "verify: window window-1 is focused".to_owned(),
+            ]
+        );
+        assert!(focus_diagnostics_from(None).is_empty());
     }
 
     #[test]

@@ -220,6 +220,11 @@ target app/window through the same safe focus path before resolving live
 coordinates. `--dry-run` and `--image` keep this focus step disabled so previews
 and offline screenshot analysis remain side-effect free. Mutating desktop
 helper actions accept `--verify` to run a postcondition check after the action.
+Focus actions and live actions that pre-focus an app include compact
+`focus_diagnostics` in JSON output and print the same diagnostics on stderr in
+text mode. These entries show the window lookup, attempted focus strategies,
+skipped fallbacks, and verification outcome so moved or hidden windows can be
+debugged without guessing which path ran.
 `desktop profiles --json` exposes the built-in app/target registry for scripts
 and plugin authors, including `schema_version`, `count`, full launch commands
 with arguments, per-target capability metadata, and optional availability

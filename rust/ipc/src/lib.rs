@@ -815,6 +815,8 @@ pub struct DesktopActionResultDto {
     pub verified: bool,
     #[serde(default)]
     pub verification_detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub focus_diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

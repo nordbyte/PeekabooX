@@ -4924,6 +4924,7 @@ fn print_desktop_action_result(result: peekaboox_desktop::DesktopActionResult) {
             detail
         );
     }
+    print_focus_diagnostics(&result.focus_diagnostics);
 }
 
 fn print_desktop_action_dto(result: DesktopActionResultDto) {
@@ -4937,6 +4938,17 @@ fn print_desktop_action_dto(result: DesktopActionResultDto) {
             if result.verified { "passed: " } else { "" },
             detail
         );
+    }
+    print_focus_diagnostics(&result.focus_diagnostics);
+}
+
+fn print_focus_diagnostics(diagnostics: &[String]) {
+    if diagnostics.is_empty() {
+        return;
+    }
+    eprintln!("focus diagnostics:");
+    for diagnostic in diagnostics {
+        eprintln!("- {diagnostic}");
     }
 }
 
@@ -5150,6 +5162,7 @@ fn print_desktop_action_result_json(
         "backend_name": &result.backend_name,
         "verified": result.verified,
         "verification_detail": &result.verification_detail,
+        "focus_diagnostics": &result.focus_diagnostics,
     }))
 }
 
