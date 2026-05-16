@@ -717,7 +717,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                         backend_name: metadata.backend_name,
                         verified: true,
                         verification_detail: Some(format!("window {} is focused", window.id)),
-                        focus_diagnostics: diagnostics,
+                        focus_diagnostics: focus_diagnostics_snapshot(&diagnostics),
                     };
                     return maybe_verify_action(result, options.verify, || {
                         verify_focused_window(profile, window_scope)
@@ -919,7 +919,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                     backend_name: "gnome-overview".to_owned(),
                     verified: false,
                     verification_detail: None,
-                    focus_diagnostics: diagnostics.clone(),
+                    focus_diagnostics: focus_diagnostics_snapshot(&diagnostics),
                 };
                 return maybe_verify_action(result, options.verify, || {
                     verify_focused_window(profile, window_scope)
@@ -942,7 +942,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                 backend_name: "gtk-launch".to_owned(),
                 verified: false,
                 verification_detail: None,
-                focus_diagnostics: diagnostics.clone(),
+                focus_diagnostics: focus_diagnostics_snapshot(&diagnostics),
             };
             return maybe_verify_action(result, options.verify, || {
                 verify_focused_window(profile, window_scope)
@@ -959,7 +959,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                 backend_name: "command".to_owned(),
                 verified: false,
                 verification_detail: None,
-                focus_diagnostics: diagnostics.clone(),
+                focus_diagnostics: focus_diagnostics_snapshot(&diagnostics),
             };
             return maybe_verify_action(result, options.verify, || {
                 verify_focused_window(profile, window_scope)
@@ -1380,7 +1380,7 @@ fn confirmed_focus_result(
             let mut result = result.clone();
             result.verified = true;
             result.verification_detail = Some(detail);
-            result.focus_diagnostics = diagnostics.clone();
+            result.focus_diagnostics = focus_diagnostics_snapshot(diagnostics);
             Some(result)
         }
         Err(error) => {
@@ -1395,7 +1395,7 @@ fn unconfirmed_focus_result(
     diagnostics: &[String],
 ) -> DesktopActionResult {
     result.verification_detail = latest_focus_verification_failure(diagnostics);
-    result.focus_diagnostics = diagnostics.to_vec();
+    result.focus_diagnostics = focus_diagnostics_snapshot(diagnostics);
     result
 }
 
@@ -1411,7 +1411,21 @@ fn focus_error_with_diagnostics(message: String, diagnostics: &[String]) -> Stri
     if diagnostics.is_empty() {
         return message;
     }
-    format!("{message}; focus diagnostics: {}", diagnostics.join(" | "))
+    format!(
+        "{message}; focus diagnostics: {}",
+        focus_diagnostics_snapshot(diagnostics).join(" | ")
+    )
+}
+
+fn focus_diagnostics_snapshot(diagnostics: &[String]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .map(|entry| compact_diagnostic_text(entry))
+        .collect()
+}
+
+fn compact_diagnostic_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn verify_focused_window(profile: &AppProfile, scope: WindowScope<'_>) -> Result<String> {

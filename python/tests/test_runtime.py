@@ -4244,6 +4244,7 @@ class RuntimeTests(unittest.TestCase):
                     action="focus",
                     detail="focused",
                     backend_name="fake-desktop",
+                    focus_diagnostics=["windows: selected fake", "verify: focused"],
                 )
 
             def DesktopLocate(self, request, timeout):
@@ -4338,9 +4339,11 @@ class RuntimeTests(unittest.TestCase):
         stub = Stub()
         client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
 
+        focus = client.desktop_focus("telegram", window_id="window-1", verify=True)
+        self.assertEqual(focus.action, "focus")
         self.assertEqual(
-            client.desktop_focus("telegram", window_id="window-1", verify=True).action,
-            "focus",
+            focus.focus_diagnostics,
+            ["windows: selected fake", "verify: focused"],
         )
         locate = client.desktop_locate("telegram", "search-input", window_id="window-1")
         self.assertEqual(locate.rect.width, 30)

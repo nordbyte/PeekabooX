@@ -743,9 +743,10 @@ Daemon-routed `desktop_profiles` requests accept `app`, `target`, `command`,
 `desktop_id`, `supports`, `check`, `installed`, and `available`, returning the
 same registry metadata as the CLI and gRPC/Python/MCP surfaces. Daemon-routed
 desktop action helper requests accept the same `window_id`, `window_title`, and
-`verify` fields as the gRPC/Python/MCP surfaces. Desktop action responses may
-include `focus_diagnostics`, a short ordered list of focus lookup, fallback,
-and verification steps when an action focuses an app before interacting with it.
+`verify` fields as the gRPC/Python/MCP surfaces. Desktop action responses on
+the CLI, JSON IPC, gRPC, and Python client surfaces may include
+`focus_diagnostics`, a short ordered list of focus lookup, fallback, and
+verification steps when an action focuses an app before interacting with it.
 Daemon-routed `probe_dmabuf` requests accept `import_target` values `compute`,
 `egl`, or `egl_texture` when `peekabooxd` is built with the matching
 `pipewire-backend`/`egl-backend` features.

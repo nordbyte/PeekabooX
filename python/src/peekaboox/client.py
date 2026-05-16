@@ -2009,7 +2009,7 @@ def _desktop_action_from_proto(response: Any) -> DesktopActionResult:
         backend_name=response.backend_name,
         verified=getattr(response, "verified", False),
         verification_detail=_optional_scalar(response, "verification_detail"),
-        focus_diagnostics=[],
+        focus_diagnostics=list(getattr(response, "focus_diagnostics", [])),
     )
 
 

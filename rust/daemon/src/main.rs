@@ -6104,6 +6104,7 @@ fn proto_desktop_action_response(
         backend_name: result.backend_name,
         verified: result.verified,
         verification_detail: result.verification_detail,
+        focus_diagnostics: result.focus_diagnostics,
     }
 }
 

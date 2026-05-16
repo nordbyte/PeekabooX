@@ -614,6 +614,7 @@ message DesktopActionResponse {
   string backend_name = 4;
   bool verified = 5;
   optional string verification_detail = 6;
+  repeated string focus_diagnostics = 7;
 }
 
 message DesktopLocateResponse {
