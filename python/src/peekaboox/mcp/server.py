@@ -1501,10 +1501,37 @@ class McpServer:
                             "minItems": 2,
                         },
                         "region": RECT_SCHEMA,
+                        "ignore_regions": {
+                            "type": "array",
+                            "items": RECT_SCHEMA,
+                            "default": [],
+                        },
                         "per_channel_threshold": {"type": "integer", "minimum": 0},
                         "stable_max_changed_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+                        "stable_max_changed_pixels": {"type": "integer", "minimum": 0},
+                        "stable_max_mean_absolute_error": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 255,
+                        },
+                        "stable_max_channel_delta": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 255,
+                        },
                         "loading_min_changed_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+                        "loading_min_changed_pixels": {"type": "integer", "minimum": 0},
                         "required_stable_transitions": {"type": "integer", "minimum": 1},
+                        "size_policy": {
+                            "type": "string",
+                            "enum": ["error", "common-region", "resize-actual"],
+                            "default": "error",
+                        },
+                        "alpha": {
+                            "type": "string",
+                            "enum": ["ignore", "compare"],
+                            "default": "ignore",
+                        },
                     },
                     required=["image_paths"],
                 ),
@@ -2216,16 +2243,31 @@ class McpServer:
             self._require_runtime().detect_ui_state_from_image_files(
                 image_paths,
                 region=_optional_rect(arguments, "region"),
+                ignore_regions=_optional_rects(arguments, "ignore_regions"),
                 per_channel_threshold=_optional_int(arguments, "per_channel_threshold"),
                 stable_max_changed_ratio=_optional_float(
                     arguments, "stable_max_changed_ratio"
                 ),
+                stable_max_changed_pixels=_optional_int(
+                    arguments, "stable_max_changed_pixels"
+                ),
+                stable_max_mean_absolute_error=_optional_float(
+                    arguments, "stable_max_mean_absolute_error"
+                ),
+                stable_max_channel_delta=_optional_int(
+                    arguments, "stable_max_channel_delta"
+                ),
                 loading_min_changed_ratio=_optional_float(
                     arguments, "loading_min_changed_ratio"
+                ),
+                loading_min_changed_pixels=_optional_int(
+                    arguments, "loading_min_changed_pixels"
                 ),
                 required_stable_transitions=_optional_int(
                     arguments, "required_stable_transitions"
                 ),
+                size_policy=_optional_string(arguments, "size_policy"),
+                alpha=_optional_string(arguments, "alpha"),
             )
         )
 

@@ -1838,18 +1838,32 @@ fn dispatch_request(
         ApiRequest::DetectUiState {
             image_paths,
             region,
+            ignore_regions,
             per_channel_threshold,
             stable_max_changed_ratio,
+            stable_max_changed_pixels,
+            stable_max_mean_absolute_error,
+            stable_max_channel_delta,
             loading_min_changed_ratio,
+            loading_min_changed_pixels,
             required_stable_transitions,
+            size_policy,
+            alpha_mode,
         } => {
-            let options = ui_state_options(
-                region.map(Rect::from),
-                Some(u32::from(per_channel_threshold)),
-                Some(stable_max_changed_ratio),
-                Some(loading_min_changed_ratio),
-                Some(required_stable_transitions),
-            )
+            let options = ui_state_options(UiStateRequestOptions {
+                region: region.map(Rect::from),
+                ignore_regions: ignore_regions.into_iter().map(Rect::from).collect(),
+                per_channel_threshold: Some(u32::from(per_channel_threshold)),
+                stable_max_changed_ratio: Some(stable_max_changed_ratio),
+                stable_max_changed_pixels,
+                stable_max_mean_absolute_error,
+                stable_max_channel_delta: stable_max_channel_delta.map(u32::from),
+                loading_min_changed_ratio: Some(loading_min_changed_ratio),
+                loading_min_changed_pixels,
+                required_stable_transitions: Some(required_stable_transitions),
+                size_policy: Some(size_policy.as_str()),
+                alpha_mode: Some(alpha_mode.as_str()),
+            })
             .map_err(|status| status.message().to_owned())?;
             let paths = image_paths.iter().map(PathBuf::from).collect::<Vec<_>>();
             let result = peekaboox_vision::detect_ui_state_from_image_files(&paths, &options)
@@ -3990,13 +4004,24 @@ fn grpc_detect_ui_state(
         return Err(Status::invalid_argument("images must not be empty"));
     }
 
-    let options = ui_state_options(
-        request.region.map(rect_from_proto),
-        request.per_channel_threshold,
-        request.stable_max_changed_ratio,
-        request.loading_min_changed_ratio,
-        request.required_stable_transitions,
-    )?;
+    let options = ui_state_options(UiStateRequestOptions {
+        region: request.region.map(rect_from_proto),
+        ignore_regions: request
+            .ignore_regions
+            .into_iter()
+            .map(rect_from_proto)
+            .collect(),
+        per_channel_threshold: request.per_channel_threshold,
+        stable_max_changed_ratio: request.stable_max_changed_ratio,
+        stable_max_changed_pixels: request.stable_max_changed_pixels,
+        stable_max_mean_absolute_error: request.stable_max_mean_absolute_error,
+        stable_max_channel_delta: request.stable_max_channel_delta,
+        loading_min_changed_ratio: request.loading_min_changed_ratio,
+        loading_min_changed_pixels: request.loading_min_changed_pixels,
+        required_stable_transitions: request.required_stable_transitions,
+        size_policy: request.size_policy.as_deref(),
+        alpha_mode: request.alpha.as_deref(),
+    })?;
     let result = peekaboox_vision::detect_ui_state_from_image_bytes(&request.images, &options)
         .map_err(|error| Status::invalid_argument(error.to_string()))?;
 
@@ -4289,25 +4314,8 @@ fn visual_compare_options(
             "max_mean_absolute_error must be between 0.0 and 255.0",
         ));
     }
-    let size_policy = match input.size_policy.unwrap_or("error") {
-        "error" => VisualSizePolicy::Error,
-        "common-region" => VisualSizePolicy::CommonRegion,
-        "resize-actual" => VisualSizePolicy::ResizeActual,
-        value => {
-            return Err(Status::invalid_argument(format!(
-                "size_policy must be error, common-region, or resize-actual, got {value:?}"
-            )));
-        }
-    };
-    let alpha_mode = match input.alpha_mode.unwrap_or("ignore") {
-        "ignore" => VisualAlphaMode::Ignore,
-        "compare" => VisualAlphaMode::Compare,
-        value => {
-            return Err(Status::invalid_argument(format!(
-                "alpha must be ignore or compare, got {value:?}"
-            )));
-        }
-    };
+    let size_policy = visual_size_policy_from_name(input.size_policy.unwrap_or("error"))?;
+    let alpha_mode = visual_alpha_mode_from_name(input.alpha_mode.unwrap_or("ignore"))?;
 
     Ok(VisualCompareOptions {
         region: input.region,
@@ -4322,34 +4330,78 @@ fn visual_compare_options(
     })
 }
 
-fn ui_state_options(
+struct UiStateRequestOptions<'a> {
     region: Option<Rect>,
+    ignore_regions: Vec<Rect>,
     per_channel_threshold: Option<u32>,
     stable_max_changed_ratio: Option<f32>,
+    stable_max_changed_pixels: Option<u64>,
+    stable_max_mean_absolute_error: Option<f32>,
+    stable_max_channel_delta: Option<u32>,
     loading_min_changed_ratio: Option<f32>,
+    loading_min_changed_pixels: Option<u64>,
     required_stable_transitions: Option<u32>,
-) -> Result<UiStateOptions, Status> {
+    size_policy: Option<&'a str>,
+    alpha_mode: Option<&'a str>,
+}
+
+fn ui_state_options(input: UiStateRequestOptions<'_>) -> Result<UiStateOptions, Status> {
     let mut options = UiStateOptions {
-        region,
+        region: input.region,
+        ignore_regions: input.ignore_regions,
         ..UiStateOptions::default()
     };
-    if let Some(per_channel_threshold) = per_channel_threshold {
+    if let Some(per_channel_threshold) = input.per_channel_threshold {
         options.per_channel_threshold = u8::try_from(per_channel_threshold).map_err(|_| {
             Status::invalid_argument("per_channel_threshold must be between 0 and 255")
         })?;
     }
-    if let Some(stable_max_changed_ratio) = stable_max_changed_ratio {
+    if let Some(stable_max_changed_ratio) = input.stable_max_changed_ratio {
         options.stable_max_changed_ratio = stable_max_changed_ratio;
     }
-    if let Some(loading_min_changed_ratio) = loading_min_changed_ratio {
+    options.stable_max_changed_pixels = input.stable_max_changed_pixels;
+    options.stable_max_mean_absolute_error = input.stable_max_mean_absolute_error;
+    options.stable_max_channel_delta = input
+        .stable_max_channel_delta
+        .map(|value| {
+            u8::try_from(value).map_err(|_| {
+                Status::invalid_argument("stable_max_channel_delta must be between 0 and 255")
+            })
+        })
+        .transpose()?;
+    if let Some(loading_min_changed_ratio) = input.loading_min_changed_ratio {
         options.loading_min_changed_ratio = loading_min_changed_ratio;
     }
-    if let Some(required_stable_transitions) = required_stable_transitions {
+    options.loading_min_changed_pixels = input.loading_min_changed_pixels;
+    if let Some(required_stable_transitions) = input.required_stable_transitions {
         options.required_stable_transitions = usize::try_from(required_stable_transitions)
             .map_err(|_| Status::invalid_argument("required_stable_transitions is too large"))?;
     }
+    options.size_policy = visual_size_policy_from_name(input.size_policy.unwrap_or("error"))?;
+    options.alpha_mode = visual_alpha_mode_from_name(input.alpha_mode.unwrap_or("ignore"))?;
 
     Ok(options)
+}
+
+fn visual_size_policy_from_name(value: &str) -> Result<VisualSizePolicy, Status> {
+    match value {
+        "error" => Ok(VisualSizePolicy::Error),
+        "common-region" => Ok(VisualSizePolicy::CommonRegion),
+        "resize-actual" => Ok(VisualSizePolicy::ResizeActual),
+        value => Err(Status::invalid_argument(format!(
+            "size_policy must be error, common-region, or resize-actual, got {value:?}"
+        ))),
+    }
+}
+
+fn visual_alpha_mode_from_name(value: &str) -> Result<VisualAlphaMode, Status> {
+    match value {
+        "ignore" => Ok(VisualAlphaMode::Ignore),
+        "compare" => Ok(VisualAlphaMode::Compare),
+        value => Err(Status::invalid_argument(format!(
+            "alpha must be ignore or compare, got {value:?}"
+        ))),
+    }
 }
 
 fn ui_element_detection_options(
@@ -5845,19 +5897,33 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
         ApiRequest::DetectUiState {
             image_paths,
             region,
+            ignore_regions,
             per_channel_threshold,
             stable_max_changed_ratio,
+            stable_max_changed_pixels,
+            stable_max_mean_absolute_error,
+            stable_max_channel_delta,
             loading_min_changed_ratio,
+            loading_min_changed_pixels,
             required_stable_transitions,
+            size_policy,
+            alpha_mode,
         } => {
             json!({
                 "image_paths": image_paths,
                 "image_count": image_paths.len(),
                 "has_region": region.is_some(),
+                "ignore_region_count": ignore_regions.len(),
                 "per_channel_threshold": per_channel_threshold,
                 "stable_max_changed_ratio": stable_max_changed_ratio,
+                "stable_max_changed_pixels": stable_max_changed_pixels,
+                "stable_max_mean_absolute_error": stable_max_mean_absolute_error,
+                "stable_max_channel_delta": stable_max_channel_delta,
                 "loading_min_changed_ratio": loading_min_changed_ratio,
-                "required_stable_transitions": required_stable_transitions
+                "loading_min_changed_pixels": loading_min_changed_pixels,
+                "required_stable_transitions": required_stable_transitions,
+                "size_policy": size_policy,
+                "alpha_mode": alpha_mode
             })
         }
         ApiRequest::DetectUiElements {

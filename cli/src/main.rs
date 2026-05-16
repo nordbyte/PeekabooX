@@ -489,10 +489,17 @@ enum CompareCommand {
 struct UiStateArgs {
     image_paths: Vec<PathBuf>,
     region: Option<Rect>,
+    ignore_regions: Vec<Rect>,
     per_channel_threshold: u8,
     stable_max_changed_ratio: f32,
+    stable_max_changed_pixels: Option<u64>,
+    stable_max_mean_absolute_error: Option<f32>,
+    stable_max_channel_delta: Option<u8>,
     loading_min_changed_ratio: f32,
+    loading_min_changed_pixels: Option<u64>,
     required_stable_transitions: u32,
+    size_policy: VisualSizePolicy,
+    alpha_mode: VisualAlphaMode,
     json: bool,
 }
 
@@ -3707,10 +3714,22 @@ fn ui_state(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                     .map(|path| path.display().to_string())
                     .collect(),
                 region: args.region.map(RectDto::from),
+                ignore_regions: args
+                    .ignore_regions
+                    .iter()
+                    .copied()
+                    .map(RectDto::from)
+                    .collect(),
                 per_channel_threshold: args.per_channel_threshold,
                 stable_max_changed_ratio: args.stable_max_changed_ratio,
+                stable_max_changed_pixels: args.stable_max_changed_pixels,
+                stable_max_mean_absolute_error: args.stable_max_mean_absolute_error,
+                stable_max_channel_delta: args.stable_max_channel_delta,
                 loading_min_changed_ratio: args.loading_min_changed_ratio,
+                loading_min_changed_pixels: args.loading_min_changed_pixels,
                 required_stable_transitions: args.required_stable_transitions,
+                size_policy: visual_size_policy_name(args.size_policy).to_owned(),
+                alpha_mode: visual_alpha_mode_name(args.alpha_mode).to_owned(),
             },
         )?;
         let ApiResult::UiState(result) = result else {
@@ -3740,11 +3759,18 @@ fn ui_state(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
 fn parse_ui_state_args(args: Vec<String>) -> Result<UiStateCommand, CliError> {
     let mut image_paths = Vec::new();
     let mut region = None;
+    let mut ignore_regions = Vec::new();
     let mut per_channel_threshold = UiStateOptions::default().per_channel_threshold;
     let mut stable_max_changed_ratio = UiStateOptions::default().stable_max_changed_ratio;
+    let mut stable_max_changed_pixels = None;
+    let mut stable_max_mean_absolute_error = None;
+    let mut stable_max_channel_delta = None;
     let mut loading_min_changed_ratio = UiStateOptions::default().loading_min_changed_ratio;
+    let mut loading_min_changed_pixels = None;
     let mut required_stable_transitions =
         u32::try_from(UiStateOptions::default().required_stable_transitions).unwrap_or(1);
+    let mut size_policy = VisualSizePolicy::Error;
+    let mut alpha_mode = VisualAlphaMode::Ignore;
     let mut json = false;
     let mut index = 0;
 
@@ -3764,6 +3790,15 @@ fn parse_ui_state_args(args: Vec<String>) -> Result<UiStateCommand, CliError> {
                 };
                 region = Some(parse_rect("--region", value)?);
             }
+            "--ignore-region" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --ignore-region".to_owned(),
+                    ));
+                };
+                ignore_regions.push(parse_rect("--ignore-region", value)?);
+            }
             "--threshold" | "-t" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -3782,6 +3817,33 @@ fn parse_ui_state_args(args: Vec<String>) -> Result<UiStateCommand, CliError> {
                 };
                 stable_max_changed_ratio = parse_unit_f32("--stable-max-changed-ratio", value)?;
             }
+            "--stable-max-changed-pixels" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --stable-max-changed-pixels".to_owned(),
+                    ));
+                };
+                stable_max_changed_pixels = Some(parse_u64("--stable-max-changed-pixels", value)?);
+            }
+            "--stable-max-mae" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --stable-max-mae".to_owned(),
+                    ));
+                };
+                stable_max_mean_absolute_error = Some(parse_visual_mae("--stable-max-mae", value)?);
+            }
+            "--stable-max-channel-delta" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --stable-max-channel-delta".to_owned(),
+                    ));
+                };
+                stable_max_channel_delta = Some(parse_u8("--stable-max-channel-delta", value)?);
+            }
             "--loading-min-changed-ratio" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -3790,6 +3852,16 @@ fn parse_ui_state_args(args: Vec<String>) -> Result<UiStateCommand, CliError> {
                     ));
                 };
                 loading_min_changed_ratio = parse_unit_f32("--loading-min-changed-ratio", value)?;
+            }
+            "--loading-min-changed-pixels" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --loading-min-changed-pixels".to_owned(),
+                    ));
+                };
+                loading_min_changed_pixels =
+                    Some(parse_u64("--loading-min-changed-pixels", value)?);
             }
             "--required-stable-transitions" => {
                 index += 1;
@@ -3800,6 +3872,22 @@ fn parse_ui_state_args(args: Vec<String>) -> Result<UiStateCommand, CliError> {
                 };
                 required_stable_transitions =
                     parse_positive_u32("--required-stable-transitions", value)?;
+            }
+            "--size-policy" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --size-policy".to_owned(),
+                    ));
+                };
+                size_policy = parse_visual_size_policy(value)?;
+            }
+            "--alpha" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --alpha".to_owned()));
+                };
+                alpha_mode = parse_visual_alpha_mode(value)?;
             }
             "--json" => json = true,
             "--help" | "-h" => return Ok(UiStateCommand::Help),
@@ -3825,14 +3913,30 @@ fn parse_ui_state_args(args: Vec<String>) -> Result<UiStateCommand, CliError> {
                 .to_owned(),
         ));
     }
+    if let (Some(stable_max), Some(loading_min)) =
+        (stable_max_changed_pixels, loading_min_changed_pixels)
+        && stable_max > loading_min
+    {
+        return Err(CliError::Failure(
+            "--stable-max-changed-pixels must be less than or equal to --loading-min-changed-pixels"
+                .to_owned(),
+        ));
+    }
 
     Ok(UiStateCommand::Run(UiStateArgs {
         image_paths,
         region,
+        ignore_regions,
         per_channel_threshold,
         stable_max_changed_ratio,
+        stable_max_changed_pixels,
+        stable_max_mean_absolute_error,
+        stable_max_channel_delta,
         loading_min_changed_ratio,
+        loading_min_changed_pixels,
         required_stable_transitions,
+        size_policy,
+        alpha_mode,
         json,
     }))
 }
@@ -3840,10 +3944,17 @@ fn parse_ui_state_args(args: Vec<String>) -> Result<UiStateCommand, CliError> {
 fn ui_state_options(args: &UiStateArgs) -> UiStateOptions {
     UiStateOptions {
         region: args.region,
+        ignore_regions: args.ignore_regions.clone(),
         per_channel_threshold: args.per_channel_threshold,
         stable_max_changed_ratio: args.stable_max_changed_ratio,
+        stable_max_changed_pixels: args.stable_max_changed_pixels,
+        stable_max_mean_absolute_error: args.stable_max_mean_absolute_error,
+        stable_max_channel_delta: args.stable_max_channel_delta,
         loading_min_changed_ratio: args.loading_min_changed_ratio,
+        loading_min_changed_pixels: args.loading_min_changed_pixels,
         required_stable_transitions: usize::try_from(args.required_stable_transitions).unwrap_or(1),
+        size_policy: args.size_policy,
+        alpha_mode: args.alpha_mode,
     }
 }
 
@@ -6560,7 +6671,7 @@ fn print_compare_usage() {
 
 fn print_ui_state_usage() {
     println!(
-        "Usage: peekaboox state [--image <path>]... [--region x,y,width,height] [--threshold 0..255] [--stable-max-changed-ratio 0.0..1.0] [--loading-min-changed-ratio 0.0..1.0] [--required-stable-transitions <n>] [--json]"
+        "Usage: peekaboox state [--image <path>]... [--region x,y,width,height] [--ignore-region x,y,width,height]... [--threshold 0..255] [--stable-max-changed-ratio 0.0..1.0] [--stable-max-changed-pixels <n>] [--stable-max-mae 0..255] [--stable-max-channel-delta 0..255] [--loading-min-changed-ratio 0.0..1.0] [--loading-min-changed-pixels <n>] [--required-stable-transitions <n>] [--size-policy error|common-region|resize-actual] [--alpha ignore|compare] [--json]"
     );
     println!("       peekaboox state <image-path> <image-path> [more-image-paths...]");
 }
@@ -7548,6 +7659,20 @@ mod tests {
             "2".to_owned(),
             "--region".to_owned(),
             "10,20,300,80".to_owned(),
+            "--ignore-region".to_owned(),
+            "11,22,33,44".to_owned(),
+            "--stable-max-changed-pixels".to_owned(),
+            "9".to_owned(),
+            "--stable-max-mae".to_owned(),
+            "1.5".to_owned(),
+            "--stable-max-channel-delta".to_owned(),
+            "12".to_owned(),
+            "--loading-min-changed-pixels".to_owned(),
+            "10".to_owned(),
+            "--size-policy".to_owned(),
+            "resize-actual".to_owned(),
+            "--alpha".to_owned(),
+            "compare".to_owned(),
         ])
         .unwrap();
 
@@ -7560,10 +7685,17 @@ mod tests {
                     PathBuf::from("third.png")
                 ],
                 region: Some(Rect::new(10, 20, 300, 80)),
+                ignore_regions: vec![Rect::new(11, 22, 33, 44)],
                 per_channel_threshold: 4,
                 stable_max_changed_ratio: 0.002,
+                stable_max_changed_pixels: Some(9),
+                stable_max_mean_absolute_error: Some(1.5),
+                stable_max_channel_delta: Some(12),
                 loading_min_changed_ratio: 0.03,
+                loading_min_changed_pixels: Some(10),
                 required_stable_transitions: 2,
+                size_policy: VisualSizePolicy::ResizeActual,
+                alpha_mode: VisualAlphaMode::Compare,
                 json: false
             })
         );
@@ -7595,6 +7727,27 @@ mod tests {
             error,
             CliError::Failure(
                 "--stable-max-changed-ratio must be less than or equal to --loading-min-changed-ratio"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn ui_state_rejects_inverted_absolute_thresholds() {
+        let error = parse_ui_state_args(vec![
+            "first.png".to_owned(),
+            "second.png".to_owned(),
+            "--stable-max-changed-pixels".to_owned(),
+            "10".to_owned(),
+            "--loading-min-changed-pixels".to_owned(),
+            "2".to_owned(),
+        ])
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            CliError::Failure(
+                "--stable-max-changed-pixels must be less than or equal to --loading-min-changed-pixels"
                     .to_owned()
             )
         );

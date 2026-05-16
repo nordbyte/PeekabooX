@@ -424,10 +424,17 @@ class FakeClient:
         self,
         images: tuple[bytes, ...] | list[bytes],
         region: Rect | None = None,
+        ignore_regions=None,
         per_channel_threshold: int | None = None,
         stable_max_changed_ratio: float | None = None,
+        stable_max_changed_pixels: int | None = None,
+        stable_max_mean_absolute_error: float | None = None,
+        stable_max_channel_delta: int | None = None,
         loading_min_changed_ratio: float | None = None,
+        loading_min_changed_pixels: int | None = None,
         required_stable_transitions: int | None = None,
+        size_policy: str | None = None,
+        alpha: str | None = None,
     ) -> UiStateResult:
         return UiStateResult(
             state="stable",
@@ -445,18 +452,32 @@ class FakeClient:
         self,
         image_paths: tuple[str, ...] | list[str],
         region: Rect | None = None,
+        ignore_regions=None,
         per_channel_threshold: int | None = None,
         stable_max_changed_ratio: float | None = None,
+        stable_max_changed_pixels: int | None = None,
+        stable_max_mean_absolute_error: float | None = None,
+        stable_max_channel_delta: int | None = None,
         loading_min_changed_ratio: float | None = None,
+        loading_min_changed_pixels: int | None = None,
         required_stable_transitions: int | None = None,
+        size_policy: str | None = None,
+        alpha: str | None = None,
     ) -> UiStateResult:
         return self.detect_ui_state(
             [b"first", b"second"],
             region=region,
+            ignore_regions=ignore_regions,
             per_channel_threshold=per_channel_threshold,
             stable_max_changed_ratio=stable_max_changed_ratio,
+            stable_max_changed_pixels=stable_max_changed_pixels,
+            stable_max_mean_absolute_error=stable_max_mean_absolute_error,
+            stable_max_channel_delta=stable_max_channel_delta,
             loading_min_changed_ratio=loading_min_changed_ratio,
+            loading_min_changed_pixels=loading_min_changed_pixels,
             required_stable_transitions=required_stable_transitions,
+            size_policy=size_policy,
+            alpha=alpha,
         )
 
     def detect_ui_elements(
@@ -825,6 +846,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("max_channel_delta", compare_schema)
         self.assertIn("size_policy", compare_schema)
         self.assertIn("alpha", compare_schema)
+        state_schema = server.tools["detect_ui_state"].input_schema["properties"]
+        self.assertIn("ignore_regions", state_schema)
+        self.assertIn("stable_max_changed_pixels", state_schema)
+        self.assertIn("stable_max_mean_absolute_error", state_schema)
+        self.assertIn("stable_max_channel_delta", state_schema)
+        self.assertIn("loading_min_changed_pixels", state_schema)
+        self.assertIn("size_policy", state_schema)
+        self.assertIn("alpha", state_schema)
         window_schema = server.tools["list_windows"].input_schema["properties"]
         self.assertIn("title_regex", window_schema)
         self.assertIn("diagnose", window_schema)
@@ -2755,7 +2784,16 @@ class RuntimeTests(unittest.TestCase):
 
         ui_state = server.call_tool(
             "detect_ui_state",
-            {"image_paths": ["first.png", "second.png"]},
+            {
+                "image_paths": ["first.png", "second.png"],
+                "ignore_regions": [{"x": 1, "y": 2, "width": 3, "height": 4}],
+                "stable_max_changed_pixels": 3,
+                "stable_max_mean_absolute_error": 1.5,
+                "stable_max_channel_delta": 8,
+                "loading_min_changed_pixels": 4,
+                "size_policy": "common-region",
+                "alpha": "compare",
+            },
         )
         ui_elements = server.call_tool(
             "detect_ui_elements",
@@ -4291,18 +4329,34 @@ class RuntimeTests(unittest.TestCase):
         result = client.detect_ui_state(
             [b"first", b"second"],
             region=Rect(x=0, y=0, width=4, height=3),
+            ignore_regions=(Rect(x=1, y=1, width=2, height=1),),
             per_channel_threshold=3,
             stable_max_changed_ratio=0.001,
+            stable_max_changed_pixels=2,
+            stable_max_mean_absolute_error=4.5,
+            stable_max_channel_delta=9,
             loading_min_changed_ratio=0.02,
+            loading_min_changed_pixels=3,
             required_stable_transitions=2,
+            size_policy="common-region",
+            alpha="compare",
         )
 
         self.assertEqual(list(stub.request.images), [b"first", b"second"])
         self.assertEqual(stub.request.region.width, 4)
+        self.assertEqual(stub.request.ignore_regions[0].width, 2)
         self.assertEqual(stub.request.per_channel_threshold, 3)
         self.assertAlmostEqual(stub.request.stable_max_changed_ratio, 0.001, places=6)
+        self.assertEqual(stub.request.stable_max_changed_pixels, 2)
+        self.assertAlmostEqual(
+            stub.request.stable_max_mean_absolute_error, 4.5, places=6
+        )
+        self.assertEqual(stub.request.stable_max_channel_delta, 9)
         self.assertAlmostEqual(stub.request.loading_min_changed_ratio, 0.02, places=6)
+        self.assertEqual(stub.request.loading_min_changed_pixels, 3)
         self.assertEqual(stub.request.required_stable_transitions, 2)
+        self.assertEqual(stub.request.size_policy, "common-region")
+        self.assertEqual(stub.request.alpha, "compare")
         self.assertEqual(result.state, "loading")
         self.assertEqual(result.compared_transitions, 2)
         self.assertEqual(result.latest_diff.changed_pixels, 2)

@@ -225,7 +225,11 @@ diff = runtime.compare_image_files(
     max_changed_pixels=100,
     size_policy="common-region",
 )
-ui_state = runtime.detect_ui_state_from_image_files(["frame1.png", "frame2.png", "frame3.png"])
+ui_state = runtime.detect_ui_state_from_image_files(
+    ["frame1.png", "frame2.png", "frame3.png"],
+    ignore_regions=[Rect(x=10, y=20, width=80, height=24)],
+    stable_max_changed_pixels=20,
+)
 target = runtime.desktop_locate("telegram", "search-input")
 runtime.desktop_click("telegram", "search-input", dry_run=True)
 runtime.desktop_type_into("telegram", "message-input", "PeekabooX", dry_run=True)
@@ -714,6 +718,7 @@ UI-state/loading detection through the CLI:
 ```bash
 cargo run -q -p peekaboox-cli -- state frame1.png frame2.png frame3.png
 cargo run -q -p peekaboox-cli -- state --image frame1.png --image frame2.png --threshold 3 --stable-max-changed-ratio 0.001 --loading-min-changed-ratio 0.02
+cargo run -q -p peekaboox-cli -- state frame1.png frame2.png --ignore-region 10,20,80,24 --stable-max-changed-pixels 20 --loading-min-changed-pixels 200
 cargo run -q -p peekaboox-cli -- --daemon state frame1.png frame2.png
 ```
 
@@ -828,16 +833,18 @@ and gRPC `list_plugins`, Python `AgentRuntime.list_plugins()`, and MCP
 `peekaboox-vision` includes a deterministic UI-state detection foundation built
 on the same frame comparison primitives:
 
-- `UiStateOptions` selects an optional `Rect` region, per-channel threshold,
-  stable changed-pixel ratio, loading changed-pixel ratio, and required trailing
-  stable transitions.
+- `UiStateOptions` selects an optional `Rect` region, repeated ignored regions,
+  per-channel threshold, stable ratio/pixel/MAE/channel gates, loading
+  ratio/pixel gates, required trailing stable transitions, size policy, and
+  alpha mode.
 - `detect_ui_state(frames, options)` compares adjacent `CaptureFrame` samples
   and classifies the sequence as `Stable`, `Loading`, or `Changing`.
 - `UiStateResult` reports transition counts, trailing stability, latest diff,
   maximum and mean changed ratio, and aggregate changed bounds.
 - `detect_ui_state_from_image_files` and `detect_ui_state_from_image_bytes`
   provide decoder-backed helpers for fixtures and API bindings.
-- `DetectUiState` exposes the same result over gRPC using repeated image bytes.
+- `DetectUiState` exposes the same result over gRPC using repeated image bytes,
+  including ignore regions, absolute gates, `size_policy`, and `alpha`.
 - The local daemon IPC and CLI compare image file sequences with the same
   tolerance fields.
 

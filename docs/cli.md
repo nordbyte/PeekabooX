@@ -259,8 +259,18 @@ changing:
 
 ```bash
 peekaboox state frame1.png frame2.png frame3.png
-peekaboox --daemon state --image frame1.png --image frame2.png
+peekaboox state frame1.png frame2.png --ignore-region 10,20,80,24 --stable-max-changed-pixels 20 --loading-min-changed-pixels 200
+peekaboox --daemon state --image frame1.png --image frame2.png --size-policy common-region
 ```
+
+`state` accepts `--region`, repeated `--ignore-region`, `--threshold`,
+`--stable-max-changed-ratio`, `--stable-max-changed-pixels`,
+`--stable-max-mae`, `--stable-max-channel-delta`,
+`--loading-min-changed-ratio`, `--loading-min-changed-pixels`,
+`--required-stable-transitions`, `--size-policy
+error|common-region|resize-actual`, `--alpha ignore|compare`, and `--json`.
+Stable classification uses all stable gates; loading classification can use
+either the loading ratio or the loading changed-pixel threshold.
 
 Vision-only UI element detection groups contrast and edge components into
 fallback regions:

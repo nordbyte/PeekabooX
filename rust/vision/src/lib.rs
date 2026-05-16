@@ -122,20 +122,34 @@ pub enum UiStateKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiStateOptions {
     pub region: Option<Rect>,
+    pub ignore_regions: Vec<Rect>,
     pub per_channel_threshold: u8,
     pub stable_max_changed_ratio: f32,
+    pub stable_max_changed_pixels: Option<u64>,
+    pub stable_max_mean_absolute_error: Option<f32>,
+    pub stable_max_channel_delta: Option<u8>,
     pub loading_min_changed_ratio: f32,
+    pub loading_min_changed_pixels: Option<u64>,
     pub required_stable_transitions: usize,
+    pub size_policy: VisualSizePolicy,
+    pub alpha_mode: VisualAlphaMode,
 }
 
 impl Default for UiStateOptions {
     fn default() -> Self {
         Self {
             region: None,
+            ignore_regions: Vec::new(),
             per_channel_threshold: 2,
             stable_max_changed_ratio: 0.001,
+            stable_max_changed_pixels: None,
+            stable_max_mean_absolute_error: None,
+            stable_max_channel_delta: None,
             loading_min_changed_ratio: 0.02,
+            loading_min_changed_pixels: None,
             required_stable_transitions: 1,
+            size_policy: VisualSizePolicy::Error,
+            alpha_mode: VisualAlphaMode::Ignore,
         }
     }
 }
@@ -518,9 +532,14 @@ pub fn detect_ui_state(frames: &[CaptureFrame], options: &UiStateOptions) -> Res
 
     let compare_options = VisualCompareOptions {
         region: options.region,
+        ignore_regions: options.ignore_regions.clone(),
         per_channel_threshold: options.per_channel_threshold,
         max_changed_ratio: options.stable_max_changed_ratio,
-        ..VisualCompareOptions::default()
+        max_changed_pixels: options.stable_max_changed_pixels,
+        max_mean_absolute_error: options.stable_max_mean_absolute_error,
+        max_channel_delta: options.stable_max_channel_delta,
+        size_policy: options.size_policy,
+        alpha_mode: options.alpha_mode,
     };
     let mut latest_diff = None;
     let mut stable_transitions = 0_usize;
@@ -532,7 +551,7 @@ pub fn detect_ui_state(frames: &[CaptureFrame], options: &UiStateOptions) -> Res
 
     for pair in frames.windows(2) {
         let diff = compare_frames(&pair[0], &pair[1], &compare_options)?;
-        let transition_is_stable = diff.changed_ratio <= options.stable_max_changed_ratio;
+        let transition_is_stable = diff.matches;
         if transition_is_stable {
             stable_transitions += 1;
             trailing_stable_transitions += 1;
@@ -540,7 +559,11 @@ pub fn detect_ui_state(frames: &[CaptureFrame], options: &UiStateOptions) -> Res
             trailing_stable_transitions = 0;
         }
 
-        if diff.changed_ratio >= options.loading_min_changed_ratio {
+        let transition_is_loading = diff.changed_ratio >= options.loading_min_changed_ratio
+            || options
+                .loading_min_changed_pixels
+                .is_some_and(|minimum| diff.changed_pixels >= minimum);
+        if transition_is_loading {
             loading_transitions += 1;
         }
 
@@ -1837,9 +1860,26 @@ fn validate_ui_state_options(options: &UiStateOptions) -> Result<()> {
             "loading_min_changed_ratio must be a finite value between 0.0 and 1.0",
         ));
     }
+    if options
+        .stable_max_mean_absolute_error
+        .is_some_and(|value| !value.is_finite() || !(0.0..=255.0).contains(&value))
+    {
+        return Err(PeekabooXError::new(
+            "stable_max_mean_absolute_error must be a finite value between 0.0 and 255.0",
+        ));
+    }
     if options.stable_max_changed_ratio > options.loading_min_changed_ratio {
         return Err(PeekabooXError::new(
             "stable_max_changed_ratio must be less than or equal to loading_min_changed_ratio",
+        ));
+    }
+    if let (Some(stable_max), Some(loading_min)) = (
+        options.stable_max_changed_pixels,
+        options.loading_min_changed_pixels,
+    ) && stable_max > loading_min
+    {
+        return Err(PeekabooXError::new(
+            "stable_max_changed_pixels must be less than or equal to loading_min_changed_pixels",
         ));
     }
     if options.required_stable_transitions == 0 {
@@ -2754,6 +2794,56 @@ mod tests {
     }
 
     #[test]
+    fn ui_state_can_ignore_volatile_regions() {
+        let stable = load_image_file(fixture_path("ui_controls.pbm")).unwrap();
+        let loading = load_image_file(fixture_path("ui_controls_loading.pbm")).unwrap();
+        let options = UiStateOptions {
+            ignore_regions: vec![Rect::new(4, 15, 20, 2)],
+            ..UiStateOptions::default()
+        };
+
+        let result = detect_ui_state(&[stable, loading], &options).unwrap();
+
+        assert_eq!(result.state, UiStateKind::Stable);
+        assert_eq!(result.stable_transitions, 1);
+        assert_eq!(result.latest_diff.changed_pixels, 0);
+    }
+
+    #[test]
+    fn ui_state_uses_absolute_stable_and_loading_pixel_gates() {
+        let baseline = load_fixture_ppm("baseline.ppm");
+        let changed = load_fixture_ppm("changed.ppm");
+        let options = UiStateOptions {
+            stable_max_changed_ratio: 1.0,
+            stable_max_changed_pixels: Some(1),
+            loading_min_changed_ratio: 1.0,
+            loading_min_changed_pixels: Some(2),
+            ..UiStateOptions::default()
+        };
+
+        let result = detect_ui_state(&[baseline, changed], &options).unwrap();
+
+        assert_eq!(result.state, UiStateKind::Loading);
+        assert_eq!(result.stable_transitions, 0);
+        assert_eq!(result.loading_transitions, 1);
+    }
+
+    #[test]
+    fn ui_state_supports_common_region_size_policy() {
+        let expected = solid_rgb_frame(2, 2, [0, 0, 0]);
+        let actual = rgb_frame(1, 1, &[[0, 0, 0]]);
+        let options = UiStateOptions {
+            size_policy: VisualSizePolicy::CommonRegion,
+            ..UiStateOptions::default()
+        };
+
+        let result = detect_ui_state(&[expected, actual], &options).unwrap();
+
+        assert_eq!(result.state, UiStateKind::Stable);
+        assert_eq!(result.latest_diff.compared_pixels, 1);
+    }
+
+    #[test]
     fn ui_state_rejects_single_frame_and_invalid_options() {
         let frame = rgb_frame(1, 1, &[[0, 0, 0]]);
         let error =
@@ -2761,7 +2851,7 @@ mod tests {
         assert!(error.message().contains("at least two frames"));
 
         let error = detect_ui_state(
-            &[frame.clone(), frame],
+            &[frame.clone(), frame.clone()],
             &UiStateOptions {
                 stable_max_changed_ratio: 0.5,
                 loading_min_changed_ratio: 0.1,
@@ -2770,6 +2860,17 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.message().contains("less than or equal"));
+
+        let error = detect_ui_state(
+            &[frame.clone(), frame],
+            &UiStateOptions {
+                stable_max_changed_pixels: Some(10),
+                loading_min_changed_pixels: Some(5),
+                ..UiStateOptions::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.message().contains("stable_max_changed_pixels"));
     }
 
     #[test]

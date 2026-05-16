@@ -569,22 +569,46 @@ class PeekabooXClient:
         self,
         images: Sequence[bytes],
         region: Rect | None = None,
+        ignore_regions: Iterable[Rect] | None = None,
         per_channel_threshold: int | None = None,
         stable_max_changed_ratio: float | None = None,
+        stable_max_changed_pixels: int | None = None,
+        stable_max_mean_absolute_error: float | None = None,
+        stable_max_channel_delta: int | None = None,
         loading_min_changed_ratio: float | None = None,
+        loading_min_changed_pixels: int | None = None,
         required_stable_transitions: int | None = None,
+        size_policy: str | None = None,
+        alpha: str | None = None,
     ) -> UiStateResult:
         request_kwargs: dict[str, Any] = {"images": list(images)}
         if region is not None:
             request_kwargs["region"] = _rect_to_proto(self.messages, region)
+        if ignore_regions is not None:
+            request_kwargs["ignore_regions"] = [
+                _rect_to_proto(self.messages, ignore_region)
+                for ignore_region in ignore_regions
+            ]
         if per_channel_threshold is not None:
             request_kwargs["per_channel_threshold"] = per_channel_threshold
         if stable_max_changed_ratio is not None:
             request_kwargs["stable_max_changed_ratio"] = stable_max_changed_ratio
+        if stable_max_changed_pixels is not None:
+            request_kwargs["stable_max_changed_pixels"] = stable_max_changed_pixels
+        if stable_max_mean_absolute_error is not None:
+            request_kwargs["stable_max_mean_absolute_error"] = stable_max_mean_absolute_error
+        if stable_max_channel_delta is not None:
+            request_kwargs["stable_max_channel_delta"] = stable_max_channel_delta
         if loading_min_changed_ratio is not None:
             request_kwargs["loading_min_changed_ratio"] = loading_min_changed_ratio
+        if loading_min_changed_pixels is not None:
+            request_kwargs["loading_min_changed_pixels"] = loading_min_changed_pixels
         if required_stable_transitions is not None:
             request_kwargs["required_stable_transitions"] = required_stable_transitions
+        if size_policy is not None:
+            request_kwargs["size_policy"] = size_policy
+        if alpha is not None:
+            request_kwargs["alpha"] = alpha
         response = self._call(
             "DetectUiState",
             self.messages.DetectUiStateRequest(**request_kwargs),
@@ -595,10 +619,17 @@ class PeekabooXClient:
         self,
         image_paths: Sequence[str | PathLike[str]],
         region: Rect | None = None,
+        ignore_regions: Iterable[Rect] | None = None,
         per_channel_threshold: int | None = None,
         stable_max_changed_ratio: float | None = None,
+        stable_max_changed_pixels: int | None = None,
+        stable_max_mean_absolute_error: float | None = None,
+        stable_max_channel_delta: int | None = None,
         loading_min_changed_ratio: float | None = None,
+        loading_min_changed_pixels: int | None = None,
         required_stable_transitions: int | None = None,
+        size_policy: str | None = None,
+        alpha: str | None = None,
     ) -> UiStateResult:
         images: list[bytes] = []
         for image_path in image_paths:
@@ -607,10 +638,17 @@ class PeekabooXClient:
         return self.detect_ui_state(
             images,
             region=region,
+            ignore_regions=ignore_regions,
             per_channel_threshold=per_channel_threshold,
             stable_max_changed_ratio=stable_max_changed_ratio,
+            stable_max_changed_pixels=stable_max_changed_pixels,
+            stable_max_mean_absolute_error=stable_max_mean_absolute_error,
+            stable_max_channel_delta=stable_max_channel_delta,
             loading_min_changed_ratio=loading_min_changed_ratio,
+            loading_min_changed_pixels=loading_min_changed_pixels,
             required_stable_transitions=required_stable_transitions,
+            size_policy=size_policy,
+            alpha=alpha,
         )
 
     def detect_ui_elements(

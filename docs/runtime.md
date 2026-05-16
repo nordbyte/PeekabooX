@@ -46,7 +46,13 @@ print(
         ignore_regions=[Rect(x=10, y=20, width=80, height=24)],
     ).matches
 )
-print(runtime.detect_ui_state_from_image_files(["frame1.png", "frame2.png"]).state)
+print(
+    runtime.detect_ui_state_from_image_files(
+        ["frame1.png", "frame2.png"],
+        ignore_regions=[Rect(x=10, y=20, width=80, height=24)],
+        stable_max_changed_pixels=20,
+    ).state
+)
 print(runtime.detect_ui_elements_from_image_file("screenshot.png").elements)
 print(runtime.desktop_locate("telegram", "search-input"))
 runtime.desktop_click("telegram", "search-input", dry_run=True)

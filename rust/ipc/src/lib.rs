@@ -276,11 +276,26 @@ pub enum ApiRequest {
     },
     DetectUiState {
         image_paths: Vec<String>,
+        #[serde(default)]
         region: Option<RectDto>,
+        #[serde(default)]
+        ignore_regions: Vec<RectDto>,
         per_channel_threshold: u8,
         stable_max_changed_ratio: f32,
+        #[serde(default)]
+        stable_max_changed_pixels: Option<u64>,
+        #[serde(default)]
+        stable_max_mean_absolute_error: Option<f32>,
+        #[serde(default)]
+        stable_max_channel_delta: Option<u8>,
         loading_min_changed_ratio: f32,
+        #[serde(default)]
+        loading_min_changed_pixels: Option<u64>,
         required_stable_transitions: u32,
+        #[serde(default = "default_visual_size_policy")]
+        size_policy: String,
+        #[serde(default = "default_visual_alpha_mode")]
+        alpha_mode: String,
     },
     DetectUiElements {
         image_path: String,
@@ -1399,10 +1414,22 @@ mod tests {
                 width: 100,
                 height: 40,
             }),
+            ignore_regions: vec![super::RectDto {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4,
+            }],
             per_channel_threshold: 2,
             stable_max_changed_ratio: 0.001,
+            stable_max_changed_pixels: Some(3),
+            stable_max_mean_absolute_error: Some(1.5),
+            stable_max_channel_delta: Some(8),
             loading_min_changed_ratio: 0.02,
+            loading_min_changed_pixels: Some(4),
             required_stable_transitions: 1,
+            size_policy: "common-region".to_owned(),
+            alpha_mode: "compare".to_owned(),
         });
         let payload = serde_json::to_string(&request).unwrap();
 

@@ -324,6 +324,13 @@ message DetectUiStateRequest {
   optional float stable_max_changed_ratio = 4;
   optional float loading_min_changed_ratio = 5;
   optional uint32 required_stable_transitions = 6;
+  repeated Rect ignore_regions = 7;
+  optional uint64 stable_max_changed_pixels = 8;
+  optional float stable_max_mean_absolute_error = 9;
+  optional uint32 stable_max_channel_delta = 10;
+  optional uint64 loading_min_changed_pixels = 11;
+  optional string size_policy = 12;
+  optional string alpha = 13;
 }
 
 enum UiStateKind {
