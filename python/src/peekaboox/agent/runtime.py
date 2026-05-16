@@ -16,6 +16,7 @@ from peekaboox.client import (
     DetectUiElementsResult,
     DesktopActionResult,
     DesktopLocateResult,
+    DesktopProfilesResult,
     DesktopState,
     DmaBufProbeResult,
     OcrResult,
@@ -1132,6 +1133,31 @@ class AgentRuntime:
         self._require_capability(Capability.OBSERVE, "get_desktop_state")
         self._require_preflight("get_desktop_state", "desktop")
         return self._require_client().get_desktop_state()
+
+    def desktop_profiles(
+        self,
+        app: str | None = None,
+        *,
+        target: str | None = None,
+        command: str | None = None,
+        desktop_id: str | None = None,
+        supports: str | None = None,
+        check: bool = False,
+        installed: bool = False,
+        available: bool = False,
+    ) -> DesktopProfilesResult:
+        self._require_capability(Capability.OBSERVE, "desktop_profiles")
+        self._require_preflight("desktop_profiles", "desktop")
+        return self._require_client().desktop_profiles(
+            app,
+            target=target,
+            command=command,
+            desktop_id=desktop_id,
+            supports=supports,
+            check=check,
+            installed=installed,
+            available=available,
+        )
 
     def desktop_focus(
         self,

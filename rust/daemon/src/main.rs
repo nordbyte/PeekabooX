@@ -18,8 +18,8 @@ use peekaboox_accessibility::{AccessibilityTreeMetadata, ElementQuery};
 use peekaboox_core::{BackendKind, CaptureFrame, PixelFormat, Point, Rect, UiElement, WindowInfo};
 use peekaboox_desktop::{
     AssertOptions as DesktopAssertOptions, ClickOptions as DesktopClickOptions, DesktopAssertion,
-    DesktopDragOptions, FocusOptions as DesktopFocusOptions, LocateOptions as DesktopLocateOptions,
-    TypeIntoOptions as DesktopTypeIntoOptions,
+    DesktopDragOptions, DesktopProfileQuery, FocusOptions as DesktopFocusOptions,
+    LocateOptions as DesktopLocateOptions, TypeIntoOptions as DesktopTypeIntoOptions,
 };
 use peekaboox_input::{EMERGENCY_STOP_HOTKEY_LABEL, EmergencyHotkeyState, MouseButton};
 use peekaboox_ipc::proto::{
@@ -30,11 +30,13 @@ use peekaboox_ipc::{
     API_VERSION, ActionResultDto, ApiRequest, ApiResponseEnvelope, ApiResult, CaptureBackendDto,
     CaptureBackendProbeDto, CaptureBackendProbeResultDto, CaptureBackendsResultDto,
     CaptureDeltaResultDto, CaptureResultDto, DesktopActionResultDto, DesktopAssertionDto,
-    DesktopLocateResultDto, DmaBufImportTargetDto, DmaBufProbeResultDto, ElementDto,
-    ElementListResultDto, MouseButtonDto, OcrBlockDto, OcrResultDto, PluginDiscoveryErrorDto,
-    PluginDto, PluginListResultDto, PluginToolDto, PluginToolExecutionResultDto, PointDto, RectDto,
-    UiStateDto, VisualDiffDto, WindowBackendReportDto, WindowDto, WindowListResultDto,
-    ZeroCopyBackendDto, decode_request, default_socket_path, encode_response,
+    DesktopLocateResultDto, DesktopProfileAvailabilityDto, DesktopProfileCommandDto,
+    DesktopProfileDto, DesktopProfileTargetDto, DesktopProfilesResultDto, DmaBufImportTargetDto,
+    DmaBufProbeResultDto, ElementDto, ElementListResultDto, MouseButtonDto, OcrBlockDto,
+    OcrResultDto, PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
+    PluginToolExecutionResultDto, PointDto, RectDto, UiStateDto, VisualDiffDto,
+    WindowBackendReportDto, WindowDto, WindowListResultDto, ZeroCopyBackendDto, decode_request,
+    default_socket_path, encode_response,
 };
 use peekaboox_vision::{
     IncrementalCaptureDelta, IncrementalCaptureOptions, OcrConfig, OcrOptions,
@@ -2131,6 +2133,29 @@ fn dispatch_request(
             .map_err(|error| error.to_string())?;
             Ok(ApiResult::DesktopAction(desktop_action_dto(result)))
         }
+        ApiRequest::DesktopProfiles {
+            app,
+            target,
+            command,
+            desktop_id,
+            supports,
+            check,
+            installed,
+            available,
+        } => {
+            let result = peekaboox_desktop::desktop_profiles_with_query(&DesktopProfileQuery {
+                app,
+                target,
+                command,
+                desktop_id,
+                supports,
+                check_availability: check,
+                installed_only: installed,
+                available_only: available,
+            })
+            .map_err(|error| error.to_string())?;
+            Ok(ApiResult::DesktopProfiles(desktop_profiles_dto(result)))
+        }
     }
 }
 
@@ -2674,6 +2699,26 @@ impl PeekabooX for GrpcPeekabooXService {
         });
         let result = grpc_desktop_assert(request);
         audit_grpc_result(&self.audit, "grpc.desktop_assert", &result, details);
+        result.map(Response::new)
+    }
+
+    async fn desktop_profiles(
+        &self,
+        request: Request<proto::DesktopProfilesRequest>,
+    ) -> Result<Response<proto::DesktopProfilesResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({
+            "app": request.app.as_deref(),
+            "target": request.target.as_deref(),
+            "command": request.command.as_deref(),
+            "desktop_id": request.desktop_id.as_deref(),
+            "supports": request.supports.as_deref(),
+            "check": request.check,
+            "installed": request.installed,
+            "available": request.available
+        });
+        let result = grpc_desktop_profiles(request);
+        audit_grpc_result(&self.audit, "grpc.desktop_profiles", &result, details);
         result.map(Response::new)
     }
 }
@@ -4579,6 +4624,23 @@ fn grpc_desktop_assert(
     Ok(proto_desktop_action_response(result))
 }
 
+fn grpc_desktop_profiles(
+    request: proto::DesktopProfilesRequest,
+) -> Result<proto::DesktopProfilesResponse, Status> {
+    let result = peekaboox_desktop::desktop_profiles_with_query(&DesktopProfileQuery {
+        app: request.app,
+        target: request.target,
+        command: request.command,
+        desktop_id: request.desktop_id,
+        supports: request.supports,
+        check_availability: request.check,
+        installed_only: request.installed,
+        available_only: request.available,
+    })
+    .map_err(|error| Status::failed_precondition(error.to_string()))?;
+    Ok(proto_desktop_profiles_response(result))
+}
+
 struct VisualCompareRequestOptions<'a> {
     region: Option<Rect>,
     ignore_regions: Vec<Rect>,
@@ -5445,6 +5507,66 @@ fn proto_desktop_locate_response(
     }
 }
 
+fn proto_desktop_profiles_response(
+    result: peekaboox_desktop::DesktopProfileList,
+) -> proto::DesktopProfilesResponse {
+    proto::DesktopProfilesResponse {
+        schema_version: result.schema_version,
+        count: result.count as u64,
+        profiles: result
+            .profiles
+            .into_iter()
+            .map(proto_desktop_profile)
+            .collect(),
+    }
+}
+
+fn proto_desktop_profile(profile: peekaboox_desktop::DesktopProfileInfo) -> proto::DesktopProfile {
+    proto::DesktopProfile {
+        id: profile.id,
+        aliases: profile.aliases,
+        search_name: profile.search_name,
+        desktop_ids: profile.desktop_ids,
+        commands: profile
+            .commands
+            .into_iter()
+            .map(|command| proto::DesktopProfileCommand {
+                program: command.program,
+                args: command.args,
+                display: command.display,
+                available: command.available,
+            })
+            .collect(),
+        targets: profile
+            .targets
+            .into_iter()
+            .map(|target| proto::DesktopProfileTarget {
+                name: target.name,
+                supports: target.supports,
+                sources: target.sources,
+                can_locate: target.can_locate,
+                can_click: target.can_click,
+                can_drag: target.can_drag,
+                can_type: target.can_type,
+                can_assert_present: target.can_assert_present,
+                can_assert_active: target.can_assert_active,
+                can_assert_contains: target.can_assert_contains,
+                accessibility_selector: target.accessibility_selector,
+                visual_layout: target.visual_layout,
+                visual_rect: target.visual_rect,
+            })
+            .collect(),
+        availability: Some(proto::DesktopProfileAvailability {
+            checked: profile.availability.checked,
+            installed: profile.availability.installed,
+            command_available: profile.availability.command_available,
+            desktop_entry_available: profile.availability.desktop_entry_available,
+            available_commands: profile.availability.available_commands,
+            available_desktop_ids: profile.availability.available_desktop_ids,
+        }),
+    }
+}
+
 fn proto_desktop_assertion(
     value: i32,
     expected_text: Option<String>,
@@ -5772,6 +5894,64 @@ fn desktop_locate_dto(result: peekaboox_desktop::ResolvedDesktopTarget) -> Deskt
     }
 }
 
+fn desktop_profiles_dto(result: peekaboox_desktop::DesktopProfileList) -> DesktopProfilesResultDto {
+    DesktopProfilesResultDto {
+        schema_version: result.schema_version,
+        count: result.count,
+        profiles: result
+            .profiles
+            .into_iter()
+            .map(desktop_profile_dto)
+            .collect(),
+    }
+}
+
+fn desktop_profile_dto(profile: peekaboox_desktop::DesktopProfileInfo) -> DesktopProfileDto {
+    DesktopProfileDto {
+        id: profile.id,
+        aliases: profile.aliases,
+        search_name: profile.search_name,
+        desktop_ids: profile.desktop_ids,
+        commands: profile
+            .commands
+            .into_iter()
+            .map(|command| DesktopProfileCommandDto {
+                program: command.program,
+                args: command.args,
+                display: command.display,
+                available: command.available,
+            })
+            .collect(),
+        targets: profile
+            .targets
+            .into_iter()
+            .map(|target| DesktopProfileTargetDto {
+                name: target.name,
+                supports: target.supports,
+                sources: target.sources,
+                can_locate: target.can_locate,
+                can_click: target.can_click,
+                can_drag: target.can_drag,
+                can_type: target.can_type,
+                can_assert_present: target.can_assert_present,
+                can_assert_active: target.can_assert_active,
+                can_assert_contains: target.can_assert_contains,
+                accessibility_selector: target.accessibility_selector,
+                visual_layout: target.visual_layout,
+                visual_rect: target.visual_rect,
+            })
+            .collect(),
+        availability: DesktopProfileAvailabilityDto {
+            checked: profile.availability.checked,
+            installed: profile.availability.installed,
+            command_available: profile.availability.command_available,
+            desktop_entry_available: profile.availability.desktop_entry_available,
+            available_commands: profile.availability.available_commands,
+            available_desktop_ids: profile.availability.available_desktop_ids,
+        },
+    }
+}
+
 fn desktop_assertion(
     assertion: DesktopAssertionDto,
     expected_text: Option<String>,
@@ -6043,6 +6223,7 @@ fn request_method(request: &ApiRequest) -> &'static str {
         ApiRequest::DesktopDrag { .. } => "desktop_drag",
         ApiRequest::DesktopTypeInto { .. } => "desktop_type_into",
         ApiRequest::DesktopAssert { .. } => "desktop_assert",
+        ApiRequest::DesktopProfiles { .. } => "desktop_profiles",
     }
 }
 
@@ -6490,6 +6671,25 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             "has_window_id": window_id.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "assertion": format!("{assertion:?}").to_ascii_lowercase(),
             "has_expected_text": expected_text.as_deref().is_some_and(|value| !value.trim().is_empty())
+        }),
+        ApiRequest::DesktopProfiles {
+            app,
+            target,
+            command,
+            desktop_id,
+            supports,
+            check,
+            installed,
+            available,
+        } => json!({
+            "app": app,
+            "target": target,
+            "command": command,
+            "desktop_id": desktop_id,
+            "supports": supports,
+            "check": check,
+            "installed": installed,
+            "available": available
         }),
     }
 }

@@ -63,83 +63,6 @@ WORKFLOW_ACTIONS = (
     "get_desktop_state",
 )
 
-DESKTOP_PROFILES: tuple[dict[str, Any], ...] = (
-    {
-        "id": "telegram",
-        "aliases": ("telegram", "telegram-desktop", "org.telegram.desktop"),
-        "search_name": "Telegram",
-        "desktop_ids": (
-            "telegram-desktop",
-            "org.telegram.desktop",
-            "telegram-desktop_telegram-desktop",
-        ),
-        "commands": ("telegram-desktop", "telegram", "flatpak"),
-        "targets": (
-            "overview-icon",
-            "search-input",
-            "search-clear",
-            "search-result",
-            "message-input",
-            "send-button",
-            "header",
-        ),
-    },
-    {
-        "id": "paint",
-        "aliases": (
-            "paint",
-            "drawing",
-            "pinta",
-            "kolourpaint",
-            "org.gnome.Drawing",
-            "com.github.maoschanz.drawing",
-        ),
-        "search_name": "Drawing",
-        "desktop_ids": (
-            "drawing",
-            "com.github.maoschanz.drawing",
-            "pinta",
-            "com.github.PintaProject.Pinta",
-            "org.kde.kolourpaint",
-            "kolourpaint",
-        ),
-        "commands": ("drawing", "pinta", "kolourpaint"),
-        "targets": ("canvas", "save-button"),
-    },
-    {
-        "id": "drawing",
-        "aliases": ("drawing", "org.gnome.Drawing", "com.github.maoschanz.drawing"),
-        "search_name": "Drawing",
-        "desktop_ids": ("drawing", "com.github.maoschanz.drawing"),
-        "commands": ("drawing",),
-        "targets": ("canvas", "save-button"),
-    },
-    {
-        "id": "pinta",
-        "aliases": ("pinta", "com.github.PintaProject.Pinta"),
-        "search_name": "Pinta",
-        "desktop_ids": ("pinta", "com.github.PintaProject.Pinta"),
-        "commands": ("pinta",),
-        "targets": ("canvas", "save-button"),
-    },
-    {
-        "id": "kolourpaint",
-        "aliases": ("kolourpaint", "org.kde.kolourpaint"),
-        "search_name": "KolourPaint",
-        "desktop_ids": ("org.kde.kolourpaint", "kolourpaint"),
-        "commands": ("kolourpaint",),
-        "targets": ("canvas", "save-button"),
-    },
-    {
-        "id": "text-editor",
-        "aliases": ("text-editor", "gnome-text-editor", "org.gnome.TextEditor"),
-        "search_name": "Text Editor",
-        "desktop_ids": ("org.gnome.TextEditor", "gnome-text-editor"),
-        "commands": ("gnome-text-editor",),
-        "targets": ("document", "save-button"),
-    },
-)
-
 DOC_RESOURCES = {
     "api": "docs/api.md",
     "runtime": "docs/runtime.md",
@@ -547,7 +470,7 @@ class McpServer:
         if uri == "peekaboox://tools":
             return _json_resource(uri, {"tools": self.list_tools()})
         if uri == "peekaboox://desktop/profiles":
-            return _json_resource(uri, {"profiles": _desktop_profiles()})
+            return _json_resource(uri, self._desktop_profiles({}))
         if uri == "peekaboox://doctor/latest":
             doctor = self.runtime._preflight_doctor_result if self.runtime is not None else None
             return _json_resource(uri, {"available": doctor is not None, "doctor": _to_mcp_value(doctor)})
@@ -618,10 +541,10 @@ class McpServer:
         if normalized in {"resource", "uri", "resource_uri"}:
             return tuple(resource.uri for resource in self._default_resources())
         if normalized in {"app", "application"}:
-            return _desktop_profile_completion_values()
+            return self._desktop_profile_completion_values()
         if normalized in {"target", "desktop_target"}:
             app = _completion_context_value(params, "app")
-            return _desktop_target_completion_values(app)
+            return self._desktop_target_completion_values(app)
         if normalized in {"category", "categories", "preflight_category"}:
             return PREFLIGHT_CATEGORIES
         if normalized in {"capability_profile", "profile"}:
@@ -1727,8 +1650,19 @@ class McpServer:
             ),
             self._tool(
                 "desktop_profiles",
-                "List supported desktop helper app profiles and target names.",
-                _schema({"app": {"type": "string"}}),
+                "List supported desktop helper app profiles, launch commands, target metadata, and availability.",
+                _schema(
+                    {
+                        "app": {"type": "string"},
+                        "target": {"type": "string"},
+                        "command": {"type": "string"},
+                        "desktop_id": {"type": "string"},
+                        "supports": {"type": "string"},
+                        "check": {"type": "boolean", "default": False},
+                        "installed": {"type": "boolean", "default": False},
+                        "available": {"type": "boolean", "default": False},
+                    }
+                ),
                 self._desktop_profiles,
             ),
             self._tool(
@@ -2408,9 +2342,63 @@ class McpServer:
         return elements
 
     def _desktop_profiles(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        app = _optional_string(arguments, "app")
-        profiles = _desktop_profiles(app)
-        return {"profiles": profiles, "count": len(profiles)}
+        if self.runtime is None:
+            return {
+                "schema_version": "desktop-profiles.v1",
+                "count": 0,
+                "profiles": [],
+                "runtime_available": False,
+            }
+        result = self.runtime.desktop_profiles(
+            _optional_string(arguments, "app"),
+            target=_optional_string(arguments, "target"),
+            command=_optional_string(arguments, "command"),
+            desktop_id=_optional_string(arguments, "desktop_id"),
+            supports=_optional_string(arguments, "supports"),
+            check=_optional_bool(arguments, "check"),
+            installed=_optional_bool(arguments, "installed"),
+            available=_optional_bool(arguments, "available"),
+        )
+        payload = _to_mcp_value(result)
+        if isinstance(payload, dict):
+            return payload
+        return {"schema_version": "desktop-profiles.v1", "count": 0, "profiles": []}
+
+    def _desktop_profile_completion_values(self) -> tuple[str, ...]:
+        try:
+            payload = self._desktop_profiles({})
+        except Exception:
+            return ()
+        values: list[str] = []
+        for profile in payload.get("profiles", []):
+            if not isinstance(profile, dict):
+                continue
+            profile_id = profile.get("id")
+            if isinstance(profile_id, str):
+                values.append(profile_id)
+            aliases = profile.get("aliases")
+            if isinstance(aliases, list):
+                values.extend(alias for alias in aliases if isinstance(alias, str))
+        return tuple(dict.fromkeys(values))
+
+    def _desktop_target_completion_values(self, app: str | None = None) -> tuple[str, ...]:
+        try:
+            payload = self._desktop_profiles({"app": app} if app else {})
+        except Exception:
+            return ()
+        values: list[str] = []
+        for profile in payload.get("profiles", []):
+            if not isinstance(profile, dict):
+                continue
+            targets = profile.get("targets")
+            if not isinstance(targets, list):
+                continue
+            for target in targets:
+                if isinstance(target, dict) and isinstance(target.get("name"), str):
+                    values.append(target["name"])
+                elif isinstance(target, str):
+                    values.append(target)
+        return tuple(dict.fromkeys(values))
 
     def _plan(self, arguments: dict[str, Any]) -> dict[str, Any]:
         steps = self._require_runtime().plan(_required_str(arguments, "goal"))
@@ -2810,36 +2798,6 @@ def _read_repo_text(path: str) -> str:
     if not target.is_file():
         raise JsonRpcProtocolError(INVALID_PARAMS, f"resource file not found: {path}")
     return target.read_text(encoding="utf-8")
-
-
-def _desktop_profiles(app: str | None = None) -> list[dict[str, Any]]:
-    profiles = [_to_mcp_value(profile) for profile in DESKTOP_PROFILES]
-    if app is None:
-        return profiles
-    needle = app.casefold()
-    return [
-        profile
-        for profile in profiles
-        if profile["id"].casefold() == needle
-        or any(alias.casefold() == needle for alias in profile["aliases"])
-        or any(desktop_id.casefold() == needle for desktop_id in profile["desktop_ids"])
-    ]
-
-
-def _desktop_profile_completion_values() -> tuple[str, ...]:
-    values: list[str] = []
-    for profile in DESKTOP_PROFILES:
-        values.append(str(profile["id"]))
-        values.extend(str(alias) for alias in profile["aliases"])
-    return tuple(dict.fromkeys(values))
-
-
-def _desktop_target_completion_values(app: str | None = None) -> tuple[str, ...]:
-    profiles = _desktop_profiles(app)
-    values: list[str] = []
-    for profile in profiles:
-        values.extend(str(target) for target in profile["targets"])
-    return tuple(dict.fromkeys(values))
 
 
 def _completion_context_value(params: dict[str, Any], name: str) -> str | None:

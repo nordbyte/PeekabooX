@@ -254,6 +254,59 @@ class DesktopLocateResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DesktopProfileCommand:
+    program: str
+    args: tuple[str, ...]
+    display: str
+    available: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopProfileTarget:
+    name: str
+    supports: tuple[str, ...]
+    sources: tuple[str, ...]
+    can_locate: bool
+    can_click: bool
+    can_drag: bool
+    can_type: bool
+    can_assert_present: bool
+    can_assert_active: bool
+    can_assert_contains: bool
+    accessibility_selector: str | None
+    visual_layout: bool
+    visual_rect: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopProfileAvailability:
+    checked: bool
+    installed: bool | None
+    command_available: bool | None
+    desktop_entry_available: bool | None
+    available_commands: tuple[str, ...]
+    available_desktop_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopProfile:
+    id: str
+    aliases: tuple[str, ...]
+    search_name: str
+    desktop_ids: tuple[str, ...]
+    commands: tuple[DesktopProfileCommand, ...]
+    targets: tuple[DesktopProfileTarget, ...]
+    availability: DesktopProfileAvailability
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopProfilesResult:
+    schema_version: str
+    count: int
+    profiles: tuple[DesktopProfile, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class DesktopState:
     active_window: WindowInfo | None
     windows: tuple[WindowInfo, ...]
@@ -1065,6 +1118,37 @@ class PeekabooXClient:
             elements=tuple(_ui_element_from_proto(element) for element in response.elements),
         )
 
+    def desktop_profiles(
+        self,
+        app: str | None = None,
+        *,
+        target: str | None = None,
+        command: str | None = None,
+        desktop_id: str | None = None,
+        supports: str | None = None,
+        check: bool = False,
+        installed: bool = False,
+        available: bool = False,
+    ) -> DesktopProfilesResult:
+        request_kwargs: dict[str, Any] = {
+            "check": check,
+            "installed": installed,
+            "available": available,
+        }
+        if app is not None:
+            request_kwargs["app"] = app
+        if target is not None:
+            request_kwargs["target"] = target
+        if command is not None:
+            request_kwargs["command"] = command
+        if desktop_id is not None:
+            request_kwargs["desktop_id"] = desktop_id
+        if supports is not None:
+            request_kwargs["supports"] = supports
+        return _desktop_profiles_from_proto(
+            self._call("DesktopProfiles", self.messages.DesktopProfilesRequest(**request_kwargs))
+        )
+
     def desktop_focus(
         self,
         app: str,
@@ -1695,6 +1779,74 @@ def _desktop_locate_from_proto(response: Any) -> DesktopLocateResult:
         y=point.y if point is not None else 0,
         rect=_rect_from_proto(rect) if rect is not None else None,
         source=response.source,
+    )
+
+
+def _desktop_profiles_from_proto(response: Any) -> DesktopProfilesResult:
+    return DesktopProfilesResult(
+        schema_version=response.schema_version,
+        count=int(response.count),
+        profiles=tuple(_desktop_profile_from_proto(profile) for profile in response.profiles),
+    )
+
+
+def _desktop_profile_from_proto(profile: Any) -> DesktopProfile:
+    availability = _message_field(profile, "availability")
+    return DesktopProfile(
+        id=profile.id,
+        aliases=tuple(profile.aliases),
+        search_name=profile.search_name,
+        desktop_ids=tuple(profile.desktop_ids),
+        commands=tuple(
+            DesktopProfileCommand(
+                program=command.program,
+                args=tuple(command.args),
+                display=command.display,
+                available=_optional_bool(command, "available"),
+            )
+            for command in profile.commands
+        ),
+        targets=tuple(
+            DesktopProfileTarget(
+                name=target.name,
+                supports=tuple(target.supports),
+                sources=tuple(target.sources),
+                can_locate=target.can_locate,
+                can_click=target.can_click,
+                can_drag=target.can_drag,
+                can_type=target.can_type,
+                can_assert_present=target.can_assert_present,
+                can_assert_active=target.can_assert_active,
+                can_assert_contains=target.can_assert_contains,
+                accessibility_selector=_optional_scalar(target, "accessibility_selector"),
+                visual_layout=target.visual_layout,
+                visual_rect=target.visual_rect,
+            )
+            for target in profile.targets
+        ),
+        availability=_desktop_profile_availability_from_proto(availability),
+    )
+
+
+def _desktop_profile_availability_from_proto(
+    availability: Any | None,
+) -> DesktopProfileAvailability:
+    if availability is None:
+        return DesktopProfileAvailability(
+            checked=False,
+            installed=None,
+            command_available=None,
+            desktop_entry_available=None,
+            available_commands=(),
+            available_desktop_ids=(),
+        )
+    return DesktopProfileAvailability(
+        checked=availability.checked,
+        installed=_optional_bool(availability, "installed"),
+        command_available=_optional_bool(availability, "command_available"),
+        desktop_entry_available=_optional_bool(availability, "desktop_entry_available"),
+        available_commands=tuple(availability.available_commands),
+        available_desktop_ids=tuple(availability.available_desktop_ids),
     )
 
 

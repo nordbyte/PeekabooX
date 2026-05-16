@@ -150,6 +150,8 @@ layout detection, and guards around state-sensitive targets:
 ```bash
 cargo run -q -p peekaboox-cli -- desktop profiles
 cargo run -q -p peekaboox-cli -- desktop profiles --json
+cargo run -q -p peekaboox-cli -- desktop profiles --app telegram --supports type-into --target message-input --json
+cargo run -q -p peekaboox-cli -- desktop profiles --availability --installed --json
 cargo run -q -p peekaboox-cli -- desktop focus --app telegram
 cargo run -q -p peekaboox-cli -- desktop locate --app telegram --target search-input
 cargo run -q -p peekaboox-cli -- desktop type-into --app telegram --target search-input --clear "Saved Messages"
@@ -171,12 +173,17 @@ Pass `--window-id <id>` or `--window-title <text>` to `desktop focus`,
 one specific window instead of the currently focused matching app. Mutating
 desktop helper actions accept `--verify` to run a postcondition check after the
 action. `desktop profiles --json` exposes the built-in app/target registry for
-scripts and plugin authors.
+scripts and plugin authors, including `schema_version`, `count`, full launch
+commands with arguments, per-target capability metadata, and optional
+availability checks. Filter it with `--app`, `--target`, `--command`,
+`--desktop-id`, `--supports`, `--installed`, or `--available`; use
+`--availability`/`--check` to annotate commands and desktop ids without
+filtering.
 
 The same desktop-helper surface is exposed through daemon JSON IPC, gRPC,
 `PeekabooXClient`, `AgentRuntime`, and MCP tools: `desktop_focus`,
-`desktop_locate`, `desktop_click`, `desktop_drag`, `desktop_type_into`, and
-`desktop_assert`.
+`desktop_profiles`, `desktop_locate`, `desktop_click`, `desktop_drag`,
+`desktop_type_into`, and `desktop_assert`.
 
 ## Windows and Elements
 

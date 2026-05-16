@@ -460,6 +460,24 @@ pub enum ApiRequest {
         #[serde(default)]
         window_id: Option<String>,
     },
+    DesktopProfiles {
+        #[serde(default)]
+        app: Option<String>,
+        #[serde(default)]
+        target: Option<String>,
+        #[serde(default)]
+        command: Option<String>,
+        #[serde(default)]
+        desktop_id: Option<String>,
+        #[serde(default)]
+        supports: Option<String>,
+        #[serde(default)]
+        check: bool,
+        #[serde(default)]
+        installed: bool,
+        #[serde(default)]
+        available: bool,
+    },
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -541,6 +559,7 @@ pub enum ApiResult {
     DetectUiElements(ElementListResultDto),
     DesktopAction(DesktopActionResultDto),
     DesktopLocate(DesktopLocateResultDto),
+    DesktopProfiles(DesktopProfilesResultDto),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -748,6 +767,59 @@ pub struct DesktopLocateResultDto {
     pub point: PointDto,
     pub rect: Option<RectDto>,
     pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopProfilesResultDto {
+    pub schema_version: String,
+    pub count: usize,
+    pub profiles: Vec<DesktopProfileDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopProfileDto {
+    pub id: String,
+    pub aliases: Vec<String>,
+    pub search_name: String,
+    pub desktop_ids: Vec<String>,
+    pub commands: Vec<DesktopProfileCommandDto>,
+    pub targets: Vec<DesktopProfileTargetDto>,
+    pub availability: DesktopProfileAvailabilityDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopProfileCommandDto {
+    pub program: String,
+    pub args: Vec<String>,
+    pub display: String,
+    pub available: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopProfileTargetDto {
+    pub name: String,
+    pub supports: Vec<String>,
+    pub sources: Vec<String>,
+    pub can_locate: bool,
+    pub can_click: bool,
+    pub can_drag: bool,
+    pub can_type: bool,
+    pub can_assert_present: bool,
+    pub can_assert_active: bool,
+    pub can_assert_contains: bool,
+    pub accessibility_selector: Option<String>,
+    pub visual_layout: bool,
+    pub visual_rect: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopProfileAvailabilityDto {
+    pub checked: bool,
+    pub installed: Option<bool>,
+    pub command_available: Option<bool>,
+    pub desktop_entry_available: Option<bool>,
+    pub available_commands: Vec<String>,
+    pub available_desktop_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

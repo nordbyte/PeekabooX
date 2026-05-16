@@ -21,6 +21,11 @@ from peekaboox.client import (
     DetectUiElementsResult,
     DesktopActionResult,
     DesktopLocateResult,
+    DesktopProfile,
+    DesktopProfileAvailability,
+    DesktopProfileCommand,
+    DesktopProfilesResult,
+    DesktopProfileTarget,
     DesktopState,
     DmaBufProbeResult,
     OcrBlock,
@@ -610,6 +615,78 @@ class FakeClient:
             y=20,
             rect=Rect(x=1, y=2, width=30, height=40),
             source="fake",
+        )
+
+    def desktop_profiles(self, app: str | None = None, **kwargs) -> DesktopProfilesResult:
+        self.desktop_calls.append(("profiles", {"app": app, **kwargs}))
+        profiles = (
+            DesktopProfile(
+                id="telegram",
+                aliases=("telegram", "telegram-desktop", "org.telegram.desktop"),
+                search_name="Telegram",
+                desktop_ids=("telegram-desktop", "org.telegram.desktop"),
+                commands=(
+                    DesktopProfileCommand(
+                        program="telegram-desktop",
+                        args=(),
+                        display="telegram-desktop",
+                        available=None,
+                    ),
+                    DesktopProfileCommand(
+                        program="flatpak",
+                        args=("run", "org.telegram.desktop"),
+                        display="flatpak run org.telegram.desktop",
+                        available=None,
+                    ),
+                ),
+                targets=(
+                    DesktopProfileTarget(
+                        name="search-input",
+                        supports=("locate", "click", "type-into", "assert-contains"),
+                        sources=("visual-layout",),
+                        can_locate=True,
+                        can_click=True,
+                        can_drag=False,
+                        can_type=True,
+                        can_assert_present=True,
+                        can_assert_active=False,
+                        can_assert_contains=True,
+                        accessibility_selector=None,
+                        visual_layout=True,
+                        visual_rect=True,
+                    ),
+                    DesktopProfileTarget(
+                        name="message-input",
+                        supports=("locate", "click", "type-into", "assert-contains"),
+                        sources=("visual-layout",),
+                        can_locate=True,
+                        can_click=True,
+                        can_drag=False,
+                        can_type=True,
+                        can_assert_present=True,
+                        can_assert_active=False,
+                        can_assert_contains=True,
+                        accessibility_selector=None,
+                        visual_layout=True,
+                        visual_rect=True,
+                    ),
+                ),
+                availability=DesktopProfileAvailability(
+                    checked=False,
+                    installed=None,
+                    command_available=None,
+                    desktop_entry_available=None,
+                    available_commands=(),
+                    available_desktop_ids=(),
+                ),
+            ),
+        )
+        if app and app != "telegram":
+            profiles = ()
+        return DesktopProfilesResult(
+            schema_version="desktop-profiles.v1",
+            count=len(profiles),
+            profiles=profiles,
         )
 
     def desktop_click(self, app: str, target: str, **kwargs) -> DesktopActionResult:
@@ -3270,7 +3347,10 @@ class RuntimeTests(unittest.TestCase):
 
         profiles = server.call_tool("desktop_profiles", {"app": "telegram"})
         self.assertEqual(profiles["profiles"][0]["id"], "telegram")
-        self.assertIn("message-input", profiles["profiles"][0]["targets"])
+        self.assertIn(
+            "message-input",
+            [target["name"] for target in profiles["profiles"][0]["targets"]],
+        )
 
         elements = server.call_tool(
             "find_elements",
@@ -3943,6 +4023,49 @@ class RuntimeTests(unittest.TestCase):
                     backend_name="fake-desktop",
                 )
 
+            def DesktopProfiles(self, request, timeout):
+                self.requests.append(("profiles", request))
+                return peekaboox_pb2.DesktopProfilesResponse(
+                    schema_version="desktop-profiles.v1",
+                    count=1,
+                    profiles=[
+                        peekaboox_pb2.DesktopProfile(
+                            id="telegram",
+                            aliases=["telegram"],
+                            search_name="Telegram",
+                            desktop_ids=["org.telegram.desktop"],
+                            commands=[
+                                peekaboox_pb2.DesktopProfileCommand(
+                                    program="flatpak",
+                                    args=["run", "org.telegram.desktop"],
+                                    display="flatpak run org.telegram.desktop",
+                                    available=True,
+                                )
+                            ],
+                            targets=[
+                                peekaboox_pb2.DesktopProfileTarget(
+                                    name="message-input",
+                                    supports=["locate", "click", "type-into"],
+                                    sources=["visual-layout"],
+                                    can_locate=True,
+                                    can_click=True,
+                                    can_type=True,
+                                    can_assert_present=True,
+                                    visual_layout=True,
+                                    visual_rect=True,
+                                )
+                            ],
+                            availability=peekaboox_pb2.DesktopProfileAvailability(
+                                checked=True,
+                                installed=True,
+                                command_available=True,
+                                desktop_entry_available=False,
+                                available_commands=["flatpak run org.telegram.desktop"],
+                            ),
+                        )
+                    ],
+                )
+
         stub = Stub()
         client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
 
@@ -3995,6 +4118,14 @@ class RuntimeTests(unittest.TestCase):
             ).action,
             "assert",
         )
+        profiles = client.desktop_profiles(
+            "telegram",
+            supports="type-into",
+            check=True,
+            installed=True,
+        )
+        self.assertEqual(profiles.profiles[0].commands[0].display, "flatpak run org.telegram.desktop")
+        self.assertTrue(profiles.profiles[0].availability.installed)
 
         self.assertEqual(stub.requests[0][1].window_id, "window-1")
         self.assertTrue(stub.requests[0][1].verify)
@@ -4008,6 +4139,9 @@ class RuntimeTests(unittest.TestCase):
             peekaboox_pb2.DESKTOP_ASSERTION_KIND_CONTAINS,
         )
         self.assertEqual(stub.requests[5][1].expected_text, "PeekabooX")
+        self.assertEqual(stub.requests[6][1].supports, "type-into")
+        self.assertTrue(stub.requests[6][1].check)
+        self.assertTrue(stub.requests[6][1].installed)
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_python_client_builds_generated_click_request(self) -> None:

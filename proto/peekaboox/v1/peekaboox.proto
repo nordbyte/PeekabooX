@@ -28,6 +28,7 @@ service PeekabooX {
   rpc DesktopDrag(DesktopDragRequest) returns (DesktopActionResponse);
   rpc DesktopTypeInto(DesktopTypeIntoRequest) returns (DesktopActionResponse);
   rpc DesktopAssert(DesktopAssertRequest) returns (DesktopActionResponse);
+  rpc DesktopProfiles(DesktopProfilesRequest) returns (DesktopProfilesResponse);
 }
 
 message CaptureScreenRequest {
@@ -576,6 +577,65 @@ message DesktopLocateResponse {
   Point point = 3;
   optional Rect rect = 4;
   string source = 5;
+}
+
+message DesktopProfilesRequest {
+  optional string app = 1;
+  optional string target = 2;
+  optional string command = 3;
+  optional string desktop_id = 4;
+  optional string supports = 5;
+  bool check = 6;
+  bool installed = 7;
+  bool available = 8;
+}
+
+message DesktopProfilesResponse {
+  string schema_version = 1;
+  uint64 count = 2;
+  repeated DesktopProfile profiles = 3;
+}
+
+message DesktopProfile {
+  string id = 1;
+  repeated string aliases = 2;
+  string search_name = 3;
+  repeated string desktop_ids = 4;
+  repeated DesktopProfileCommand commands = 5;
+  repeated DesktopProfileTarget targets = 6;
+  DesktopProfileAvailability availability = 7;
+}
+
+message DesktopProfileCommand {
+  string program = 1;
+  repeated string args = 2;
+  string display = 3;
+  optional bool available = 4;
+}
+
+message DesktopProfileTarget {
+  string name = 1;
+  repeated string supports = 2;
+  repeated string sources = 3;
+  bool can_locate = 4;
+  bool can_click = 5;
+  bool can_drag = 6;
+  bool can_type = 7;
+  bool can_assert_present = 8;
+  bool can_assert_active = 9;
+  bool can_assert_contains = 10;
+  optional string accessibility_selector = 11;
+  bool visual_layout = 12;
+  bool visual_rect = 13;
+}
+
+message DesktopProfileAvailability {
+  bool checked = 1;
+  optional bool installed = 2;
+  optional bool command_available = 3;
+  optional bool desktop_entry_available = 4;
+  repeated string available_commands = 5;
+  repeated string available_desktop_ids = 6;
 }
 
 message ActionResponse {

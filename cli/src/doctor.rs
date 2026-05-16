@@ -377,7 +377,18 @@ fn desktop_profile_checks() -> Vec<DoctorCheck> {
         "desktop-profiles",
         profiles
             .iter()
-            .map(|profile| format!("{}:{}", profile.id, profile.targets.join("|")))
+            .map(|profile| {
+                format!(
+                    "{}:{}",
+                    profile.id,
+                    profile
+                        .targets
+                        .iter()
+                        .map(|target| target.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("|")
+                )
+            })
             .collect::<Vec<_>>()
             .join(", "),
     )]

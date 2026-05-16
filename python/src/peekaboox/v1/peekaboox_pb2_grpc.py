@@ -159,6 +159,11 @@ class PeekabooXStub(object):
                 request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopAssertRequest.SerializeToString,
                 response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.FromString,
                 _registered_method=True)
+        self.DesktopProfiles = channel.unary_unary(
+                '/peekaboox.v1.PeekabooX/DesktopProfiles',
+                request_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopProfilesRequest.SerializeToString,
+                response_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopProfilesResponse.FromString,
+                _registered_method=True)
 
 
 class PeekabooXServicer(object):
@@ -314,6 +319,12 @@ class PeekabooXServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def DesktopProfiles(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_PeekabooXServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -441,6 +452,11 @@ def add_PeekabooXServicer_to_server(servicer, server):
                     servicer.DesktopAssert,
                     request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopAssertRequest.FromString,
                     response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.SerializeToString,
+            ),
+            'DesktopProfiles': grpc.unary_unary_rpc_method_handler(
+                    servicer.DesktopProfiles,
+                    request_deserializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopProfilesRequest.FromString,
+                    response_serializer=peekaboox_dot_v1_dot_peekaboox__pb2.DesktopProfilesResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -1118,6 +1134,33 @@ class PeekabooX(object):
             '/peekaboox.v1.PeekabooX/DesktopAssert',
             peekaboox_dot_v1_dot_peekaboox__pb2.DesktopAssertRequest.SerializeToString,
             peekaboox_dot_v1_dot_peekaboox__pb2.DesktopActionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DesktopProfiles(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/peekaboox.v1.PeekabooX/DesktopProfiles',
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopProfilesRequest.SerializeToString,
+            peekaboox_dot_v1_dot_peekaboox__pb2.DesktopProfilesResponse.FromString,
             options,
             channel_credentials,
             insecure,

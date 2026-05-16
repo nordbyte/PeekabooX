@@ -7,18 +7,18 @@ use peekaboox_accessibility::{AccessibilityTreeMetadata, ElementQuery};
 use peekaboox_core::{BackendKind, Point, Rect, UiElement, WindowInfo};
 use peekaboox_desktop::{
     AssertOptions, ClickOptions as DesktopClickOptions, DesktopAssertion, DesktopDragOptions,
-    FocusOptions, LocateOptions, TypeIntoOptions,
+    DesktopProfileQuery, FocusOptions, LocateOptions, TypeIntoOptions,
 };
 use peekaboox_input::MouseButton;
 use peekaboox_ipc::{
     ActionResultDto, ApiRequest, ApiResponse, ApiResult, CaptureBackendDto, CaptureBackendProbeDto,
     CaptureBackendProbeResultDto, CaptureBackendsResultDto, CaptureDeltaResultDto,
     CaptureResultDto, DesktopActionResultDto, DesktopAssertionDto, DesktopLocateResultDto,
-    DmaBufImportTargetDto, DmaBufProbeResultDto, ElementDto, ElementListResultDto, MouseButtonDto,
-    OcrBlockDto, OcrResultDto, PluginDiscoveryErrorDto, PluginDto, PluginListResultDto,
-    PluginToolDto, PluginToolExecutionResultDto, RectDto, UiStateDto, VisualDiffDto,
-    WindowBackendReportDto, WindowDto, WindowListResultDto, ZeroCopyBackendDto,
-    default_socket_path, send_request,
+    DesktopProfileDto, DesktopProfilesResultDto, DmaBufImportTargetDto, DmaBufProbeResultDto,
+    ElementDto, ElementListResultDto, MouseButtonDto, OcrBlockDto, OcrResultDto,
+    PluginDiscoveryErrorDto, PluginDto, PluginListResultDto, PluginToolDto,
+    PluginToolExecutionResultDto, RectDto, UiStateDto, VisualDiffDto, WindowBackendReportDto,
+    WindowDto, WindowListResultDto, ZeroCopyBackendDto, default_socket_path, send_request,
 };
 use peekaboox_vision::{
     OcrConfig, OcrOptions, OcrPreprocessingOptions, OcrResult, TesseractOcrBackend,
@@ -542,6 +542,13 @@ enum VisionElementsCommand {
 struct DesktopProfilesArgs {
     json: bool,
     app: Option<String>,
+    target: Option<String>,
+    command: Option<String>,
+    desktop_id: Option<String>,
+    supports: Option<String>,
+    check: bool,
+    installed: bool,
+    available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4542,7 +4549,29 @@ fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
 fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), CliError> {
     match command {
         DesktopCommand::Profiles(args) => {
-            print_desktop_profiles(args)?;
+            let result = daemon_request(
+                context,
+                ApiRequest::DesktopProfiles {
+                    app: args.app.clone(),
+                    target: args.target.clone(),
+                    command: args.command.clone(),
+                    desktop_id: args.desktop_id.clone(),
+                    supports: args.supports.clone(),
+                    check: args.check,
+                    installed: args.installed,
+                    available: args.available,
+                },
+            )?;
+            let ApiResult::DesktopProfiles(result) = result else {
+                return Err(CliError::Failure(
+                    "daemon returned unexpected desktop profiles response".to_owned(),
+                ));
+            };
+            print_desktop_profiles_dto(
+                result,
+                args.check || args.installed || args.available,
+                args.json,
+            )?;
             Ok(())
         }
         DesktopCommand::Focus(args) => {
@@ -4776,31 +4805,80 @@ fn print_desktop_locate_dto(target: DesktopLocateResultDto) {
 }
 
 fn print_desktop_profiles(args: DesktopProfilesArgs) -> Result<(), CliError> {
-    let profiles = if let Some(app) = args.app {
-        vec![
-            peekaboox_desktop::desktop_profile(&app)
-                .map_err(|error| CliError::Failure(error.to_string()))?,
-        ]
-    } else {
-        peekaboox_desktop::desktop_profiles()
-    };
+    let result = peekaboox_desktop::desktop_profiles_with_query(&desktop_profile_query(&args))
+        .map_err(|error| CliError::Failure(error.to_string()))?;
     if args.json {
-        print_json_pretty(&serde_json::json!({
-            "profiles": profiles.iter().map(desktop_profile_json).collect::<Vec<_>>(),
-        }))
+        print_json_pretty(&desktop_profile_list_json(&result))
     } else {
-        for profile in profiles {
-            println!(
-                "{} targets={} aliases={} desktop_ids={} commands={}",
-                profile.id,
-                profile.targets.join(","),
-                profile.aliases.join(","),
-                profile.desktop_ids.join(","),
-                profile.commands.join(",")
-            );
+        for profile in &result.profiles {
+            print_desktop_profile_line(profile, args.check || args.installed || args.available);
         }
         Ok(())
     }
+}
+
+fn desktop_profile_query(args: &DesktopProfilesArgs) -> DesktopProfileQuery {
+    DesktopProfileQuery {
+        app: args.app.clone(),
+        target: args.target.clone(),
+        command: args.command.clone(),
+        desktop_id: args.desktop_id.clone(),
+        supports: args.supports.clone(),
+        check_availability: args.check,
+        installed_only: args.installed,
+        available_only: args.available,
+    }
+}
+
+fn print_desktop_profile_line(
+    profile: &peekaboox_desktop::DesktopProfileInfo,
+    show_availability: bool,
+) {
+    let targets = profile
+        .targets
+        .iter()
+        .map(|target| {
+            if target.supports.is_empty() {
+                target.name.clone()
+            } else {
+                format!("{}[{}]", target.name, target.supports.join("+"))
+            }
+        })
+        .collect::<Vec<_>>();
+    let commands = profile
+        .commands
+        .iter()
+        .map(|command| match command.available {
+            Some(true) => format!("{}:available", command.display),
+            Some(false) => format!("{}:missing", command.display),
+            None => command.display.clone(),
+        })
+        .collect::<Vec<_>>();
+    let mut fields = vec![
+        format!("targets={}", targets.join(",")),
+        format!("aliases={}", profile.aliases.join(",")),
+        format!("desktop_ids={}", profile.desktop_ids.join(",")),
+        format!("commands={}", commands.join(",")),
+    ];
+    if show_availability {
+        fields.push(format!(
+            "installed={}",
+            profile
+                .availability
+                .installed
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_owned())
+        ));
+    }
+    println!("{} {}", profile.id, fields.join(" "));
+}
+
+fn desktop_profile_list_json(result: &peekaboox_desktop::DesktopProfileList) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": &result.schema_version,
+        "count": result.count,
+        "profiles": result.profiles.iter().map(desktop_profile_json).collect::<Vec<_>>(),
+    })
 }
 
 fn desktop_profile_json(profile: &peekaboox_desktop::DesktopProfileInfo) -> serde_json::Value {
@@ -4809,9 +4887,90 @@ fn desktop_profile_json(profile: &peekaboox_desktop::DesktopProfileInfo) -> serd
         "aliases": &profile.aliases,
         "search_name": &profile.search_name,
         "desktop_ids": &profile.desktop_ids,
-        "commands": &profile.commands,
-        "targets": &profile.targets,
+        "commands": profile.commands.iter().map(|command| serde_json::json!({
+            "program": &command.program,
+            "args": &command.args,
+            "display": &command.display,
+            "available": command.available,
+        })).collect::<Vec<_>>(),
+        "targets": profile.targets.iter().map(|target| serde_json::json!({
+            "name": &target.name,
+            "supports": &target.supports,
+            "sources": &target.sources,
+            "can_locate": target.can_locate,
+            "can_click": target.can_click,
+            "can_drag": target.can_drag,
+            "can_type": target.can_type,
+            "can_assert_present": target.can_assert_present,
+            "can_assert_active": target.can_assert_active,
+            "can_assert_contains": target.can_assert_contains,
+            "accessibility_selector": &target.accessibility_selector,
+            "visual_layout": target.visual_layout,
+            "visual_rect": target.visual_rect,
+        })).collect::<Vec<_>>(),
+        "availability": {
+            "checked": profile.availability.checked,
+            "installed": profile.availability.installed,
+            "command_available": profile.availability.command_available,
+            "desktop_entry_available": profile.availability.desktop_entry_available,
+            "available_commands": &profile.availability.available_commands,
+            "available_desktop_ids": &profile.availability.available_desktop_ids,
+        },
     })
+}
+
+fn print_desktop_profiles_dto(
+    result: DesktopProfilesResultDto,
+    show_availability: bool,
+    json: bool,
+) -> Result<(), CliError> {
+    if json {
+        return print_json_pretty(&result);
+    }
+    for profile in &result.profiles {
+        print_desktop_profile_dto_line(profile, show_availability);
+    }
+    Ok(())
+}
+
+fn print_desktop_profile_dto_line(profile: &DesktopProfileDto, show_availability: bool) {
+    let targets = profile
+        .targets
+        .iter()
+        .map(|target| {
+            if target.supports.is_empty() {
+                target.name.clone()
+            } else {
+                format!("{}[{}]", target.name, target.supports.join("+"))
+            }
+        })
+        .collect::<Vec<_>>();
+    let commands = profile
+        .commands
+        .iter()
+        .map(|command| match command.available {
+            Some(true) => format!("{}:available", command.display),
+            Some(false) => format!("{}:missing", command.display),
+            None => command.display.clone(),
+        })
+        .collect::<Vec<_>>();
+    let mut fields = vec![
+        format!("targets={}", targets.join(",")),
+        format!("aliases={}", profile.aliases.join(",")),
+        format!("desktop_ids={}", profile.desktop_ids.join(",")),
+        format!("commands={}", commands.join(",")),
+    ];
+    if show_availability {
+        fields.push(format!(
+            "installed={}",
+            profile
+                .availability
+                .installed
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_owned())
+        ));
+    }
+    println!("{} {}", profile.id, fields.join(" "));
 }
 
 fn print_desktop_action_result_json(
@@ -4871,12 +5030,34 @@ fn parse_desktop_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
 fn parse_desktop_profiles_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
     let mut json = false;
     let mut app = None;
+    let mut target = None;
+    let mut command = None;
+    let mut desktop_id = None;
+    let mut supports = None;
+    let mut check = false;
+    let mut installed = false;
+    let mut available = false;
     let mut index = 0;
 
     while index < args.len() {
         match args[index].as_str() {
             "--json" => json = true,
             "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
+            "--target" | "-t" => target = Some(parse_next_string(&args, &mut index, "--target")?),
+            "--command" => command = Some(parse_next_string(&args, &mut index, "--command")?),
+            "--desktop-id" => {
+                desktop_id = Some(parse_next_string(&args, &mut index, "--desktop-id")?)
+            }
+            "--supports" => supports = Some(parse_next_string(&args, &mut index, "--supports")?),
+            "--check" | "--availability" => check = true,
+            "--installed" => {
+                check = true;
+                installed = true;
+            }
+            "--available" => {
+                check = true;
+                available = true;
+            }
             "--help" | "-h" => return Ok(DesktopCommand::Help),
             value if value.starts_with('-') => {
                 return Err(CliError::Failure(format!(
@@ -4893,7 +5074,17 @@ fn parse_desktop_profiles_args(args: Vec<String>) -> Result<DesktopCommand, CliE
         index += 1;
     }
 
-    Ok(DesktopCommand::Profiles(DesktopProfilesArgs { json, app }))
+    Ok(DesktopCommand::Profiles(DesktopProfilesArgs {
+        json,
+        app,
+        target,
+        command,
+        desktop_id,
+        supports,
+        check,
+        installed,
+        available,
+    }))
 }
 
 fn parse_desktop_focus_args(args: Vec<String>) -> Result<DesktopCommand, CliError> {
@@ -7331,7 +7522,9 @@ fn print_vision_elements_usage() {
 }
 
 fn print_desktop_usage() {
-    println!("Usage: peekaboox desktop profiles [--app <app>] [--json]");
+    println!(
+        "Usage: peekaboox desktop profiles [--app <app>] [--target <target>] [--command <name>] [--desktop-id <id>] [--supports <capability>] [--check|--availability] [--installed|--available] [--json]"
+    );
     println!(
         "Usage: peekaboox desktop focus --app <app> [--window-id <id>|--window-title <text>] [--verify] [--json] [--no-overview] [--no-launch] [--wait-ms <ms>] [--overview-wait-ms <ms>]"
     );
@@ -8502,18 +8695,35 @@ mod tests {
             command,
             DesktopCommand::Profiles(DesktopProfilesArgs {
                 json: false,
-                app: None
+                app: None,
+                target: None,
+                command: None,
+                desktop_id: None,
+                supports: None,
+                check: false,
+                installed: false,
+                available: false
             })
         );
     }
 
     #[test]
-    fn desktop_profiles_accepts_json_and_app_filter() {
+    fn desktop_profiles_accepts_json_and_filters() {
         let command = parse_desktop_args(vec![
             "profiles".to_owned(),
             "--json".to_owned(),
             "--app".to_owned(),
             "telegram".to_owned(),
+            "--target".to_owned(),
+            "message-input".to_owned(),
+            "--command".to_owned(),
+            "flatpak".to_owned(),
+            "--desktop-id".to_owned(),
+            "org.telegram.desktop".to_owned(),
+            "--supports".to_owned(),
+            "type-into".to_owned(),
+            "--availability".to_owned(),
+            "--installed".to_owned(),
         ])
         .unwrap();
 
@@ -8521,7 +8731,14 @@ mod tests {
             command,
             DesktopCommand::Profiles(DesktopProfilesArgs {
                 json: true,
-                app: Some("telegram".to_owned())
+                app: Some("telegram".to_owned()),
+                target: Some("message-input".to_owned()),
+                command: Some("flatpak".to_owned()),
+                desktop_id: Some("org.telegram.desktop".to_owned()),
+                supports: Some("type-into".to_owned()),
+                check: true,
+                installed: true,
+                available: false
             })
         );
     }

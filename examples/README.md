@@ -92,6 +92,7 @@ bash examples/desktop/capture_delta_stream.sh
 python3 examples/python/capture_delta_runtime.py
 bash examples/mcp/jsonrpc_capture_delta.sh
 bash examples/desktop/windows_inventory.sh
+bash examples/desktop/desktop_profiles_registry.sh
 bash examples/desktop/elements_accessibility_probe.sh
 bash examples/desktop/elements_calculator.sh
 bash examples/desktop/ocr_visible_window.sh
@@ -176,6 +177,13 @@ capture under `target/examples/windows-inventory`. Override
 `PEEKABOOX_WINDOWS_BACKEND`, `PEEKABOOX_WINDOWS_APP_QUERY`,
 `PEEKABOOX_WINDOWS_TITLE_REGEX`, or `PEEKABOOX_WINDOWS_CALCULATOR_APP` for
 custom desktops.
+
+`examples/desktop/desktop_profiles_registry.sh` validates the desktop profile
+registry without opening applications. It checks JSON schema/count fields,
+filters by app, target, command, and target capability, verifies that launch
+command arguments such as `flatpak run org.telegram.desktop` are preserved, and
+exercises `--availability` metadata. It writes JSON reports under
+`target/examples/desktop-profiles`.
 
 `examples/desktop/ocr_visible_window.sh` opens
 `examples/desktop/assets/ocr_desktop_sample.png` in the desktop's image viewer,

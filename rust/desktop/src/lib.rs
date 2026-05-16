@@ -262,15 +262,111 @@ pub struct DesktopProfileInfo {
     pub aliases: Vec<String>,
     pub search_name: String,
     pub desktop_ids: Vec<String>,
-    pub commands: Vec<String>,
-    pub targets: Vec<String>,
+    pub commands: Vec<DesktopProfileCommandInfo>,
+    pub targets: Vec<DesktopProfileTargetInfo>,
+    pub availability: DesktopProfileAvailability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopProfileCommandInfo {
+    pub program: String,
+    pub args: Vec<String>,
+    pub display: String,
+    pub available: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopProfileTargetInfo {
+    pub name: String,
+    pub supports: Vec<String>,
+    pub sources: Vec<String>,
+    pub can_locate: bool,
+    pub can_click: bool,
+    pub can_drag: bool,
+    pub can_type: bool,
+    pub can_assert_present: bool,
+    pub can_assert_active: bool,
+    pub can_assert_contains: bool,
+    pub accessibility_selector: Option<String>,
+    pub visual_layout: bool,
+    pub visual_rect: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopProfileAvailability {
+    pub checked: bool,
+    pub installed: Option<bool>,
+    pub command_available: Option<bool>,
+    pub desktop_entry_available: Option<bool>,
+    pub available_commands: Vec<String>,
+    pub available_desktop_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DesktopProfileQuery {
+    pub app: Option<String>,
+    pub target: Option<String>,
+    pub command: Option<String>,
+    pub desktop_id: Option<String>,
+    pub supports: Option<String>,
+    pub check_availability: bool,
+    pub installed_only: bool,
+    pub available_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopProfileList {
+    pub schema_version: String,
+    pub count: usize,
+    pub profiles: Vec<DesktopProfileInfo>,
 }
 
 pub fn supported_apps() -> &'static [&'static str] {
     SUPPORTED_APPS
 }
 
+pub const DESKTOP_PROFILE_SCHEMA_VERSION: &str = "desktop-profiles.v1";
+
 pub fn desktop_profiles() -> Vec<DesktopProfileInfo> {
+    desktop_profiles_with_query(&DesktopProfileQuery::default())
+        .map(|result| result.profiles)
+        .unwrap_or_default()
+}
+
+pub fn desktop_profiles_with_query(query: &DesktopProfileQuery) -> Result<DesktopProfileList> {
+    let check_availability =
+        query.check_availability || query.installed_only || query.available_only;
+    let app = query
+        .app
+        .as_deref()
+        .map(str::trim)
+        .filter(|app| !app.is_empty());
+    let profiles = if let Some(app) = app {
+        let matches = matching_profiles_for_app(app);
+        if matches.is_empty() {
+            return Err(PeekabooXError::new(format!(
+                "unsupported desktop app {app:?}; supported apps: {}",
+                SUPPORTED_APPS.join(", ")
+            )));
+        }
+        matches
+    } else {
+        all_desktop_profiles().to_vec()
+    }
+    .into_iter()
+    .map(|profile| profile_info(profile, check_availability))
+    .filter(|profile| profile_matches_query(profile, query))
+    .collect::<Vec<_>>();
+
+    let count = profiles.len();
+    Ok(DesktopProfileList {
+        schema_version: DESKTOP_PROFILE_SCHEMA_VERSION.to_owned(),
+        count,
+        profiles,
+    })
+}
+
+fn all_desktop_profiles() -> [&'static AppProfile; 6] {
     [
         &TELEGRAM_PROFILE,
         &PAINT_PROFILE,
@@ -279,16 +375,112 @@ pub fn desktop_profiles() -> Vec<DesktopProfileInfo> {
         &KOLOURPAINT_PROFILE,
         &TEXT_EDITOR_PROFILE,
     ]
-    .into_iter()
-    .map(profile_info)
-    .collect()
+}
+
+fn matching_profiles_for_app(app: &str) -> Vec<&'static AppProfile> {
+    let profiles = all_desktop_profiles();
+    let id_matches = profiles
+        .iter()
+        .copied()
+        .filter(|profile| profile.id.eq_ignore_ascii_case(app))
+        .collect::<Vec<_>>();
+    if !id_matches.is_empty() {
+        return id_matches;
+    }
+
+    let specific_matches = profiles
+        .iter()
+        .copied()
+        .filter(|profile| profile.id != PAINT_PROFILE_ID && profile.matches_registry_filter(app))
+        .collect::<Vec<_>>();
+    if !specific_matches.is_empty() {
+        return specific_matches;
+    }
+
+    profiles
+        .iter()
+        .copied()
+        .filter(|profile| profile.matches_registry_filter(app))
+        .collect()
 }
 
 pub fn desktop_profile(app: &str) -> Result<DesktopProfileInfo> {
-    resolve_profile(app).map(profile_info)
+    let query = DesktopProfileQuery {
+        app: Some(app.to_owned()),
+        ..Default::default()
+    };
+    desktop_profiles_with_query(&query)?
+        .profiles
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            PeekabooXError::new(format!(
+                "unsupported desktop app {app:?}; supported apps: {}",
+                SUPPORTED_APPS.join(", ")
+            ))
+        })
 }
 
-fn profile_info(profile: &AppProfile) -> DesktopProfileInfo {
+fn profile_matches_query(profile: &DesktopProfileInfo, query: &DesktopProfileQuery) -> bool {
+    if let Some(target) = normalized_filter(query.target.as_deref())
+        && !profile
+            .targets
+            .iter()
+            .any(|candidate| candidate.name.eq_ignore_ascii_case(&target))
+    {
+        return false;
+    }
+
+    if let Some(command) = normalized_filter(query.command.as_deref())
+        && !profile.commands.iter().any(|candidate| {
+            candidate.program.eq_ignore_ascii_case(&command)
+                || candidate.display.eq_ignore_ascii_case(&command)
+                || contains_case_insensitive(&candidate.display, &command)
+        })
+    {
+        return false;
+    }
+
+    if let Some(desktop_id) = normalized_filter(query.desktop_id.as_deref())
+        && !profile
+            .desktop_ids
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(&desktop_id))
+    {
+        return false;
+    }
+
+    if let Some(support) = normalized_support_filter(query.supports.as_deref())
+        && !profile.targets.iter().any(|target| {
+            target
+                .supports
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(&support))
+        })
+    {
+        return false;
+    }
+
+    if query.installed_only || query.available_only {
+        return profile.availability.installed.unwrap_or(false);
+    }
+
+    true
+}
+
+fn normalized_filter(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn normalized_support_filter(value: Option<&str>) -> Option<String> {
+    normalized_filter(value).map(|value| value.replace('_', "-").to_ascii_lowercase())
+}
+
+fn profile_info(profile: &AppProfile, check_availability: bool) -> DesktopProfileInfo {
+    let availability = profile_availability(profile, check_availability);
     DesktopProfileInfo {
         id: profile.id.to_owned(),
         aliases: profile
@@ -305,14 +497,187 @@ fn profile_info(profile: &AppProfile) -> DesktopProfileInfo {
         commands: profile
             .commands
             .iter()
-            .map(|command| command.program.to_owned())
+            .map(|command| command_info(command, check_availability))
             .collect(),
         targets: profile
             .supported_targets()
             .iter()
-            .map(|target| (*target).to_owned())
+            .map(|target| target_info(profile, target))
             .collect(),
+        availability,
     }
+}
+
+fn command_info(command: &CommandSpec, check_availability: bool) -> DesktopProfileCommandInfo {
+    DesktopProfileCommandInfo {
+        program: command.program.to_owned(),
+        args: command
+            .args
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
+        display: command.display(),
+        available: check_availability.then(|| command_available(command)),
+    }
+}
+
+fn target_info(profile: &AppProfile, target: &str) -> DesktopProfileTargetInfo {
+    let accessibility_selector = profile.accessibility_selector(target);
+    let visual_rect = target_has_visual_rect(profile.kind, target);
+    let can_type = target_accepts_text(profile.kind, target);
+    let can_assert_active = target_exposes_active_state(profile.kind, target);
+    let can_assert_contains = visual_rect && target_can_contain_text(profile.kind, target);
+    let can_drag = visual_rect && target_accepts_drag(profile.kind, target);
+
+    let mut supports = vec![
+        "locate".to_owned(),
+        "click".to_owned(),
+        "assert-present".to_owned(),
+        "visual-layout".to_owned(),
+    ];
+    if accessibility_selector.is_some() {
+        supports.push("accessibility".to_owned());
+    }
+    if can_drag {
+        supports.push("drag".to_owned());
+    }
+    if can_type {
+        supports.push("type-into".to_owned());
+    }
+    if can_assert_active {
+        supports.push("assert-active".to_owned());
+    }
+    if can_assert_contains {
+        supports.push("assert-contains".to_owned());
+    }
+
+    let mut sources = vec!["visual-layout".to_owned()];
+    if accessibility_selector.is_some() {
+        sources.push("accessibility".to_owned());
+    }
+
+    DesktopProfileTargetInfo {
+        name: target.to_owned(),
+        supports,
+        sources,
+        can_locate: true,
+        can_click: true,
+        can_drag,
+        can_type,
+        can_assert_present: true,
+        can_assert_active,
+        can_assert_contains,
+        accessibility_selector: accessibility_selector.map(ToOwned::to_owned),
+        visual_layout: true,
+        visual_rect,
+    }
+}
+
+fn profile_availability(
+    profile: &AppProfile,
+    check_availability: bool,
+) -> DesktopProfileAvailability {
+    if !check_availability {
+        return DesktopProfileAvailability {
+            checked: false,
+            installed: None,
+            command_available: None,
+            desktop_entry_available: None,
+            available_commands: Vec::new(),
+            available_desktop_ids: Vec::new(),
+        };
+    }
+
+    let available_commands = profile
+        .commands
+        .iter()
+        .filter(|command| command_available(command))
+        .map(CommandSpec::display)
+        .collect::<Vec<_>>();
+    let available_desktop_ids = profile
+        .desktop_ids
+        .iter()
+        .filter(|desktop_id| desktop_entry_exists(desktop_id))
+        .map(|desktop_id| (*desktop_id).to_owned())
+        .collect::<Vec<_>>();
+    let command_available = !available_commands.is_empty();
+    let desktop_entry_available = !available_desktop_ids.is_empty();
+
+    DesktopProfileAvailability {
+        checked: true,
+        installed: Some(command_available || desktop_entry_available),
+        command_available: Some(command_available),
+        desktop_entry_available: Some(desktop_entry_available),
+        available_commands,
+        available_desktop_ids,
+    }
+}
+
+fn target_has_visual_rect(kind: ProfileKind, target: &str) -> bool {
+    !matches!((kind, target), (ProfileKind::Telegram, "search-clear"))
+}
+
+fn target_accepts_text(kind: ProfileKind, target: &str) -> bool {
+    matches!(
+        (kind, target),
+        (ProfileKind::Telegram, "search-input")
+            | (ProfileKind::Telegram, "message-input")
+            | (ProfileKind::TextEditor, "document")
+    )
+}
+
+fn target_exposes_active_state(kind: ProfileKind, target: &str) -> bool {
+    matches!((kind, target), (ProfileKind::Telegram, "send-button"))
+}
+
+fn target_can_contain_text(kind: ProfileKind, target: &str) -> bool {
+    matches!(
+        (kind, target),
+        (ProfileKind::Telegram, "search-input")
+            | (ProfileKind::Telegram, "search-result")
+            | (ProfileKind::Telegram, "message-input")
+            | (ProfileKind::Telegram, "header")
+            | (ProfileKind::TextEditor, "document")
+    )
+}
+
+fn target_accepts_drag(kind: ProfileKind, target: &str) -> bool {
+    matches!(
+        (kind, target),
+        (ProfileKind::Paint, "canvas") | (ProfileKind::TextEditor, "document")
+    )
+}
+
+fn desktop_entry_exists(desktop_id: &str) -> bool {
+    let filename = if desktop_id.ends_with(".desktop") {
+        desktop_id.to_owned()
+    } else {
+        format!("{desktop_id}.desktop")
+    };
+
+    desktop_entry_roots()
+        .into_iter()
+        .any(|root| root.join(&filename).is_file())
+}
+
+fn desktop_entry_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(value) = env::var_os("XDG_DATA_HOME") {
+        roots.push(PathBuf::from(value).join("applications"));
+    }
+    if let Some(home) = env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        roots.push(home.join(".local/share/applications"));
+        roots.push(home.join(".local/share/flatpak/exports/share/applications"));
+    }
+    if let Some(value) = env::var_os("XDG_DATA_DIRS") {
+        roots.extend(env::split_paths(&value).map(|path| path.join("applications")));
+    } else {
+        roots.push(PathBuf::from("/usr/local/share/applications"));
+        roots.push(PathBuf::from("/usr/share/applications"));
+    }
+    roots.push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
+    roots
 }
 
 pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResult> {
@@ -1017,6 +1382,16 @@ struct CommandSpec {
     args: &'static [&'static str],
 }
 
+impl CommandSpec {
+    fn display(&self) -> String {
+        if self.args.is_empty() {
+            self.program.to_owned()
+        } else {
+            format!("{} {}", self.program, self.args.join(" "))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProfileKind {
     Telegram,
@@ -1041,6 +1416,14 @@ impl AppProfile {
                 .aliases
                 .iter()
                 .any(|alias| alias.eq_ignore_ascii_case(value))
+            || self
+                .desktop_ids
+                .iter()
+                .any(|desktop_id| desktop_id.eq_ignore_ascii_case(value))
+    }
+
+    fn matches_registry_filter(self, value: &str) -> bool {
+        self.matches_id(value)
     }
 
     fn matches_window(self, window: &peekaboox_core::WindowInfo) -> bool {
@@ -1947,6 +2330,24 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
         .contains(&needle.to_ascii_lowercase())
 }
 
+fn command_available(command: &CommandSpec) -> bool {
+    if command.program == "flatpak"
+        && command.args.first().copied() == Some("run")
+        && let Some(app_id) = command.args.get(1)
+    {
+        return command_exists("flatpak")
+            && Command::new("flatpak")
+                .arg("info")
+                .arg(app_id)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+    }
+
+    command_exists(command.program)
+}
+
 fn command_exists(command: &str) -> bool {
     if command.contains('/') {
         return Path::new(command).is_file();
@@ -1979,6 +2380,33 @@ mod tests {
             resolve_profile("gnome-text-editor").unwrap().id,
             "text-editor"
         );
+    }
+
+    #[test]
+    fn desktop_profile_query_prefers_specific_profiles_over_paint_aggregate() {
+        let drawing = desktop_profiles_with_query(&DesktopProfileQuery {
+            app: Some("drawing".to_owned()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(drawing.count, 1);
+        assert_eq!(drawing.profiles[0].id, "drawing");
+
+        let drawing_desktop_id = desktop_profiles_with_query(&DesktopProfileQuery {
+            app: Some("com.github.maoschanz.drawing".to_owned()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(drawing_desktop_id.count, 1);
+        assert_eq!(drawing_desktop_id.profiles[0].id, "drawing");
+
+        let paint = desktop_profiles_with_query(&DesktopProfileQuery {
+            app: Some("paint".to_owned()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(paint.count, 1);
+        assert_eq!(paint.profiles[0].id, "paint");
     }
 
     #[test]
