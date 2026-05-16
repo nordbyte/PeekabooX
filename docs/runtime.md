@@ -262,6 +262,10 @@ plugin discovery/execution, semantic desktop graph ingestion/querying,
 workflow generation/refinement/replanning/execution, workflow recording tools,
 runtime audit tools, and CLI-compatible aliases such as `elements`, `ocr`,
 `vision_elements`, and `capture_dmabuf`.
+Run `examples/python/capture_dmabuf_runtime.py` to validate the Python runtime
+DMA-BUF result mapping without requiring a live PipeWire DMA-BUF session, and
+`examples/mcp/jsonrpc_capture_dmabuf.sh` to validate the MCP
+`probe_dmabuf`/`capture_dmabuf` schemas with an optional live daemon call.
 `list_windows` accepts the same filtering and diagnostics fields as the daemon
 CLI: `id`, `app`, `title`, `title_regex`, `focused`, `limit`, `sort`,
 `backend`, and `diagnose`.

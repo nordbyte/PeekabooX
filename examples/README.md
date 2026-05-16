@@ -51,6 +51,13 @@ stable, loading, ignored volatile regions, absolute stable/loading pixel gates,
 and common-region size policy. It writes temporary fixture output under
 `target/examples/ui-state-sequence`.
 
+`examples/cli/capture_dmabuf_probe.sh` validates the `capture-dmabuf` CLI entry
+point and the zero-copy diagnostics exposed by `capture-backends`. It skips the
+live PipeWire DMA-BUF capture/import probe by default because that path requires
+a Portal/PipeWire session and a feature-enabled build; set
+`PEEKABOOX_DMABUF_LIVE=1` to run the live probe and
+`PEEKABOOX_DMABUF_IMPORT=compute|egl|egl-texture` to choose the import target.
+
 `examples/cli/ocr-smoke.sh` uses `tests/fixtures/ocr/ocr_sample.png` to test
 Tesseract-backed OCR over an image file, region OCR, JSON block metadata, and
 word-level output. It skips cleanly when `tesseract` is not installed.
@@ -89,6 +96,9 @@ options, repeats, and modifier release flags.
 `examples/python/plugins_runtime.py` checks Plugin SDK discovery and execution
 through `AgentRuntime.list_plugins(...)` and `AgentRuntime.call_plugin_tool(...)`
 with explicit plugin paths and bounded output.
+`examples/python/capture_dmabuf_runtime.py` validates the Python runtime
+`probe_dmabuf(...)` result mapping with a deterministic recording client, so it
+does not require DMA-BUF-capable hardware or a live daemon.
 `examples/mcp/jsonrpc_preflight.sh` uses those Doctor categories through the MCP
 `preflight` tool before a capture-style operation.
 `examples/mcp/jsonrpc_preflight_error_client.sh` injects a deterministic Doctor
@@ -108,7 +118,9 @@ schema for backend selection, timing, repeats, dry-run, and modifier release
 fields, with an optional dry-run daemon call when `PEEKABOOX_MCP_HOTKEY_LIVE=1`.
 `jsonrpc_plugins.sh` validates the MCP `list_plugins` and `call_plugin_tool`
 schemas, discovers the system-info example plugin, and executes its read-only
-tool through JSON-RPC.
+tool through JSON-RPC. `jsonrpc_capture_dmabuf.sh` validates the MCP
+`probe_dmabuf` and `capture_dmabuf` schemas, with an optional live daemon call
+when `PEEKABOOX_MCP_DMABUF_LIVE=1`.
 
 ## Live desktop examples
 
@@ -118,6 +130,7 @@ accessibility, and input backends:
 ```bash
 bash examples/desktop/live_smoke.sh
 bash examples/desktop/capture_backends_diagnostics.sh
+examples/cli/capture_dmabuf_probe.sh
 ./examples/desktop/capture_window_targets.sh
 ./examples/desktop/capture_daemon_mcp_targets.sh
 python3 examples/python/capture_backends_runtime.py
