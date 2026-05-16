@@ -395,6 +395,8 @@ reported the same way with `ConfirmationRequiredError` or
 Doctor-backed preflight blocks return `PreflightError` with
 `blocked_categories`, `warning_categories`, `next_action`, and the full
 `preflight` result in `structuredContent`.
+`examples/mcp/jsonrpc_preflight_error_client.sh` is a CI-safe client-side sample
+for handling that response shape and prompting the user to run Doctor.
 Set `--audit-log` or `PEEKABOOX_RUNTIME_AUDIT_LOG` to persist those runtime
 checks for MCP sessions. Set `--capability-profile`,
 `PEEKABOOX_MCP_CAPABILITY_PROFILE`, or `PEEKABOOX_CAPABILITY_PROFILE` to apply a

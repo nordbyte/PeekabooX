@@ -208,6 +208,8 @@ control Doctor-backed preflight gates without changing application code.
 When preflight blocks an MCP tool call, the tool result keeps `isError: true`
 and includes `blocked_categories`, `warning_categories`, `next_action`, and the
 full `preflight` object in `structuredContent`.
+Run `examples/mcp/jsonrpc_preflight_error_client.sh` for a deterministic
+client-side example that turns those fields into a `run_doctor` recovery action.
 
 The current tool surface includes capture, capture delta, DMA-BUF probe,
 click, text and paste input, semantic lookup, window listing, desktop state,

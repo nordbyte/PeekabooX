@@ -16,6 +16,7 @@ PYTHONPATH=python/src python3 examples/python/doctor_runtime.py
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_list_tools.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_doctor.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_preflight.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_preflight_error_client.sh
 cargo run -q -p peekaboox-cli -- doctor --json
 ```
 
@@ -40,6 +41,10 @@ category rollups, then write JSON under
 `PEEKABOOX_BIN` to test an installed binary instead of the local Cargo fallback.
 `examples/mcp/jsonrpc_preflight.sh` uses those Doctor categories through the MCP
 `preflight` tool before a capture-style operation.
+`examples/mcp/jsonrpc_preflight_error_client.sh` injects a deterministic Doctor
+failure, calls `click` through MCP with strict preflight, and shows how an MCP
+client can branch on `PreflightError.next_action` and `blocked_categories`
+without parsing prose error text.
 
 ## Live desktop examples
 

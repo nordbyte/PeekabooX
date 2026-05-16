@@ -115,6 +115,8 @@ an in-memory audit event available through `runtime.capability_audit()`.
 Preflight denials are also surfaced as tool results with `isError: true`, but
 include structured `blocked_categories`, `warning_categories`, `next_action`,
 and `preflight` fields so clients do not need to parse the message text.
+The `examples/mcp/jsonrpc_preflight_error_client.sh` sample demonstrates this
+path with a deterministic Doctor failure and a strict MCP tool call.
 
 Pass `audit_log_path` to persist capability, confirmation, and preflight checks
 as JSONL:
