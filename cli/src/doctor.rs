@@ -46,17 +46,23 @@ impl DoctorCheck {
     }
 
     fn status_label(&self) -> &'static str {
-        match self.status {
-            CheckStatus::Ok => "ok",
-            CheckStatus::Warn => "warn",
-            CheckStatus::Fail => "fail",
-        }
+        status_label(self.status)
+    }
+
+    fn severity_label(&self) -> &'static str {
+        severity_label(self.status)
+    }
+
+    fn category_label(&self) -> &'static str {
+        check_category(self.name.as_str())
     }
 
     fn to_json(&self) -> Value {
         json!({
             "name": self.name,
+            "category": self.category_label(),
             "status": self.status_label(),
+            "severity": self.severity_label(),
             "detail": self.detail,
         })
     }
@@ -79,6 +85,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), CliError> {
             "{}",
             serde_json::to_string_pretty(&json!({
                 "status": status,
+                "categories": category_summaries(&checks),
                 "checks": checks.iter().map(DoctorCheck::to_json).collect::<Vec<_>>(),
             }))
             .map_err(|error| CliError::Failure(error.to_string()))?
@@ -394,6 +401,83 @@ fn backend_kind_label(kind: BackendKind) -> String {
     format!("{kind:?}").to_ascii_lowercase()
 }
 
+fn severity_label(status: CheckStatus) -> &'static str {
+    match status {
+        CheckStatus::Ok => "info",
+        CheckStatus::Warn => "warning",
+        CheckStatus::Fail => "error",
+    }
+}
+
+fn status_label(status: CheckStatus) -> &'static str {
+    match status {
+        CheckStatus::Ok => "ok",
+        CheckStatus::Warn => "warn",
+        CheckStatus::Fail => "fail",
+    }
+}
+
+fn check_category(name: &str) -> &'static str {
+    if name.starts_with("capture-") {
+        return "capture";
+    }
+    if name.starts_with("input-") {
+        return "input";
+    }
+    match name {
+        "desktop-session" | "display-server" | "windows" | "desktop-profiles" | "command:gdbus"
+        | "command:gtk-launch" => "desktop",
+        "ocr" | "command:tesseract" => "ocr",
+        "python-grpc" | "command:python3" => "python",
+        "command:xdotool" | "command:ydotool" | "command:wtype" | "command:wl-copy"
+        | "command:xclip" | "command:xsel" => "input",
+        _ => "general",
+    }
+}
+
+fn category_summaries(checks: &[DoctorCheck]) -> Vec<Value> {
+    let mut categories = checks
+        .iter()
+        .map(DoctorCheck::category_label)
+        .collect::<Vec<_>>();
+    categories.sort_unstable();
+    categories.dedup();
+    categories
+        .into_iter()
+        .map(|category| {
+            let mut ok_count = 0;
+            let mut warn_count = 0;
+            let mut fail_count = 0;
+            for check in checks
+                .iter()
+                .filter(|check| check.category_label() == category)
+            {
+                match check.status {
+                    CheckStatus::Ok => ok_count += 1,
+                    CheckStatus::Warn => warn_count += 1,
+                    CheckStatus::Fail => fail_count += 1,
+                }
+            }
+            let status = if fail_count > 0 {
+                CheckStatus::Fail
+            } else if warn_count > 0 {
+                CheckStatus::Warn
+            } else {
+                CheckStatus::Ok
+            };
+            json!({
+                "name": category,
+                "status": status_label(status),
+                "severity": severity_label(status),
+                "ok_count": ok_count,
+                "warn_count": warn_count,
+                "fail_count": fail_count,
+                "total_count": ok_count + warn_count + fail_count,
+            })
+        })
+        .collect()
+}
+
 fn command_exists(command: &str) -> bool {
     Command::new("sh")
         .arg("-c")
@@ -407,4 +491,43 @@ fn command_exists(command: &str) -> bool {
 fn shell_escape(value: &str) -> String {
     let escaped = value.replace('\'', "'\\''");
     format!("'{escaped}'")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DoctorCheck, category_summaries};
+
+    #[test]
+    fn doctor_check_json_includes_category_and_severity() {
+        let check = DoctorCheck::warn("capture-frame", "no direct backend candidate detected");
+        let payload = check.to_json();
+
+        assert_eq!(payload["category"], "capture");
+        assert_eq!(payload["status"], "warn");
+        assert_eq!(payload["severity"], "warning");
+    }
+
+    #[test]
+    fn category_summaries_roll_up_worst_status() {
+        let summaries = category_summaries(&[
+            DoctorCheck::ok("input-click", "ok"),
+            DoctorCheck::warn("command:wtype", "missing"),
+            DoctorCheck::fail("display-server", "missing display"),
+        ]);
+
+        let input = summaries
+            .iter()
+            .find(|summary| summary["name"] == "input")
+            .unwrap();
+        let desktop = summaries
+            .iter()
+            .find(|summary| summary["name"] == "desktop")
+            .unwrap();
+
+        assert_eq!(input["status"], "warn");
+        assert_eq!(input["severity"], "warning");
+        assert_eq!(input["total_count"], 2);
+        assert_eq!(desktop["status"], "fail");
+        assert_eq!(desktop["severity"], "error");
+    }
 }

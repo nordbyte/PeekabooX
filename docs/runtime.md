@@ -25,6 +25,7 @@ print(runtime.list_windows())
 print(runtime.list_windows(focused=True, limit=1, sort="focused"))
 print(runtime.list_windows_result(app="calculator", diagnose=True))
 print(runtime.doctor().status)
+print(runtime.doctor().categories)
 print(runtime.find_element("role=push button"))
 print(runtime.ocr_screen().text)
 print(

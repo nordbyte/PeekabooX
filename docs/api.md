@@ -448,7 +448,8 @@ accepts `stream_id`, `reset`, optional `region` or `window_id`,
 capture streams. `capture_backends` accepts `output`, optional `region`,
 `diagnose`, and `probe` values `none`, `file`, `frame`, `region`, `dmabuf`, or
 `all`. `doctor` accepts optional `strict` and `timeout_seconds` arguments and
-returns the structured `peekaboox doctor --json` health checks.
+returns the structured `peekaboox doctor --json` health checks with per-check
+`category`/`severity` fields and top-level category summaries.
 The desktop helper tools accept supported app profile names such as `telegram`,
 `paint`, `drawing`, `pinta`, `kolourpaint`, and `text-editor`, plus named
 targets such as Telegram's `search-input`/`message-input`, Paint's `canvas`, or

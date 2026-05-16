@@ -27,7 +27,8 @@ word-level output. It skips cleanly when `tesseract` is not installed.
 
 `examples/python/doctor_runtime.py` and `examples/mcp/jsonrpc_doctor.sh` run the
 same structured environment diagnostics through `AgentRuntime.doctor(...)` and
-MCP JSON-RPC `tools/call`. They validate the result shape and write JSON under
+MCP JSON-RPC `tools/call`. They validate per-check categories, severities, and
+category rollups, then write JSON under
 `target/examples/python-doctor` or `target/examples/mcp-doctor`. Set
 `PEEKABOOX_BIN` to test an installed binary instead of the local Cargo fallback.
 

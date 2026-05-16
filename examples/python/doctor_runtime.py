@@ -50,11 +50,32 @@ def main() -> int:
         raise AssertionError("doctor returned no checks")
     if result.status not in {"ok", "fail"}:
         raise AssertionError(f"unexpected doctor status: {result.status}")
+    if not result.categories:
+        raise AssertionError("doctor returned no category summaries")
     names = {check.name for check in result.checks}
     required = {"desktop-session", "display-server", "desktop-profiles"}
     missing = sorted(required - names)
     if missing:
         raise AssertionError(f"doctor output is missing checks: {', '.join(missing)}")
+    for check in result.checks:
+        if check.status not in {"ok", "warn", "fail"}:
+            raise AssertionError(f"doctor check {check.name} has invalid status: {check.status}")
+        if check.severity not in {"info", "warning", "error"}:
+            raise AssertionError(
+                f"doctor check {check.name} has invalid severity: {check.severity}"
+            )
+        if not check.category:
+            raise AssertionError(f"doctor check {check.name} is missing a category")
+    categories = {category.name: category for category in result.categories}
+    required_categories = {"desktop", "capture", "input", "ocr", "python"}
+    missing_categories = sorted(required_categories - categories.keys())
+    if missing_categories:
+        raise AssertionError(
+            f"doctor output is missing categories: {', '.join(missing_categories)}"
+        )
+    for category in result.categories:
+        if category.total_count != category.ok_count + category.warn_count + category.fail_count:
+            raise AssertionError(f"doctor category {category.name} count total does not match")
 
     output_path = out_dir / "doctor.json"
     output_path.write_text(
@@ -68,6 +89,7 @@ def main() -> int:
         "warn": result.warn_count,
         "fail": result.fail_count,
         "checks": len(result.checks),
+        "categories": {name: category.status for name, category in categories.items()},
     }
     print(json.dumps(summary, sort_keys=True))
     return 0

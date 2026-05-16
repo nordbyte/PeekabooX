@@ -14,8 +14,9 @@ The Rust side owns low-latency desktop integration:
   through CLI, daemon IPC, gRPC, Python runtime, and MCP. Helpers support
   exact `window_id` scoping, optional post-action verification, and a CLI-visible
   app/target profile registry.
-- environment diagnostics through `peekaboox doctor`, which reports capture,
-  window, input, OCR, Python gRPC, and profile availability as text or JSON
+- environment diagnostics through `peekaboox doctor`, which reports categorized
+  capture, window, input, OCR, Python gRPC, and profile availability as text or
+  JSON
 - IPC contracts
 
 The Python side owns agent orchestration:

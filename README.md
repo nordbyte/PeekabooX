@@ -24,8 +24,8 @@ JSON output, runnable examples, and release-grade packaging.
   CLI, daemon, gRPC, Python, and MCP integration.
 - Local packaging for Rust binaries, Python wheels, Debian packages, Docker
   smoke images, Nix shells, release manifests, and checksums.
-- Environment diagnostics through `peekaboox doctor`, including capture,
-  window, input, OCR, Python gRPC, and desktop-profile checks.
+- Categorized environment diagnostics through `peekaboox doctor`, including
+  capture, window, input, OCR, Python gRPC, and desktop-profile checks.
 
 ## Install
 
@@ -126,7 +126,7 @@ Shell-native completion generation is not part of the current CLI surface.
 | [state](docs/cli.md#vision-tools) | `--image`, `--json` | Classify screen samples as stable, loading, or changing |
 | [vision-elements](docs/cli.md#vision-tools) | `--min-width`, `--max-elements`, `--json` | Detect UI-like regions from pixels |
 | [desktop](docs/cli.md#desktop-helpers) | `profiles`, `focus`, `locate`, `click`, `drag`, `type-into`, `assert` | Use app profiles and named targets |
-| [doctor](docs/cli.md#doctor) | `--json`, `--strict` | Diagnose capture, input, OCR, Python, and profile support |
+| [doctor](docs/cli.md#doctor) | `--json`, `--strict` | Diagnose capture, input, OCR, Python, and profile support with category summaries |
 | [click](docs/cli.md#input-actions) | `--x`, `--y`, `--text`, `--selector`, `--dry-run` | Click coordinates or semantic targets |
 | [move](docs/cli.md#input-actions) | `--x`, `--y`, `--dry-run` | Move the pointer |
 | [drag](docs/cli.md#input-actions) | `--from`, `--to`, `--duration-ms`, `--dry-run` | Drag between coordinates |

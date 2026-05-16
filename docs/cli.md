@@ -262,6 +262,9 @@ cargo run -q -p peekaboox-cli -- doctor --strict
 
 `doctor` reports display/session state, helper commands, capture, DMA-BUF,
 window enumeration, input, OCR, Python gRPC imports, and desktop profiles.
+JSON output includes a `category` and `severity` for every check plus top-level
+`categories` summaries so agents can decide whether capture, input, OCR,
+desktop, or Python runtime support is currently usable.
 
 ## Daemon Routing
 

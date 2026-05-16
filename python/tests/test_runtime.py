@@ -675,12 +675,46 @@ class RuntimeTests(unittest.TestCase):
             runtime.plan(" ")
 
     def test_run_doctor_maps_cli_json(self) -> None:
-        script = (
-            "import json, sys; "
-            "print(json.dumps({'status':'ok','checks':["
-            "{'name':'display-server','status':'ok','detail':'display ready'},"
-            "{'name':'ocr','status':'warn','detail':'tesseract missing'}]}))"
-        )
+        payload = {
+            "status": "ok",
+            "categories": [
+                {
+                    "name": "desktop",
+                    "status": "ok",
+                    "severity": "info",
+                    "ok_count": 1,
+                    "warn_count": 0,
+                    "fail_count": 0,
+                    "total_count": 1,
+                },
+                {
+                    "name": "ocr",
+                    "status": "warn",
+                    "severity": "warning",
+                    "ok_count": 0,
+                    "warn_count": 1,
+                    "fail_count": 0,
+                    "total_count": 1,
+                },
+            ],
+            "checks": [
+                {
+                    "name": "display-server",
+                    "category": "desktop",
+                    "status": "ok",
+                    "severity": "info",
+                    "detail": "display ready",
+                },
+                {
+                    "name": "ocr",
+                    "category": "ocr",
+                    "status": "warn",
+                    "severity": "warning",
+                    "detail": "tesseract missing",
+                },
+            ],
+        }
+        script = f"import json; print(json.dumps({payload!r}))"
 
         result = run_doctor(command=(sys.executable, "-c", script), strict=True)
 
@@ -690,6 +724,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.warn_count, 1)
         self.assertEqual(result.fail_count, 0)
         self.assertEqual(result.checks[0].name, "display-server")
+        self.assertEqual(result.checks[0].category, "desktop")
+        self.assertEqual(result.checks[1].severity, "warning")
+        self.assertEqual([category.name for category in result.categories], ["desktop", "ocr"])
+        self.assertEqual(result.categories[1].status, "warn")
 
     def test_mcp_server_registers_default_tools(self) -> None:
         server = McpServer()
@@ -1998,6 +2036,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["fail_count"], 1)
         self.assertEqual(result["checks"][0]["name"], "display-server")
+        self.assertEqual(result["checks"][0]["category"], "desktop")
+        self.assertEqual(result["checks"][0]["severity"], "error")
+        self.assertEqual(result["categories"][0]["name"], "desktop")
+        self.assertEqual(result["categories"][0]["severity"], "error")
 
     def test_mcp_server_validates_doctor_arguments(self) -> None:
         server = McpServer(runtime=AgentRuntime(client=FakeClient()))

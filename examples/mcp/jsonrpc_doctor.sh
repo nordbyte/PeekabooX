@@ -43,15 +43,35 @@ if result.get("isError"):
     raise SystemExit(json.dumps(result, indent=2))
 data = result.get("structuredContent", {})
 checks = data.get("checks", [])
+categories = data.get("categories", [])
 if data.get("status") not in {"ok", "fail"}:
     raise SystemExit(f"unexpected doctor status: {data.get('status')}")
 if not checks:
     raise SystemExit("doctor returned no checks")
+if not categories:
+    raise SystemExit("doctor returned no category summaries")
 names = {check.get("name") for check in checks}
 required = {"desktop-session", "display-server", "desktop-profiles"}
 missing = sorted(required - names)
 if missing:
     raise SystemExit(f"missing doctor checks: {', '.join(missing)}")
+for check in checks:
+    if not check.get("category"):
+        raise SystemExit(f"doctor check {check.get('name')} is missing a category")
+    if check.get("severity") not in {"info", "warning", "error"}:
+        raise SystemExit(f"doctor check {check.get('name')} has invalid severity")
+category_names = {category.get("name") for category in categories}
+required_categories = {"desktop", "capture", "input", "ocr", "python"}
+missing_categories = sorted(required_categories - category_names)
+if missing_categories:
+    raise SystemExit(f"missing doctor categories: {', '.join(missing_categories)}")
+for category in categories:
+    for key in ("ok_count", "warn_count", "fail_count", "total_count"):
+        if not isinstance(category.get(key), int):
+            raise SystemExit(f"doctor category {category.get('name')} missing integer {key}")
+    total = category["ok_count"] + category["warn_count"] + category["fail_count"]
+    if category["total_count"] != total:
+        raise SystemExit(f"doctor category {category.get('name')} count total does not match")
 for key in ("ok_count", "warn_count", "fail_count"):
     if not isinstance(data.get(key), int):
         raise SystemExit(f"doctor result missing integer {key}")
@@ -63,6 +83,10 @@ print(
             "ok": data["ok_count"],
             "warn": data["warn_count"],
             "fail": data["fail_count"],
+            "categories": {
+                category["name"]: category["status"]
+                for category in categories
+            },
         },
         sort_keys=True,
     )
