@@ -98,6 +98,7 @@ bash examples/desktop/elements_accessibility_probe.sh
 bash examples/desktop/elements_calculator.sh
 bash examples/desktop/ocr_visible_window.sh
 bash examples/desktop/move_pointer_path.sh
+bash examples/desktop/click_calculator_keypad.sh
 bash examples/desktop/paint_draw_and_save.sh
 bash examples/desktop/text_editor_save_dialog.sh
 bash examples/desktop/telegram_saved_messages.sh
@@ -176,6 +177,13 @@ cursor position JSON, compact `--to`, region-ratio targeting, relative deltas,
 smooth movement options, bounds policies, and backend selection. It runs as
 dry-run by default; set `PEEKABOOX_MOVE_POINTER_LIVE=1` to move the real pointer
 and restore the original cursor position at the end.
+
+`examples/desktop/click_calculator_keypad.sh` opens GNOME Calculator, resolves the
+digit `7` button through `peekaboox elements`, and exercises the raw
+`peekaboox click` command with semantic selectors, absolute `--to` coordinates,
+window-scoped `--ratio`, JSON dry-runs, backend selection, bounds clamping, and
+cursor restore. It runs as dry-run by default; set `PEEKABOOX_CLICK_LIVE=1` to
+perform a real Calculator button click.
 
 `examples/desktop/windows_inventory.sh` runs the enhanced `peekaboox windows`
 command with backend diagnostics, focused-window filtering, Calculator

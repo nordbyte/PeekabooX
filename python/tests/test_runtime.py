@@ -80,6 +80,7 @@ class FakeClient:
         self.dragged: tuple[int, int, int, int, str, int] | None = None
         self.hotkeys: list[tuple[str, ...]] = []
         self.last_vision_fallback = False
+        self.last_click_options: dict[str, object] = {}
         self.typed_text: str | None = None
         self.pasted_text: str | None = None
         self.preserve_clipboard: bool | None = None
@@ -315,8 +316,10 @@ class FakeClient:
         y: int | None = None,
         semantic_selector: str | None = None,
         vision_fallback: bool = False,
+        **kwargs,
     ) -> ActionResult:
         self.last_vision_fallback = vision_fallback
+        self.last_click_options = kwargs
         if semantic_selector is not None:
             self.clicked_at = None
             return ActionResult(ok=True, message=f"clicked {semantic_selector}")
@@ -325,8 +328,17 @@ class FakeClient:
         self.clicked_at = (x, y)
         return ActionResult(ok=True, message="clicked")
 
-    def click_selector(self, selector: str, vision_fallback: bool = False) -> ActionResult:
-        return self.click(semantic_selector=selector, vision_fallback=vision_fallback)
+    def click_selector(
+        self,
+        selector: str,
+        vision_fallback: bool = False,
+        **kwargs,
+    ) -> ActionResult:
+        return self.click(
+            semantic_selector=selector,
+            vision_fallback=vision_fallback,
+            **kwargs,
+        )
 
     def move_mouse(self, x: int, y: int) -> ActionResult:
         self.moved_to = (x, y)
@@ -750,6 +762,7 @@ class FlakyActionClient(FakeClient):
         y: int | None = None,
         semantic_selector: str | None = None,
         vision_fallback: bool = False,
+        **kwargs,
     ) -> ActionResult:
         self.click_calls += 1
         if self.click_calls <= self.failures_before_success:
@@ -759,6 +772,7 @@ class FlakyActionClient(FakeClient):
             y=y,
             semantic_selector=semantic_selector,
             vision_fallback=vision_fallback,
+            **kwargs,
         )
 
 
@@ -785,16 +799,19 @@ class SemanticClickMissClient(FakeClient):
         y: int | None = None,
         semantic_selector: str | None = None,
         vision_fallback: bool = False,
+        **kwargs,
     ) -> ActionResult:
         if semantic_selector is not None:
             self.semantic_click_calls += 1
             self.last_vision_fallback = vision_fallback
+            self.last_click_options = kwargs
             return ActionResult(ok=False, message="selector miss")
         return super().click(
             x=x,
             y=y,
             semantic_selector=semantic_selector,
             vision_fallback=vision_fallback,
+            **kwargs,
         )
 
 
@@ -942,6 +959,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("annotations", server.tools["click"].descriptor())
         self.assertTrue(server.tools["capture_screen"].descriptor()["annotations"]["readOnlyHint"])
         self.assertTrue(server.tools["click"].descriptor()["annotations"]["destructiveHint"])
+        click_schema = server.tools["click"].input_schema["properties"]
+        self.assertIn("region", click_schema)
+        self.assertIn("ratio_x", click_schema)
+        self.assertIn("backend", click_schema)
+        self.assertIn("bounds_policy", click_schema)
+        self.assertIn("restore", click_schema)
         capture_schema = server.tools["capture_screen"].input_schema["properties"]
         self.assertIn("app", capture_schema)
         self.assertIn("window_title", capture_schema)
@@ -4158,12 +4181,25 @@ class RuntimeTests(unittest.TestCase):
         stub = Stub()
         client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
 
-        result = client.click(7, 9)
+        result = client.click(
+            7,
+            9,
+            button="right",
+            dry_run=True,
+            bounds_policy="clamp",
+            backend="xdotool",
+            restore=True,
+        )
 
         self.assertTrue(result.ok)
         self.assertEqual(stub.request.coordinates.x, 7)
         self.assertEqual(stub.request.coordinates.y, 9)
         self.assertFalse(stub.request.vision_fallback)
+        self.assertEqual(stub.request.button, peekaboox_pb2.MOUSE_BUTTON_RIGHT)
+        self.assertTrue(stub.request.dry_run)
+        self.assertEqual(stub.request.bounds_policy, "clamp")
+        self.assertEqual(stub.request.backend, "xdotool")
+        self.assertTrue(stub.request.restore)
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_python_client_builds_generated_semantic_click_request(self) -> None:
@@ -4180,11 +4216,48 @@ class RuntimeTests(unittest.TestCase):
         stub = Stub()
         client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
 
-        result = client.click_selector("role=push button,label=Submit", vision_fallback=True)
+        result = client.click_selector(
+            "role=push button,label=Submit",
+            vision_fallback=True,
+            button="middle",
+            dry_run=True,
+        )
 
         self.assertTrue(result.ok)
         self.assertEqual(stub.request.semantic_selector, "role=push button,label=Submit")
         self.assertTrue(stub.request.vision_fallback)
+        self.assertEqual(stub.request.button, peekaboox_pb2.MOUSE_BUTTON_MIDDLE)
+        self.assertTrue(stub.request.dry_run)
+
+    @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
+    def test_python_client_builds_generated_scoped_click_request(self) -> None:
+        from peekaboox.v1 import peekaboox_pb2
+
+        class Stub:
+            def __init__(self) -> None:
+                self.request = None
+
+            def Click(self, request, timeout):
+                self.request = request
+                return peekaboox_pb2.ActionResponse(ok=True, message="ok")
+
+        stub = Stub()
+        client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
+
+        result = client.click(
+            region=Rect(x=10, y=20, width=300, height=200),
+            ratio_x=0.25,
+            ratio_y=0.75,
+            window_title="Calculator",
+            dry_run=True,
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(stub.request.region.x, 10)
+        self.assertEqual(stub.request.ratio_x, 0.25)
+        self.assertEqual(stub.request.ratio_y, 0.75)
+        self.assertEqual(stub.request.window_title, "Calculator")
+        self.assertTrue(stub.request.dry_run)
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_python_client_builds_generated_pointer_and_hotkey_requests(self) -> None:

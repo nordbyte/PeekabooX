@@ -163,6 +163,18 @@ message ClickRequest {
   optional string semantic_selector = 2;
   optional string window_selector = 3;
   bool vision_fallback = 4;
+  optional MouseButton button = 5;
+  bool dry_run = 6;
+  optional string bounds_policy = 7;
+  optional string backend = 8;
+  bool restore = 9;
+  optional Rect region = 10;
+  optional float ratio_x = 11;
+  optional float ratio_y = 12;
+  optional string window_id = 13;
+  optional string app = 14;
+  optional string window_title = 15;
+  optional string title_regex = 16;
 }
 
 message MoveMouseRequest {

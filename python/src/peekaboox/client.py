@@ -819,25 +819,90 @@ class PeekabooXClient:
         y: int | None = None,
         semantic_selector: str | None = None,
         vision_fallback: bool = False,
+        *,
+        button: str = "left",
+        dry_run: bool = False,
+        bounds_policy: str | None = None,
+        backend: str | None = None,
+        restore: bool = False,
+        region: Rect | None = None,
+        ratio_x: float | None = None,
+        ratio_y: float | None = None,
+        window_id: str | None = None,
+        app: str | None = None,
+        window_title: str | None = None,
+        title_regex: str | None = None,
     ) -> ActionResult:
-        if semantic_selector is not None:
-            if x is not None or y is not None:
-                raise ValueError("provide either coordinates or semantic_selector, not both")
-            request = self.messages.ClickRequest(
-                semantic_selector=semantic_selector,
-                vision_fallback=vision_fallback,
+        if bounds_policy is not None and bounds_policy not in {
+            "allow",
+            "clamp",
+            "fail",
+            "fail-out-of-bounds",
+        }:
+            raise ValueError("bounds_policy must be allow, clamp, fail, or fail-out-of-bounds")
+        if backend is not None and backend not in {"auto", "uinput", "ydotool", "xdotool"}:
+            raise ValueError("backend must be auto, uinput, ydotool, or xdotool")
+        for name, value in (("ratio_x", ratio_x), ("ratio_y", ratio_y)):
+            if value is not None and (
+                not float(value) == float(value) or not 0.0 <= float(value) <= 1.0
+            ):
+                raise ValueError(f"{name} must be between 0.0 and 1.0")
+
+        has_coordinates = x is not None or y is not None
+        has_selector = semantic_selector is not None
+        has_scope = any(
+            value is not None
+            for value in (region, ratio_x, ratio_y, window_id, app, window_title, title_regex)
+        )
+        if sum(1 for value in (has_coordinates, has_selector, has_scope) if value) != 1:
+            raise ValueError(
+                "provide exactly one click target: coordinates, semantic_selector, or region/ratio/window scope"
             )
-        else:
+
+        request_kwargs: dict[str, Any] = {
+            "vision_fallback": vision_fallback,
+            "button": _mouse_button_to_proto(self.messages, button),
+            "dry_run": dry_run,
+            "restore": restore,
+        }
+        if has_coordinates:
             if x is None or y is None:
                 raise ValueError("x and y are required for coordinate clicks")
-            request = self.messages.ClickRequest(
-                coordinates=self.messages.Point(x=x, y=y),
-                vision_fallback=vision_fallback,
-            )
+            request_kwargs["coordinates"] = self.messages.Point(x=x, y=y)
+        if semantic_selector is not None:
+            request_kwargs["semantic_selector"] = semantic_selector
+        if bounds_policy is not None:
+            request_kwargs["bounds_policy"] = bounds_policy
+        if backend is not None:
+            request_kwargs["backend"] = backend
+        if region is not None:
+            request_kwargs["region"] = _rect_to_proto(self.messages, region)
+        if ratio_x is not None:
+            request_kwargs["ratio_x"] = ratio_x
+        if ratio_y is not None:
+            request_kwargs["ratio_y"] = ratio_y
+        if window_id is not None:
+            request_kwargs["window_id"] = window_id
+        if app is not None:
+            request_kwargs["app"] = app
+        if window_title is not None:
+            request_kwargs["window_title"] = window_title
+        if title_regex is not None:
+            request_kwargs["title_regex"] = title_regex
+        request = self.messages.ClickRequest(**request_kwargs)
         return _action_result_from_proto(self._call("Click", request))
 
-    def click_selector(self, selector: str, vision_fallback: bool = False) -> ActionResult:
-        return self.click(semantic_selector=selector, vision_fallback=vision_fallback)
+    def click_selector(
+        self,
+        selector: str,
+        vision_fallback: bool = False,
+        **kwargs: Any,
+    ) -> ActionResult:
+        return self.click(
+            semantic_selector=selector,
+            vision_fallback=vision_fallback,
+            **kwargs,
+        )
 
     def move_mouse(
         self,

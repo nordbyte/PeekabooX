@@ -1486,46 +1486,125 @@ class AgentRuntime:
         y: int | None = None,
         semantic_selector: str | None = None,
         vision_fallback: bool = False,
+        *,
+        button: str = "left",
+        dry_run: bool = False,
+        bounds_policy: str | None = None,
+        backend: str | None = None,
+        restore: bool = False,
+        region: Rect | None = None,
+        ratio_x: float | None = None,
+        ratio_y: float | None = None,
+        window_id: str | None = None,
+        app: str | None = None,
+        window_title: str | None = None,
+        title_regex: str | None = None,
     ) -> ActionResult:
+        button = button.strip().casefold()
+        if button not in {"left", "middle", "right"}:
+            raise ValueError("button must be left, middle, or right")
+        details = {
+            "x": x,
+            "y": y,
+            "semantic_selector": semantic_selector,
+            "vision_fallback": vision_fallback,
+            "button": button,
+            "dry_run": dry_run,
+            "bounds_policy": bounds_policy,
+            "backend": backend,
+            "restore": restore,
+            "region": region,
+            "ratio_x": ratio_x,
+            "ratio_y": ratio_y,
+            "window_id": window_id,
+            "app": app,
+            "window_title": window_title,
+            "title_regex": title_regex,
+        }
         self._require_capability(Capability.CLICK, "click")
         if vision_fallback:
             self._require_capability(Capability.VISION, "click.vision_fallback")
-        if semantic_selector is not None and x is None and y is None:
+        has_scope = any(
+            value is not None
+            for value in (region, ratio_x, ratio_y, window_id, app, window_title, title_regex)
+        )
+        if semantic_selector is not None and x is None and y is None and not has_scope:
             return self.click_selector(
                 semantic_selector,
                 vision_fallback=vision_fallback,
+                button=button,
+                dry_run=dry_run,
+                bounds_policy=bounds_policy,
+                backend=backend,
+                restore=restore,
             )
         categories: tuple[str, ...] = ("input",)
         if semantic_selector is not None:
             categories = ("desktop", "input")
         if vision_fallback:
             categories = (*categories, "capture")
-        self._require_preflight("click", categories)
-        self._require_confirmation(
-            DangerousAction.CLICK,
-            "click",
-            x=x,
-            y=y,
-            semantic_selector=semantic_selector,
-            vision_fallback=vision_fallback,
-        )
+        if not dry_run:
+            self._require_preflight("click", categories)
+            self._require_confirmation(DangerousAction.CLICK, "click", **details)
         recorded_step = self._recorded_click_step(
             x=x,
             y=y,
             semantic_selector=semantic_selector,
             vision_fallback=vision_fallback,
+            button=button if button != "left" else None,
+            dry_run=dry_run,
+            bounds_policy=bounds_policy,
+            backend=backend,
+            restore=restore,
+            region=region,
+            ratio_x=ratio_x,
+            ratio_y=ratio_y,
+            window_id=window_id,
+            app=app,
+            window_title=window_title,
+            title_regex=title_regex,
         )
-        result = self._require_client().click(
-            x=x,
-            y=y,
-            semantic_selector=semantic_selector,
-            vision_fallback=vision_fallback,
-        )
+        client_kwargs = {
+            key: value
+            for key, value in {
+                "semantic_selector": semantic_selector,
+                "vision_fallback": vision_fallback,
+                "button": button if button != "left" else None,
+                "bounds_policy": bounds_policy,
+                "backend": backend,
+                "region": region,
+                "ratio_x": ratio_x,
+                "ratio_y": ratio_y,
+                "window_id": window_id,
+                "app": app,
+                "window_title": window_title,
+                "title_regex": title_regex,
+            }.items()
+            if value is not None
+        }
+        if dry_run:
+            client_kwargs["dry_run"] = True
+        if restore:
+            client_kwargs["restore"] = True
+        result = self._require_client().click(x=x, y=y, **client_kwargs)
         if recorded_step is not None:
             self._record_step(recorded_step)
         return result
 
-    def click_selector(self, selector: str, vision_fallback: bool = False) -> ActionResult:
+    def click_selector(
+        self,
+        selector: str,
+        vision_fallback: bool = False,
+        *,
+        button: str = "left",
+        dry_run: bool = False,
+        bounds_policy: str | None = None,
+        backend: str | None = None,
+        restore: bool = False,
+    ) -> ActionResult:
+        button = button.strip().casefold()
+        if button not in {"left", "middle", "right"}:
+            raise ValueError("button must be left, middle, or right")
         self._require_capability(
             Capability.CLICK,
             "click_selector",
@@ -1536,15 +1615,37 @@ class AgentRuntime:
         categories: tuple[str, ...] = ("desktop", "input")
         if vision_fallback:
             categories = ("desktop", "input", "capture")
-        self._require_preflight("click_selector", categories)
-        self._require_confirmation(
-            DangerousAction.CLICK,
-            "click_selector",
-            selector=selector,
-            vision_fallback=vision_fallback,
-        )
+        details = {
+            "selector": selector,
+            "vision_fallback": vision_fallback,
+            "button": button,
+            "dry_run": dry_run,
+            "bounds_policy": bounds_policy,
+            "backend": backend,
+            "restore": restore,
+        }
+        if not dry_run:
+            self._require_preflight("click_selector", categories)
+            self._require_confirmation(
+                DangerousAction.CLICK,
+                "click_selector",
+                **details,
+            )
         cached = self.memory.find_cached_elements(selector)
         recorded_selector = selector
+        client_kwargs = {
+            key: value
+            for key, value in {
+                "button": button if button != "left" else None,
+                "bounds_policy": bounds_policy,
+                "backend": backend,
+            }.items()
+            if value is not None
+        }
+        if dry_run:
+            client_kwargs["dry_run"] = True
+        if restore:
+            client_kwargs["restore"] = True
         if cached:
             target = _smallest_element(cached)
             if self.recorder is not None:
@@ -1554,17 +1655,24 @@ class AgentRuntime:
                 x=bounds.x + bounds.width // 2,
                 y=bounds.y + bounds.height // 2,
                 vision_fallback=vision_fallback,
+                **client_kwargs,
             )
         else:
             result = self._require_client().click_selector(
                 selector,
                 vision_fallback=vision_fallback,
+                **client_kwargs,
             )
         self._record_step(
             WorkflowStep(
                 action="click",
                 selector=recorded_selector,
                 vision_fallback=vision_fallback,
+                button=button if button != "left" else None,
+                bounds_policy=bounds_policy,
+                backend=backend,
+                restore=restore,
+                dry_run=dry_run,
             )
         )
         return result
@@ -1900,11 +2008,51 @@ class AgentRuntime:
                 raise ValueError("find_element step requires selector")
             return self.find_element(step.selector, vision_fallback=step.vision_fallback)
         if action == "click":
+            region = _parse_rect(step.region) if step.region is not None else None
             if step.selector:
-                return self.click_selector(step.selector, vision_fallback=step.vision_fallback)
-            if step.x is None or step.y is None:
-                raise ValueError("click step requires selector or x/y coordinates")
-            return self.click(x=step.x, y=step.y, vision_fallback=step.vision_fallback)
+                return self.click_selector(
+                    step.selector,
+                    vision_fallback=step.vision_fallback,
+                    button=step.button or "left",
+                    dry_run=step.dry_run,
+                    bounds_policy=step.bounds_policy,
+                    backend=step.backend,
+                    restore=step.restore,
+                )
+            has_coordinates = step.x is not None or step.y is not None
+            has_scope = any(
+                value is not None
+                for value in (
+                    region,
+                    step.ratio_x,
+                    step.ratio_y,
+                    step.window_id,
+                    step.app,
+                    step.window_title,
+                    step.title_regex,
+                )
+            )
+            if has_coordinates and (step.x is None or step.y is None):
+                raise ValueError("click step x/y target is incomplete")
+            if not has_coordinates and not has_scope:
+                raise ValueError("click step requires selector, x/y coordinates, or a scope")
+            return self.click(
+                x=step.x,
+                y=step.y,
+                vision_fallback=step.vision_fallback,
+                button=step.button or "left",
+                dry_run=step.dry_run,
+                bounds_policy=step.bounds_policy,
+                backend=step.backend,
+                restore=step.restore,
+                region=region,
+                ratio_x=step.ratio_x,
+                ratio_y=step.ratio_y,
+                window_id=step.window_id,
+                app=step.app,
+                window_title=step.window_title,
+                title_regex=step.title_regex,
+            )
         if action in {"move", "move_mouse"}:
             region = _parse_rect(step.region) if step.region is not None else None
             return self.move_mouse(
@@ -2158,6 +2306,18 @@ class AgentRuntime:
         y: int | None,
         semantic_selector: str | None,
         vision_fallback: bool,
+        button: str | None = None,
+        dry_run: bool = False,
+        bounds_policy: str | None = None,
+        backend: str | None = None,
+        restore: bool = False,
+        region: Rect | None = None,
+        ratio_x: float | None = None,
+        ratio_y: float | None = None,
+        window_id: str | None = None,
+        app: str | None = None,
+        window_title: str | None = None,
+        title_regex: str | None = None,
     ) -> WorkflowStep | None:
         if self.recorder is None:
             return None
@@ -2166,8 +2326,33 @@ class AgentRuntime:
                 action="click",
                 selector=semantic_selector,
                 vision_fallback=vision_fallback,
+                button=button,
+                bounds_policy=bounds_policy,
+                backend=backend,
+                restore=restore,
+                dry_run=dry_run,
             )
         if x is None or y is None:
+            if any(
+                value is not None
+                for value in (region, ratio_x, ratio_y, window_id, app, window_title, title_regex)
+            ):
+                return WorkflowStep(
+                    action="click",
+                    vision_fallback=vision_fallback,
+                    button=button,
+                    bounds_policy=bounds_policy,
+                    backend=backend,
+                    restore=restore,
+                    dry_run=dry_run,
+                    region=_format_rect(region) if region is not None else None,
+                    ratio_x=ratio_x,
+                    ratio_y=ratio_y,
+                    window_id=window_id,
+                    app=app,
+                    window_title=window_title,
+                    title_regex=title_regex,
+                )
             return None
 
         try:
@@ -2179,12 +2364,22 @@ class AgentRuntime:
                 action="click",
                 selector=selector,
                 vision_fallback=vision_fallback,
+                button=button,
+                bounds_policy=bounds_policy,
+                backend=backend,
+                restore=restore,
+                dry_run=dry_run,
             )
         return WorkflowStep(
             action="click",
             x=x,
             y=y,
             vision_fallback=vision_fallback,
+            button=button,
+            bounds_policy=bounds_policy,
+            backend=backend,
+            restore=restore,
+            dry_run=dry_run,
         )
 
     def _semantic_selector_for_point(self, x: int, y: int) -> str | None:

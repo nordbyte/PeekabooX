@@ -5767,18 +5767,30 @@ fn backend_kind_label(kind: BackendKind) -> String {
     format!("{kind:?}").to_ascii_lowercase()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct ClickArgs {
     target: ClickTarget,
     button: MouseButton,
     dry_run: bool,
+    json: bool,
     vision_fallback: bool,
+    bounds_policy: peekaboox_input::MoveBoundsPolicy,
+    backend: peekaboox_input::InputToolSelection,
+    restore: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum ClickTarget {
     Coordinates(Point),
     SemanticSelector(String),
+    ScopeRatio {
+        ratio: (f32, f32),
+        region: Option<Rect>,
+        window_id: Option<String>,
+        app: Option<String>,
+        window_title: Option<String>,
+        title_regex: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5787,7 +5799,7 @@ struct ResolvedClickTarget {
     description: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum ClickCommand {
     Run(ClickArgs),
     Help,
@@ -5800,6 +5812,14 @@ fn click(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
     };
 
     let target = resolve_click_target(&args)?;
+    let options = click_options_from_args(&args);
+    let effective_position =
+        peekaboox_input::resolve_move_position(target.position, args.bounds_policy)
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+    let target = ResolvedClickTarget {
+        description: target.description,
+        position: effective_position,
+    };
     let action = peekaboox_input::InputAction::Click {
         position: target.position,
         button: args.button,
@@ -5813,6 +5833,9 @@ fn click(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 y: target.position.y,
                 button: mouse_button_dto(args.button),
                 dry_run: args.dry_run,
+                bounds_policy: args.bounds_policy.name().to_owned(),
+                backend: args.backend.name().to_owned(),
+                restore: args.restore,
             },
         )?;
         let ApiResult::Click(metadata) = result else {
@@ -5820,27 +5843,51 @@ fn click(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 "daemon returned unexpected click response".to_owned(),
             ));
         };
-        print_click_result(&args, &target, metadata);
+        print_click_result(&args, &target, metadata, None);
         return Ok(());
     }
 
     if args.dry_run {
         let backend = peekaboox_input::CommandInputBackend
-            .detect_backend_for(&action)
+            .detect_backend_for_with_selection(&action, args.backend)
             .map_err(|error| CliError::Failure(error.to_string()))?;
-        println!("would click {} via {}", target.description, backend.name());
+        print_click_result(
+            &args,
+            &target,
+            ActionResultDto {
+                backend_name: backend.name().to_owned(),
+                backend_kind: format!("{:?}", backend.backend_kind()).to_ascii_lowercase(),
+            },
+            None,
+        );
         return Ok(());
     }
 
-    let metadata = peekaboox_input::click(target.position, args.button)
+    let restore_position = if args.restore {
+        Some(
+            peekaboox_input::current_mouse_position()
+                .map_err(|error| CliError::Failure(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    let metadata = peekaboox_input::click_with_options(target.position, args.button, options)
         .map_err(|error| CliError::Failure(error.to_string()))?;
+    if let Some(position) = restore_position {
+        let restore_options = peekaboox_input::MoveMouseOptions {
+            duration_ms: 0,
+            steps: None,
+            bounds_policy: args.bounds_policy,
+            backend: args.backend,
+        };
+        peekaboox_input::move_mouse_with_options(position, restore_options)
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+    }
     print_click_result(
         &args,
         &target,
-        ActionResultDto {
-            backend_name: metadata.backend_name,
-            backend_kind: format!("{:?}", metadata.backend_kind).to_ascii_lowercase(),
-        },
+        input_metadata_dto(metadata),
+        restore_position,
     );
 
     Ok(())
@@ -5864,6 +5911,32 @@ fn resolve_click_target(args: &ClickArgs) -> Result<ResolvedClickTarget, CliErro
                 description: format!(
                     "selector {selector:?} at {},{} ({label})",
                     target.position.x, target.position.y
+                ),
+            })
+        }
+        ClickTarget::ScopeRatio {
+            ratio,
+            region,
+            window_id,
+            app,
+            window_title,
+            title_regex,
+        } => {
+            let scope = resolve_move_scope(
+                *region,
+                window_id.as_deref(),
+                app.as_deref(),
+                window_title.as_deref(),
+                title_regex.as_deref(),
+            )?;
+            let position = point_from_ratio(scope, *ratio)?;
+            Ok(ResolvedClickTarget {
+                position,
+                description: format!(
+                    "ratio {:.3},{:.3} in {}",
+                    ratio.0,
+                    ratio.1,
+                    format_rect(scope)
                 ),
             })
         }
@@ -5913,64 +5986,140 @@ fn default_elements_args_for_selector(selector: &str) -> ElementsArgs {
     }
 }
 
-fn print_click_result(args: &ClickArgs, target: &ResolvedClickTarget, metadata: ActionResultDto) {
+fn click_options_from_args(args: &ClickArgs) -> peekaboox_input::ClickMouseOptions {
+    peekaboox_input::ClickMouseOptions {
+        bounds_policy: args.bounds_policy,
+        backend: args.backend,
+    }
+}
+
+fn print_click_result(
+    args: &ClickArgs,
+    target: &ResolvedClickTarget,
+    metadata: ActionResultDto,
+    restored_to: Option<Point>,
+) {
+    if args.json {
+        let _ = print_json_pretty(&serde_json::json!({
+            "ok": true,
+            "dry_run": args.dry_run,
+            "target": {
+                "x": target.position.x,
+                "y": target.position.y,
+                "description": target.description,
+            },
+            "button": mouse_button_label(args.button),
+            "backend_name": metadata.backend_name,
+            "backend_kind": metadata.backend_kind,
+            "requested_backend": args.backend.name(),
+            "bounds_policy": args.bounds_policy.name(),
+            "restore": args.restore,
+            "restored_to": restored_to.map(|point| serde_json::json!({
+                "x": point.x,
+                "y": point.y,
+            })),
+        }));
+        return;
+    }
+
     if args.dry_run {
         println!(
             "would click {} via {}",
             target.description, metadata.backend_name
         );
     } else {
-        println!(
-            "clicked {} with {:?} via {}",
-            target.description, args.button, metadata.backend_name
-        );
+        if let Some(restored_to) = restored_to {
+            println!(
+                "clicked {} with {:?} via {} and restored to {},{}",
+                target.description,
+                args.button,
+                metadata.backend_name,
+                restored_to.x,
+                restored_to.y
+            );
+        } else {
+            println!(
+                "clicked {} with {:?} via {}",
+                target.description, args.button, metadata.backend_name
+            );
+        }
     }
 }
 
 fn parse_click_args(args: Vec<String>) -> Result<ClickCommand, CliError> {
     let mut x = None;
     let mut y = None;
+    let mut to = None;
     let mut selector = None;
+    let mut ratio = None;
+    let mut region = None;
+    let mut window_id = None;
+    let mut app = None;
+    let mut window_title = None;
+    let mut title_regex = None;
     let mut button = MouseButton::Left;
     let mut dry_run = false;
+    let mut json = false;
     let mut vision_fallback = false;
+    let mut bounds_policy = peekaboox_input::MoveBoundsPolicy::Allow;
+    let mut backend = peekaboox_input::InputToolSelection::Auto;
+    let mut restore = false;
     let mut index = 0;
 
     while index < args.len() {
         match args[index].as_str() {
             "--x" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --x".to_owned()));
-                };
-                x = Some(parse_i32("--x", value)?);
+                let value = parse_next_string(&args, &mut index, "--x")?;
+                x = Some(parse_i32("--x", &value)?);
             }
             "--y" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --y".to_owned()));
-                };
-                y = Some(parse_i32("--y", value)?);
+                let value = parse_next_string(&args, &mut index, "--y")?;
+                y = Some(parse_i32("--y", &value)?);
+            }
+            "--to" => {
+                let value = parse_next_string(&args, &mut index, "--to")?;
+                to = Some(parse_point("--to", &value)?);
             }
             "--selector" | "--text" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure(format!(
-                        "missing value for {}",
-                        args[index - 1]
-                    )));
-                };
-                selector = Some(value.to_owned());
+                let key = args[index].clone();
+                selector = Some(parse_next_string(&args, &mut index, &key)?);
+            }
+            "--ratio" => {
+                let value = parse_next_string(&args, &mut index, "--ratio")?;
+                ratio = Some(parse_ratio_pair("--ratio", &value)?);
+            }
+            "--region" | "-r" => {
+                let value = parse_next_string(&args, &mut index, "--region")?;
+                region = Some(parse_rect("--region", &value)?);
+            }
+            "--window-id" => {
+                window_id = Some(parse_next_string(&args, &mut index, "--window-id")?);
+            }
+            "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
+            "--window-title" => {
+                window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
+            }
+            "--title-regex" => {
+                title_regex = Some(parse_next_string(&args, &mut index, "--title-regex")?)
             }
             "--button" | "-b" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --button".to_owned()));
-                };
-                button = parse_mouse_button(value)?;
+                let value = parse_next_string(&args, &mut index, "--button")?;
+                button = parse_mouse_button(&value)?;
             }
             "--dry-run" => dry_run = true,
+            "--json" => json = true,
             "--vision-fallback" => vision_fallback = true,
+            "--bounds" => {
+                let value = parse_next_string(&args, &mut index, "--bounds")?;
+                bounds_policy = parse_move_bounds_policy(&value)?;
+            }
+            "--clamp" => bounds_policy = peekaboox_input::MoveBoundsPolicy::Clamp,
+            "--fail-out-of-bounds" => bounds_policy = peekaboox_input::MoveBoundsPolicy::Fail,
+            "--backend" => {
+                let value = parse_next_string(&args, &mut index, "--backend")?;
+                backend = parse_input_backend_selection(&value)?;
+            }
+            "--restore" => restore = true,
             "--help" | "-h" => return Ok(ClickCommand::Help),
             unknown => {
                 return Err(CliError::Failure(format!(
@@ -5982,37 +6131,68 @@ fn parse_click_args(args: Vec<String>) -> Result<ClickCommand, CliError> {
         index += 1;
     }
 
-    let target = match (x, y, selector) {
-        (Some(x), Some(y), None) => ClickTarget::Coordinates(Point::new(x, y)),
-        (None, None, Some(selector)) => ClickTarget::SemanticSelector(selector),
-        (Some(_), Some(_), Some(_)) => {
-            return Err(CliError::Failure(
-                "provide either coordinates or --selector/--text, not both".to_owned(),
-            ));
-        }
-        (Some(_), None, None) => {
-            return Err(CliError::Failure("missing required --y".to_owned()));
-        }
-        (None, Some(_), None) => {
-            return Err(CliError::Failure("missing required --x".to_owned()));
-        }
-        (Some(_), None, Some(_)) | (None, Some(_), Some(_)) => {
-            return Err(CliError::Failure(
-                "provide either both --x/--y or --selector/--text".to_owned(),
-            ));
-        }
-        (None, None, None) => {
-            return Err(CliError::Failure(
-                "missing click target; provide --x/--y or --selector/--text".to_owned(),
-            ));
-        }
+    let absolute = match (x, y) {
+        (Some(x), Some(y)) => Some(Point::new(x, y)),
+        (Some(_), None) => return Err(CliError::Failure("missing required --y".to_owned())),
+        (None, Some(_)) => return Err(CliError::Failure("missing required --x".to_owned())),
+        (None, None) => None,
     };
+
+    let has_scope = ratio.is_some()
+        || region.is_some()
+        || window_id.is_some()
+        || app.is_some()
+        || window_title.is_some()
+        || title_regex.is_some();
+    let scope_target = if has_scope {
+        Some(ClickTarget::ScopeRatio {
+            ratio: ratio.unwrap_or((0.5, 0.5)),
+            region,
+            window_id,
+            app,
+            window_title,
+            title_regex,
+        })
+    } else {
+        None
+    };
+
+    let mut targets = Vec::new();
+    if let Some(position) = absolute {
+        targets.push(ClickTarget::Coordinates(position));
+    }
+    if let Some(position) = to {
+        targets.push(ClickTarget::Coordinates(position));
+    }
+    if let Some(selector) = selector {
+        targets.push(ClickTarget::SemanticSelector(selector));
+    }
+    if let Some(scope_target) = scope_target {
+        targets.push(scope_target);
+    }
+
+    if targets.len() > 1 {
+        return Err(CliError::Failure(
+            "provide exactly one click target".to_owned(),
+        ));
+    }
+
+    let target = targets.into_iter().next().ok_or_else(|| {
+        CliError::Failure(
+            "missing click target; provide --x/--y, --to, --selector/--text, --ratio, or a region/window scope"
+                .to_owned(),
+        )
+    })?;
 
     Ok(ClickCommand::Run(ClickArgs {
         target,
         button,
         dry_run,
+        json,
         vision_fallback,
+        bounds_policy,
+        backend,
+        restore,
     }))
 }
 
@@ -7846,7 +8026,7 @@ fn print_desktop_usage() {
 
 fn print_click_usage() {
     println!(
-        "Usage: peekaboox click (--x <pixels> --y <pixels> | --text <label> | --selector <query>) [--button left|middle|right] [--dry-run] [--vision-fallback]"
+        "Usage: peekaboox click (--x <px> --y <px>|--to x,y|--text <label>|--selector <query>|--ratio x,y [--region x,y,w,h|--window-id <id>|--app <name>|--window-title <text>|--title-regex <regex>]) [--button left|middle|right] [--bounds allow|clamp|fail] [--backend auto|uinput|ydotool|xdotool] [--restore] [--dry-run] [--vision-fallback] [--json]"
     );
 }
 
@@ -9330,7 +9510,11 @@ mod tests {
                 target: ClickTarget::Coordinates(Point::new(10, 20)),
                 button: MouseButton::Right,
                 dry_run: true,
-                vision_fallback: false
+                json: false,
+                vision_fallback: false,
+                bounds_policy: MoveBoundsPolicy::Allow,
+                backend: InputToolSelection::Auto,
+                restore: false
             })
         );
     }
@@ -9350,7 +9534,11 @@ mod tests {
                 target: ClickTarget::SemanticSelector("Submit".to_owned()),
                 button: MouseButton::Left,
                 dry_run: true,
-                vision_fallback: false
+                json: false,
+                vision_fallback: false,
+                bounds_policy: MoveBoundsPolicy::Allow,
+                backend: InputToolSelection::Auto,
+                restore: false
             })
         );
     }
@@ -9373,7 +9561,52 @@ mod tests {
                 ),
                 button: MouseButton::Left,
                 dry_run: true,
-                vision_fallback: true
+                json: false,
+                vision_fallback: true,
+                bounds_policy: MoveBoundsPolicy::Allow,
+                backend: InputToolSelection::Auto,
+                restore: false
+            })
+        );
+    }
+
+    #[test]
+    fn click_accepts_scoped_ratio_options_and_json() {
+        let command = parse_click_args(vec![
+            "--ratio".to_owned(),
+            "0.25,0.75".to_owned(),
+            "--region".to_owned(),
+            "10,20,300,200".to_owned(),
+            "--button".to_owned(),
+            "middle".to_owned(),
+            "--bounds".to_owned(),
+            "clamp".to_owned(),
+            "--backend".to_owned(),
+            "xdotool".to_owned(),
+            "--restore".to_owned(),
+            "--dry-run".to_owned(),
+            "--json".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            ClickCommand::Run(ClickArgs {
+                target: ClickTarget::ScopeRatio {
+                    ratio: (0.25, 0.75),
+                    region: Some(Rect::new(10, 20, 300, 200)),
+                    window_id: None,
+                    app: None,
+                    window_title: None,
+                    title_regex: None
+                },
+                button: MouseButton::Middle,
+                dry_run: true,
+                json: true,
+                vision_fallback: false,
+                bounds_policy: MoveBoundsPolicy::Clamp,
+                backend: InputToolSelection::Xdotool,
+                restore: true
             })
         );
     }
@@ -9392,9 +9625,7 @@ mod tests {
 
         assert_eq!(
             error,
-            CliError::Failure(
-                "provide either coordinates or --selector/--text, not both".to_owned()
-            )
+            CliError::Failure("provide exactly one click target".to_owned())
         );
     }
 

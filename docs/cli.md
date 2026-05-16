@@ -107,6 +107,8 @@ Check or execute basic input automation:
 
 ```bash
 cargo run -q -p peekaboox-cli -- click --x 100 --y 200 --dry-run
+cargo run -q -p peekaboox-cli -- click --to 100,200 --backend xdotool --bounds clamp --dry-run --json
+cargo run -q -p peekaboox-cli -- click --window-title Calculator --ratio 0.5,0.5 --restore --dry-run --json
 cargo run -q -p peekaboox-cli -- click --text "Submit" --dry-run
 cargo run -q -p peekaboox-cli -- move --x 100 --y 200 --dry-run
 cargo run -q -p peekaboox-cli -- move --to 100,200 --duration-ms 180 --steps 8 --dry-run --json
@@ -122,7 +124,11 @@ cargo run -q -p peekaboox-cli -- type --paste --preserve-clipboard --dry-run "/t
 cargo run -q -p peekaboox-cli -- hotkey --dry-run ctrl+s
 ```
 
-Remove `--dry-run` to perform the action. `move` accepts absolute coordinates,
+Remove `--dry-run` to perform the action. `click` accepts absolute coordinates,
+compact `--to x,y`, semantic selectors, region/window ratio targets, structured
+`--json` output, bounds policies with `--clamp` or `--fail-out-of-bounds`,
+optional cursor `--restore`, button selection, and backend selection via
+`--backend auto|uinput|ydotool|xdotool`. `move` accepts absolute coordinates,
 compact `--to x,y`, relative deltas, region/window ratio targets, smooth
 movement with `--duration-ms` and `--steps`, bounds policies with `--clamp` or
 `--fail-out-of-bounds`, cursor query via `--current-position`, optional

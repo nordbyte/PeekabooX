@@ -144,8 +144,16 @@ pub enum ApiRequest {
     Click {
         x: i32,
         y: i32,
+        #[serde(default)]
         button: MouseButtonDto,
+        #[serde(default)]
         dry_run: bool,
+        #[serde(default = "default_move_bounds_policy")]
+        bounds_policy: String,
+        #[serde(default = "default_input_backend")]
+        backend: String,
+        #[serde(default)]
+        restore: bool,
     },
     MoveMouse {
         x: i32,
@@ -1109,6 +1117,9 @@ mod tests {
             y: 20,
             button: MouseButtonDto::Left,
             dry_run: true,
+            bounds_policy: "clamp".to_owned(),
+            backend: "xdotool".to_owned(),
+            restore: true,
         });
         let payload = serde_json::to_string(&request).unwrap();
 

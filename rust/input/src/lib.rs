@@ -208,6 +208,12 @@ pub struct MoveMouseOptions {
     pub backend: InputToolSelection,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClickMouseOptions {
+    pub bounds_policy: MoveBoundsPolicy,
+    pub backend: InputToolSelection,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DragMouseOptions {
     pub duration_ms: u64,
@@ -402,6 +408,19 @@ impl CommandInputBackend {
         })
     }
 
+    pub fn click_with_options(
+        &self,
+        position: Point,
+        button: MouseButton,
+        options: ClickMouseOptions,
+    ) -> Result<InputExecutionMetadata> {
+        let position = apply_move_bounds_policy(position, options.bounds_policy)?;
+        self.execute_with_metadata_with_selection(
+            InputAction::Click { position, button },
+            options.backend,
+        )
+    }
+
     pub fn drag_with_options(
         &self,
         from: Point,
@@ -463,7 +482,15 @@ impl InputBackend for CommandInputBackend {
 }
 
 pub fn click(position: Point, button: MouseButton) -> Result<InputExecutionMetadata> {
-    CommandInputBackend.execute_with_metadata(InputAction::Click { position, button })
+    click_with_options(position, button, ClickMouseOptions::default())
+}
+
+pub fn click_with_options(
+    position: Point,
+    button: MouseButton,
+    options: ClickMouseOptions,
+) -> Result<InputExecutionMetadata> {
+    CommandInputBackend.click_with_options(position, button, options)
 }
 
 pub fn move_mouse(position: Point) -> Result<InputExecutionMetadata> {

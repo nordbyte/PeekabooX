@@ -182,6 +182,11 @@ Daemon-routed `MoveMouse`, `Click`, `Drag`, `TypeText`, and `Hotkey` requests
 require the daemon to be started with `--profile operator`, `--allow-input`, or
 `PEEKABOOX_ALLOW_INPUT=1`.
 
+`ClickRequest` accepts one target at a time: `coordinates`,
+`semantic_selector`, or a region/window scope with `ratio_x` and `ratio_y`.
+It also supports `button`, `dry_run`, `bounds_policy`, `backend`, and `restore`
+for parity with the CLI.
+
 ## Python Runtime Client
 
 The Python package includes generated protobuf bindings under `peekaboox.v1`
@@ -240,6 +245,15 @@ profiles = runtime.desktop_profiles("telegram", supports="type-into", check=True
 runtime.desktop_click("telegram", "search-input", dry_run=True)
 runtime.desktop_type_into("telegram", "message-input", "PeekabooX", dry_run=True)
 runtime.click_selector("role=push button,label=Submit", vision_fallback=True)
+runtime.click(
+    region=Rect(x=0, y=0, width=400, height=240),
+    ratio_x=0.5,
+    ratio_y=0.5,
+    button="right",
+    bounds_policy="clamp",
+    backend="auto",
+    dry_run=True,
+)
 runtime.move_mouse(100, 200)
 runtime.move_mouse(relative_x=24, relative_y=0, dry_run=True)
 runtime.move_mouse(

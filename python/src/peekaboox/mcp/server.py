@@ -846,12 +846,33 @@ class McpServer:
                         "y": {"type": "integer"},
                         "selector": {"type": "string"},
                         "semantic_selector": {"type": "string"},
+                        "region": RECT_SCHEMA,
+                        "ratio_x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "ratio_y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "window_id": {"type": "string"},
+                        "app": {"type": "string"},
+                        "window_title": {"type": "string"},
+                        "title_regex": {"type": "string"},
+                        "button": {"type": "string", "enum": ["left", "middle", "right"]},
+                        "dry_run": {"type": "boolean", "default": False},
+                        "bounds_policy": {
+                            "type": "string",
+                            "enum": list(MOVE_BOUNDS_POLICY_CHOICES),
+                        },
+                        "backend": {"type": "string", "enum": list(MOVE_BACKEND_CHOICES)},
+                        "restore": {"type": "boolean", "default": False},
                         "vision_fallback": {"type": "boolean", "default": False},
                     },
                     any_of=[
                         {"required": ["x", "y"]},
                         {"required": ["selector"]},
                         {"required": ["semantic_selector"]},
+                        {"required": ["ratio_x", "ratio_y"]},
+                        {"required": ["region"]},
+                        {"required": ["window_id"]},
+                        {"required": ["app"]},
+                        {"required": ["window_title"]},
+                        {"required": ["title_regex"]},
                     ],
                 ),
                 self._click,
@@ -1896,21 +1917,55 @@ class McpServer:
         vision_fallback = bool(arguments.get("vision_fallback", False))
         selector = arguments.get("semantic_selector", arguments.get("selector"))
         has_coordinates = "x" in arguments or "y" in arguments
+        region = _optional_rect(arguments, "region")
+        ratio_x = _optional_float(arguments, "ratio_x")
+        ratio_y = _optional_float(arguments, "ratio_y")
+        window_id = _optional_string(arguments, "window_id")
+        app = _optional_string(arguments, "app")
+        window_title = _optional_string(arguments, "window_title")
+        title_regex = _optional_string(arguments, "title_regex")
+        has_scope = any(
+            value is not None
+            for value in (region, ratio_x, ratio_y, window_id, app, window_title, title_regex)
+        )
+        common_kwargs = {
+            "button": _optional_string(arguments, "button") or "left",
+            "dry_run": _optional_bool(arguments, "dry_run"),
+            "bounds_policy": _optional_choice(
+                arguments, "bounds_policy", MOVE_BOUNDS_POLICY_CHOICES
+            ),
+            "backend": _optional_choice(arguments, "backend", MOVE_BACKEND_CHOICES),
+            "restore": _optional_bool(arguments, "restore"),
+        }
 
         if selector is not None:
-            if has_coordinates:
-                raise ValueError("provide either coordinates or selector, not both")
+            if has_coordinates or has_scope:
+                raise ValueError("provide exactly one click target")
             return _to_mcp_value(
-                runtime.click_selector(str(selector), vision_fallback=vision_fallback)
+                runtime.click_selector(
+                    str(selector),
+                    vision_fallback=vision_fallback,
+                    **common_kwargs,
+                )
             )
 
-        if "x" not in arguments or "y" not in arguments:
-            raise ValueError("click requires x/y coordinates or selector")
+        if has_coordinates and ("x" not in arguments or "y" not in arguments):
+            raise ValueError("click x/y target is incomplete")
+        if not has_coordinates and not has_scope:
+            raise ValueError("click requires x/y coordinates, selector, or scope")
         return _to_mcp_value(
             runtime.click(
-                x=int(arguments["x"]),
-                y=int(arguments["y"]),
+                x=int(arguments["x"]) if has_coordinates else None,
+                y=int(arguments["y"]) if has_coordinates else None,
                 vision_fallback=vision_fallback,
+                region=region,
+                ratio_x=ratio_x,
+                ratio_y=ratio_y,
+                window_id=window_id,
+                app=app,
+                window_title=window_title,
+                title_regex=title_regex,
+                **common_kwargs,
             )
         )
 

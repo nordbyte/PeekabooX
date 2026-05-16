@@ -1566,27 +1566,50 @@ fn dispatch_request(
             y,
             button,
             dry_run,
+            bounds_policy,
+            backend,
+            restore,
         } => {
+            let options =
+                click_options_from_fields(Some(bounds_policy.as_str()), Some(backend.as_str()))
+                    .map_err(|error| error.to_string())?;
+            let position =
+                peekaboox_input::resolve_move_position(Point::new(x, y), options.bounds_policy)
+                    .map_err(|error| error.to_string())?;
             let action = peekaboox_input::InputAction::Click {
-                position: Point::new(x, y),
+                position,
                 button: mouse_button(button),
             };
             let metadata = if dry_run {
                 let backend = peekaboox_input::CommandInputBackend
-                    .detect_backend_for(&action)
+                    .detect_backend_for_with_selection(&action, options.backend)
                     .map_err(|error| error.to_string())?;
-                ActionResultDto {
-                    backend_name: backend.name().to_owned(),
-                    backend_kind: backend_kind_name(backend.backend_kind()),
-                }
+                detected_input_backend_dto(backend)
             } else {
                 ensure_input_allowed(config)?;
-                let metadata = peekaboox_input::click(Point::new(x, y), mouse_button(button))
+                let restore_position = if restore {
+                    Some(peekaboox_input::current_mouse_position().map_err(|error| {
+                        format!("failed to query cursor before click restore: {error}")
+                    })?)
+                } else {
+                    None
+                };
+                let metadata =
+                    peekaboox_input::click_with_options(position, mouse_button(button), options)
+                        .map_err(|error| error.to_string())?;
+                if let Some(position) = restore_position {
+                    peekaboox_input::move_mouse_with_options(
+                        position,
+                        peekaboox_input::MoveMouseOptions {
+                            duration_ms: 0,
+                            steps: None,
+                            bounds_policy: options.bounds_policy,
+                            backend: options.backend,
+                        },
+                    )
                     .map_err(|error| error.to_string())?;
-                ActionResultDto {
-                    backend_name: metadata.backend_name,
-                    backend_kind: backend_kind_name(metadata.backend_kind),
                 }
+                input_metadata_dto(metadata)
             };
             Ok(ApiResult::Click(metadata))
         }
@@ -2296,12 +2319,28 @@ impl PeekabooX for GrpcPeekabooXService {
             "has_coordinates": request.coordinates.is_some(),
             "has_semantic_selector": request.semantic_selector.is_some(),
             "has_window_selector": request.window_selector.is_some(),
+            "has_region": request.region.is_some(),
+            "has_ratio": request.ratio_x.is_some() || request.ratio_y.is_some(),
+            "has_window_filter": request.window_id.is_some()
+                || request.app.is_some()
+                || request.window_title.is_some()
+                || request.title_regex.is_some(),
             "vision_fallback": effective_vision_fallback,
             "request_vision_fallback": request.vision_fallback,
-            "daemon_vision_fallback": self.config.vision_fallback
+            "daemon_vision_fallback": self.config.vision_fallback,
+            "button": request.button,
+            "dry_run": request.dry_run,
+            "bounds_policy": request.bounds_policy.as_deref(),
+            "backend": request.backend.as_deref(),
+            "restore": request.restore
         });
 
-        let result = grpc_click(request, &self.config, &self.accessibility_cache);
+        let result = grpc_click(
+            request,
+            &self.config,
+            &self.accessibility_cache,
+            self.list_windows,
+        );
         audit_grpc_result(&self.audit, "grpc.click", &result, details);
         result.map(Response::new)
     }
@@ -3677,6 +3716,7 @@ fn grpc_click(
     request: proto::ClickRequest,
     config: &ServerConfig,
     accessibility_cache: &SharedAccessibilityCache,
+    list_windows: WindowListProvider,
 ) -> Result<proto::ActionResponse, Status> {
     if request.window_selector.is_some() {
         return Err(Status::unimplemented(
@@ -3684,22 +3724,119 @@ fn grpc_click(
         ));
     }
 
-    if request.coordinates.is_some() && request.semantic_selector.is_some() {
+    let options =
+        click_options_from_fields(request.bounds_policy.as_deref(), request.backend.as_deref())
+            .map_err(Status::invalid_argument)?;
+    let button = proto_mouse_button(request.button)?;
+    if !request.dry_run {
+        ensure_input_allowed(config).map_err(Status::permission_denied)?;
+    }
+    let resolved = resolve_grpc_click_target(&request, config, accessibility_cache, list_windows)?;
+    let position = peekaboox_input::resolve_move_position(resolved.position, options.bounds_policy)
+        .map_err(|error| Status::invalid_argument(error.to_string()))?;
+    let action = peekaboox_input::InputAction::Click { position, button };
+
+    let metadata = if request.dry_run {
+        let backend = peekaboox_input::CommandInputBackend
+            .detect_backend_for_with_selection(&action, options.backend)
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        peekaboox_input::InputExecutionMetadata {
+            backend_name: backend.name().to_owned(),
+            backend_kind: backend.backend_kind(),
+            action,
+        }
+    } else {
+        let restore_position = if request.restore {
+            Some(
+                peekaboox_input::current_mouse_position()
+                    .map_err(|error| Status::failed_precondition(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+        let metadata = peekaboox_input::click_with_options(position, button, options)
+            .map_err(|error| Status::internal(error.to_string()))?;
+        if let Some(position) = restore_position {
+            peekaboox_input::move_mouse_with_options(
+                position,
+                peekaboox_input::MoveMouseOptions {
+                    duration_ms: 0,
+                    steps: None,
+                    bounds_policy: options.bounds_policy,
+                    backend: options.backend,
+                },
+            )
+            .map_err(|error| Status::internal(error.to_string()))?;
+        }
+        metadata
+    };
+    let backend_kind = backend_kind_name(metadata.backend_kind);
+    let backend_name = metadata.backend_name;
+    let action = if request.dry_run {
+        "would click"
+    } else {
+        "clicked"
+    };
+    let restore_suffix = if request.restore && !request.dry_run {
+        " and restored"
+    } else {
+        ""
+    };
+
+    Ok(proto::ActionResponse {
+        ok: true,
+        message: format!(
+            "{action} {} ({},{}) using {}/{}{restore_suffix}",
+            resolved.description, position.x, position.y, backend_name, backend_kind
+        ),
+        backend_name: Some(backend_name),
+        backend_kind: Some(backend_kind),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedClickTarget {
+    position: Point,
+    description: String,
+}
+
+fn resolve_grpc_click_target(
+    request: &proto::ClickRequest,
+    config: &ServerConfig,
+    accessibility_cache: &SharedAccessibilityCache,
+    list_windows: WindowListProvider,
+) -> Result<ResolvedClickTarget, Status> {
+    let has_scope = request.region.is_some()
+        || request.ratio_x.is_some()
+        || request.ratio_y.is_some()
+        || request.window_id.is_some()
+        || request.app.is_some()
+        || request.window_title.is_some()
+        || request.title_regex.is_some();
+    let target_count = usize::from(request.coordinates.is_some())
+        + usize::from(request.semantic_selector.is_some())
+        + usize::from(has_scope);
+    if target_count != 1 {
         return Err(Status::invalid_argument(
-            "provide either coordinates or semantic_selector, not both",
+            "provide exactly one click target: coordinates, semantic_selector, or ratio/region/window scope",
         ));
     }
 
-    ensure_input_allowed(config).map_err(Status::permission_denied)?;
+    if let Some(coordinates) = request.coordinates.as_ref() {
+        return Ok(ResolvedClickTarget {
+            position: Point::new(coordinates.x, coordinates.y),
+            description: format!("{},{}", coordinates.x, coordinates.y),
+        });
+    }
 
-    let (position, target_description) = if let Some(selector) = request.semantic_selector {
+    if let Some(selector) = request.semantic_selector.as_ref() {
         if selector.trim().is_empty() {
             return Err(Status::invalid_argument(
                 "semantic_selector must not be empty",
             ));
         }
         let target = resolve_click_target_with_optional_vision_fallback(
-            &selector,
+            selector,
             request.vision_fallback || config.vision_fallback,
             accessibility_cache,
         )?;
@@ -3709,38 +3846,100 @@ fn grpc_click(
             .as_deref()
             .unwrap_or(target.element.role.as_str())
             .to_owned();
-        (
-            target.position,
-            format!(
+        return Ok(ResolvedClickTarget {
+            position: target.position,
+            description: format!(
                 "selector {selector:?} at {},{} ({label})",
                 target.position.x, target.position.y
             ),
-        )
-    } else {
-        let Some(coordinates) = request.coordinates else {
-            return Err(Status::invalid_argument(
-                "coordinates or semantic_selector are required",
-            ));
-        };
-        (
-            Point::new(coordinates.x, coordinates.y),
-            format!("{},{}", coordinates.x, coordinates.y),
-        )
-    };
-    let metadata = peekaboox_input::click(position, MouseButton::Left)
-        .map_err(|error| Status::internal(error.to_string()))?;
-    let backend_kind = backend_kind_name(metadata.backend_kind);
-    let backend_name = metadata.backend_name;
+        });
+    }
 
-    Ok(proto::ActionResponse {
-        ok: true,
-        message: format!(
-            "clicked {target_description} using {}/{}",
-            backend_name, backend_kind
+    let ratio = (
+        request.ratio_x.unwrap_or(0.5),
+        request.ratio_y.unwrap_or(0.5),
+    );
+    validate_ratio_status("ratio_x", ratio.0)?;
+    validate_ratio_status("ratio_y", ratio.1)?;
+    let scope = resolve_grpc_click_scope(request, list_windows)?;
+    Ok(ResolvedClickTarget {
+        position: point_from_ratio_status(scope, ratio)?,
+        description: format!(
+            "ratio {:.3},{:.3} in {}",
+            ratio.0,
+            ratio.1,
+            format_rect(scope)
         ),
-        backend_name: Some(backend_name),
-        backend_kind: Some(backend_kind),
     })
+}
+
+fn resolve_grpc_click_scope(
+    request: &proto::ClickRequest,
+    list_windows: WindowListProvider,
+) -> Result<Rect, Status> {
+    let region = request.region.map(rect_from_proto);
+    let window = resolve_grpc_click_window(request, list_windows)?;
+    match (window, region) {
+        (Some(window), Some(region)) => {
+            offset_window_relative_capture_region(window.bounds, region)
+                .map_err(Status::invalid_argument)
+        }
+        (Some(window), None) => Ok(window.bounds),
+        (None, Some(region)) => Ok(region),
+        (None, None) => {
+            let (width, height) = peekaboox_input::screen_size().ok_or_else(|| {
+                Status::failed_precondition(
+                    "click ratio without region/window requires a detectable screen size",
+                )
+            })?;
+            Ok(Rect::new(
+                0,
+                0,
+                u32::try_from(width).map_err(|_| Status::internal("screen width overflows u32"))?,
+                u32::try_from(height)
+                    .map_err(|_| Status::internal("screen height overflows u32"))?,
+            ))
+        }
+    }
+}
+
+fn resolve_grpc_click_window(
+    request: &proto::ClickRequest,
+    list_windows: WindowListProvider,
+) -> Result<Option<WindowInfo>, Status> {
+    let id = clean_optional_string(request.window_id.clone());
+    let app = clean_optional_string(request.app.clone());
+    let title = clean_optional_string(request.window_title.clone());
+    let title_regex = clean_optional_string(request.title_regex.clone());
+    if id.is_none() && app.is_none() && title.is_none() && title_regex.is_none() {
+        return Ok(None);
+    }
+
+    let query = window_query_from_fields(WindowQueryFields {
+        id,
+        app,
+        title,
+        title_regex,
+        focused: false,
+        limit: Some(1),
+        sort: Some("focused".to_owned()),
+        backend: None,
+        diagnose: false,
+    })
+    .map_err(Status::invalid_argument)?;
+    let metadata = list_windows(query).map_err(|error| Status::internal(error.to_string()))?;
+    let window = metadata
+        .windows
+        .into_iter()
+        .next()
+        .ok_or_else(|| Status::not_found("no window matched click filters"))?;
+    if window.bounds.width == 0 || window.bounds.height == 0 {
+        return Err(Status::failed_precondition(format!(
+            "window {} has empty bounds",
+            window.id
+        )));
+    }
+    Ok(Some(window))
 }
 
 fn grpc_move_mouse(
@@ -6284,6 +6483,16 @@ fn move_options_from_fields(
     })
 }
 
+fn click_options_from_fields(
+    bounds_policy: Option<&str>,
+    backend: Option<&str>,
+) -> Result<peekaboox_input::ClickMouseOptions, String> {
+    Ok(peekaboox_input::ClickMouseOptions {
+        bounds_policy: parse_move_bounds_policy(bounds_policy.unwrap_or("allow"))?,
+        backend: parse_input_backend_selection(backend.unwrap_or("auto"))?,
+    })
+}
+
 fn drag_options_from_fields(
     duration_ms: Option<u64>,
     steps: Option<u32>,
@@ -6607,11 +6816,17 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             y,
             button,
             dry_run,
+            bounds_policy,
+            backend,
+            restore,
         } => json!({
             "x": x,
             "y": y,
             "button": format!("{button:?}").to_ascii_lowercase(),
-            "dry_run": dry_run
+            "dry_run": dry_run,
+            "bounds_policy": bounds_policy,
+            "backend": backend,
+            "restore": restore
         }),
         ApiRequest::MoveMouse {
             x,
@@ -7732,6 +7947,18 @@ mod tests {
                 semantic_selector: None,
                 window_selector: None,
                 vision_fallback: false,
+                button: None,
+                dry_run: false,
+                bounds_policy: None,
+                backend: None,
+                restore: false,
+                region: None,
+                ratio_x: None,
+                ratio_y: None,
+                window_id: None,
+                app: None,
+                window_title: None,
+                title_regex: None,
             }))
             .await
             .unwrap_err();
@@ -7778,6 +8005,18 @@ mod tests {
                 semantic_selector: Some("role=push button,label=Submit".to_owned()),
                 window_selector: None,
                 vision_fallback: false,
+                button: None,
+                dry_run: false,
+                bounds_policy: None,
+                backend: None,
+                restore: false,
+                region: None,
+                ratio_x: None,
+                ratio_y: None,
+                window_id: None,
+                app: None,
+                window_title: None,
+                title_regex: None,
             }))
             .await
             .unwrap_err();
