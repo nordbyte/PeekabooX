@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -819,7 +819,7 @@ fn capture(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         let result = daemon_request(
             context,
             ApiRequest::Capture {
-                output: args.output.display().to_string(),
+                output: path_to_daemon_string(&args.output)?,
                 region: args.region.map(RectDto::from),
                 window_id: args.window_id,
                 app: args.app,
@@ -1111,7 +1111,7 @@ fn capture_backends(args: Vec<String>, context: &CliContext) -> Result<(), CliEr
         let result = daemon_request(
             context,
             ApiRequest::CaptureBackends {
-                output: args.output.display().to_string(),
+                output: path_to_daemon_string(&args.output)?,
                 region: args.region.map(RectDto::from),
                 diagnose: args.diagnose,
                 probe: args.probe,
@@ -1878,8 +1878,8 @@ fn plugins(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 paths: args
                     .paths
                     .iter()
-                    .map(|path| path.display().to_string())
-                    .collect(),
+                    .map(path_to_daemon_string)
+                    .collect::<Result<Vec<_>, _>>()?,
             },
         )?;
         let ApiResult::Plugins(plugins) = result else {
@@ -1949,8 +1949,8 @@ fn plugin_call(args: Vec<String>, context: &CliContext) -> Result<(), CliError> 
                 paths: args
                     .paths
                     .iter()
-                    .map(|path| path.display().to_string())
-                    .collect(),
+                    .map(path_to_daemon_string)
+                    .collect::<Result<Vec<_>, _>>()?,
                 timeout_ms: args.timeout_ms,
                 max_output_bytes: args.max_output_bytes,
             },
@@ -3123,7 +3123,7 @@ fn ocr(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         let result = daemon_request(
             context,
             ApiRequest::Ocr {
-                image_path: args.image.as_ref().map(|path| path.display().to_string()),
+                image_path: args.image.as_ref().map(path_to_daemon_string).transpose()?,
                 region: args.region.map(RectDto::from),
                 app: args.app.clone(),
                 window_title: args.window_title.clone(),
@@ -3530,8 +3530,8 @@ fn compare(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         let result = daemon_request(
             context,
             ApiRequest::CompareImages {
-                expected_path: args.expected.display().to_string(),
-                actual_path: args.actual.display().to_string(),
+                expected_path: path_to_daemon_string(&args.expected)?,
+                actual_path: path_to_daemon_string(&args.actual)?,
                 region: args.region.map(RectDto::from),
                 ignore_regions: args
                     .ignore_regions
@@ -3549,7 +3549,8 @@ fn compare(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 diff_output: args
                     .diff_output
                     .as_ref()
-                    .map(|path| path.display().to_string()),
+                    .map(path_to_daemon_string)
+                    .transpose()?,
             },
         )?;
         let ApiResult::VisualDiff(result) = result else {
@@ -3896,8 +3897,8 @@ fn ui_state(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 image_paths: args
                     .image_paths
                     .iter()
-                    .map(|path| path.display().to_string())
-                    .collect(),
+                    .map(path_to_daemon_string)
+                    .collect::<Result<Vec<_>, _>>()?,
                 region: args.region.map(RectDto::from),
                 ignore_regions: args
                     .ignore_regions
@@ -4205,7 +4206,7 @@ fn vision_elements(args: Vec<String>, context: &CliContext) -> Result<(), CliErr
         let result = daemon_request(
             context,
             ApiRequest::DetectUiElements {
-                image_path: args.image.display().to_string(),
+                image_path: path_to_daemon_string(&args.image)?,
                 region: args.region.map(RectDto::from),
                 ignore_regions: args
                     .ignore_regions
@@ -4229,11 +4230,13 @@ fn vision_elements(args: Vec<String>, context: &CliContext) -> Result<(), CliErr
                 mask_output_path: args
                     .mask_output
                     .as_ref()
-                    .map(|path| path.display().to_string()),
+                    .map(path_to_daemon_string)
+                    .transpose()?,
                 overlay_output_path: args
                     .overlay_output
                     .as_ref()
-                    .map(|path| path.display().to_string()),
+                    .map(path_to_daemon_string)
+                    .transpose()?,
             },
         )?;
         let ApiResult::DetectUiElements(metadata) = result else {
@@ -4773,7 +4776,7 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                 ApiRequest::DesktopLocate {
                     app: args.app,
                     target: args.target,
-                    image_path: args.image.map(path_to_cli_string),
+                    image_path: args.image.as_ref().map(path_to_daemon_string).transpose()?,
                     prefer_accessibility: args.prefer_accessibility,
                     window_title: args.window_title,
                     window_id: args.window_id,
@@ -4797,7 +4800,7 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                 ApiRequest::DesktopClick {
                     app: args.app,
                     target: args.target,
-                    image_path: args.image.map(path_to_cli_string),
+                    image_path: args.image.as_ref().map(path_to_daemon_string).transpose()?,
                     prefer_accessibility: args.prefer_accessibility,
                     window_title: args.window_title,
                     button: mouse_button_dto(args.button),
@@ -4824,7 +4827,7 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                 ApiRequest::DesktopDrag {
                     app: args.app,
                     target: args.target,
-                    image_path: args.image.map(path_to_cli_string),
+                    image_path: args.image.as_ref().map(path_to_daemon_string).transpose()?,
                     prefer_accessibility: args.prefer_accessibility,
                     window_title: args.window_title,
                     button: mouse_button_dto(args.button),
@@ -4857,7 +4860,7 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                     app: args.app,
                     target: args.target,
                     text: args.text,
-                    image_path: args.image.map(path_to_cli_string),
+                    image_path: args.image.as_ref().map(path_to_daemon_string).transpose()?,
                     prefer_accessibility: args.prefer_accessibility,
                     window_title: args.window_title,
                     clear: args.clear,
@@ -4885,7 +4888,7 @@ fn desktop_daemon(command: DesktopCommand, context: &CliContext) -> Result<(), C
                 ApiRequest::DesktopAssert {
                     app: args.app,
                     target: args.target,
-                    image_path: args.image.map(path_to_cli_string),
+                    image_path: args.image.as_ref().map(path_to_daemon_string).transpose()?,
                     prefer_accessibility: args.prefer_accessibility,
                     window_title: args.window_title,
                     assertion,
@@ -8284,7 +8287,10 @@ fn parse_see_args(args: Vec<String>) -> Result<SeeArgs, CliError> {
         index += 1;
     }
 
-    capture_args.push("--include-semantic-tree".to_owned());
+    capture_args.push("--json".to_owned());
+    if include_elements {
+        capture_args.push("--include-semantic-tree".to_owned());
+    }
     let mut capture = match parse_capture_args(capture_args)? {
         CaptureCommand::Run(args) => args,
         CaptureCommand::Help => {
@@ -8292,9 +8298,7 @@ fn parse_see_args(args: Vec<String>) -> Result<SeeArgs, CliError> {
             return Err(CliError::HelpRequested);
         }
     };
-    if !include_elements {
-        capture.include_semantic_tree = false;
-    }
+    capture.include_semantic_tree = include_elements;
     capture.stdout = false;
     capture.json = true;
     Ok(SeeArgs {
@@ -8326,7 +8330,12 @@ fn create_snapshot(args: &SeeArgs) -> Result<serde_json::Value, CliError> {
     });
     let mut capture = args.capture.clone();
     capture.output = image_path.clone();
-    capture.no_overwrite = false;
+    if args.capture.no_overwrite {
+        ensure_path_absent(&metadata_path_for_dir(&dir), "snapshot metadata")?;
+        if args.annotate && capture.format != CaptureOutputFormat::Xwd {
+            ensure_path_absent(&dir.join("annotated.png"), "annotated snapshot")?;
+        }
+    }
     let target = capture_target_from_args(&capture)?;
     let result = capture_cli_execute(&capture, target)?;
     let annotated_path = if args.annotate && capture.format != CaptureOutputFormat::Xwd {
@@ -8343,7 +8352,7 @@ fn create_snapshot(args: &SeeArgs) -> Result<serde_json::Value, CliError> {
     } else {
         None
     };
-    let metadata_path = dir.join("snapshot.json");
+    let metadata_path = metadata_path_for_dir(&dir);
     let snapshot = serde_json::json!({
         "id": snapshot_id,
         "schema_version": 1,
@@ -8354,8 +8363,16 @@ fn create_snapshot(args: &SeeArgs) -> Result<serde_json::Value, CliError> {
         "include_elements": args.include_elements,
         "capture": result.metadata,
     });
-    write_json_pretty_file(&metadata_path, &snapshot)?;
+    if args.capture.no_overwrite {
+        write_json_pretty_file_no_overwrite(&metadata_path, &snapshot)?;
+    } else {
+        write_json_pretty_file(&metadata_path, &snapshot)?;
+    }
     Ok(snapshot)
+}
+
+fn metadata_path_for_dir(dir: &Path) -> PathBuf {
+    dir.join("snapshot.json")
 }
 
 fn agent_command(args: Vec<String>, _context: &CliContext) -> Result<(), CliError> {
@@ -9382,7 +9399,7 @@ fn config_command(args: Vec<String>) -> Result<(), CliError> {
             let value = rest
                 .get(1)
                 .ok_or_else(|| CliError::Failure("config set requires value".to_owned()))?;
-            let mut config = read_config_json(&path).unwrap_or_else(|_| default_config());
+            let mut config = read_config_json_or_default_if_missing(&path)?;
             set_json_key(&mut config, key, parse_jsonish_value(value));
             write_json_pretty_file(&path, &config)?;
             println!("updated {}", path.display());
@@ -9654,6 +9671,22 @@ fn read_config_json(path: &Path) -> Result<serde_json::Value, CliError> {
             path.display()
         ))
     })
+}
+
+fn read_config_json_or_default_if_missing(path: &Path) -> Result<serde_json::Value, CliError> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => serde_json::from_str(&content).map_err(|error| {
+            CliError::Failure(format!(
+                "invalid config JSON in {}; fix or move the existing file before running config set: {error}",
+                path.display()
+            ))
+        }),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(default_config()),
+        Err(error) => Err(CliError::Failure(format!(
+            "failed to read {}: {error}",
+            path.display()
+        ))),
+    }
 }
 
 fn json_pointer_for_key(key: &str) -> String {
@@ -10219,8 +10252,17 @@ fn desktop_assertion_dto(assertion: &DesktopAssertion) -> (DesktopAssertionDto, 
     }
 }
 
-fn path_to_cli_string(path: PathBuf) -> String {
-    path.display().to_string()
+fn path_to_daemon_string(path: &PathBuf) -> Result<String, CliError> {
+    let absolute = if path.is_absolute() {
+        path.clone()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                CliError::Failure(format!("failed to resolve current directory: {error}"))
+            })?
+            .join(path)
+    };
+    Ok(absolute.display().to_string())
 }
 
 fn input_metadata_dto(metadata: peekaboox_input::InputExecutionMetadata) -> ActionResultDto {
@@ -10266,6 +10308,42 @@ fn write_json_pretty_file(path: &Path, value: &impl serde::Serialize) -> Result<
         .map_err(|error| CliError::Failure(error.to_string()))?;
     std::fs::write(path, format!("{json}\n"))
         .map_err(|error| CliError::Failure(format!("failed to write {}: {error}", path.display())))
+}
+
+fn write_json_pretty_file_no_overwrite(
+    path: &Path,
+    value: &impl serde::Serialize,
+) -> Result<(), CliError> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            CliError::Failure(format!("failed to create {}: {error}", parent.display()))
+        })?;
+    }
+    ensure_path_absent(path, "JSON output")?;
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            CliError::Failure(format!("failed to create {}: {error}", path.display()))
+        })?;
+    file.write_all(format!("{json}\n").as_bytes())
+        .map_err(|error| CliError::Failure(format!("failed to write {}: {error}", path.display())))
+}
+
+fn ensure_path_absent(path: &Path, description: &str) -> Result<(), CliError> {
+    if path.exists() {
+        return Err(CliError::Failure(format!(
+            "{description} already exists: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn print_usage() {
@@ -10544,7 +10622,8 @@ mod tests {
         parse_capture_delta_args, parse_capture_dmabuf_args, parse_click_args, parse_compare_args,
         parse_desktop_args, parse_drag_args, parse_elements_args, parse_global_args,
         parse_hotkey_args, parse_move_args, parse_ocr_args, parse_paste_args, parse_plugins_args,
-        parse_type_args, parse_ui_state_args, parse_vision_elements_args, parse_windows_args,
+        parse_see_args, parse_type_args, parse_ui_state_args, parse_vision_elements_args,
+        parse_windows_args,
     };
     use peekaboox_core::{Point, Rect};
     use peekaboox_desktop::DesktopAssertion;
@@ -10573,6 +10652,49 @@ mod tests {
                 include_semantic_tree: false,
             })
         );
+    }
+
+    #[test]
+    fn see_defaults_to_internal_json_capture_with_elements() {
+        let args = parse_see_args(vec![]).unwrap();
+
+        assert!(args.capture.json);
+        assert!(args.capture.include_semantic_tree);
+        assert!(args.include_elements);
+        assert!(!args.json);
+    }
+
+    #[test]
+    fn see_no_elements_does_not_request_semantic_tree() {
+        let args = parse_see_args(vec!["--no-elements".to_owned()]).unwrap();
+
+        assert!(args.capture.json);
+        assert!(!args.capture.include_semantic_tree);
+        assert!(!args.include_elements);
+    }
+
+    #[test]
+    fn config_set_refuses_invalid_existing_config() {
+        let root = std::env::temp_dir().join(format!(
+            "peekaboox-config-test-{}-{}",
+            std::process::id(),
+            super::unix_time_ms_u64()
+        ));
+        let config_path = root.join("config.json");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&config_path, "{invalid-json").unwrap();
+
+        let error = super::read_config_json_or_default_if_missing(&config_path).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CliError::Failure(message) if message.contains("invalid config JSON")
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "{invalid-json"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

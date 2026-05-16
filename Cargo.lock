@@ -810,6 +810,7 @@ dependencies = [
 name = "peekaboox-ipc"
 version = "1.1.0"
 dependencies = [
+ "libc",
  "peekaboox-core",
  "prost",
  "protoc-bin-vendored",
@@ -824,6 +825,7 @@ dependencies = [
 name = "peekaboox-plugins"
 version = "1.1.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
 ]

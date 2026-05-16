@@ -854,20 +854,10 @@ fn atspi_action_name(connection: &Connection, object_ref: &AtSpiRef, index: i32)
 
 fn atspi_do_action(connection: &Connection, object_ref: &AtSpiRef, index: i32) -> Result<bool> {
     let proxy = connection.with_proxy(object_ref.0.as_str(), object_ref.1.clone(), ATSPI_TIMEOUT);
-    let result: std::result::Result<(bool,), dbus::Error> =
-        proxy.method_call("org.a11y.atspi.Action", "DoAction", (index,));
-    match result {
-        Ok((ok,)) => Ok(ok),
-        Err(bool_error) => {
-            let result: std::result::Result<(), dbus::Error> =
-                proxy.method_call("org.a11y.atspi.Action", "DoAction", (index,));
-            result.map(|_| true).map_err(|void_error| {
-                PeekabooXError::new(format!(
-                    "AT-SPI DoAction failed: {bool_error}; void fallback failed: {void_error}"
-                ))
-            })
-        }
-    }
+    let (ok,): (bool,) = proxy
+        .method_call("org.a11y.atspi.Action", "DoAction", (index,))
+        .map_err(|error| PeekabooXError::new(format!("AT-SPI DoAction failed: {error}")))?;
+    Ok(ok)
 }
 
 fn atspi_grab_focus(connection: &Connection, object_ref: &AtSpiRef) -> Result<bool> {
@@ -884,20 +874,10 @@ fn atspi_set_text_contents(
     value: &str,
 ) -> Result<bool> {
     let proxy = connection.with_proxy(object_ref.0.as_str(), object_ref.1.clone(), ATSPI_TIMEOUT);
-    let result: std::result::Result<(bool,), dbus::Error> =
-        proxy.method_call("org.a11y.atspi.EditableText", "SetTextContents", (value,));
-    match result {
-        Ok((ok,)) => Ok(ok),
-        Err(bool_error) => {
-            let result: std::result::Result<(), dbus::Error> =
-                proxy.method_call("org.a11y.atspi.EditableText", "SetTextContents", (value,));
-            result.map(|_| true).map_err(|void_error| {
-                PeekabooXError::new(format!(
-                    "AT-SPI SetTextContents failed: {bool_error}; void fallback failed: {void_error}"
-                ))
-            })
-        }
-    }
+    let (ok,): (bool,) = proxy
+        .method_call("org.a11y.atspi.EditableText", "SetTextContents", (value,))
+        .map_err(|error| PeekabooXError::new(format!("AT-SPI SetTextContents failed: {error}")))?;
+    Ok(ok)
 }
 
 fn atspi_set_current_value(
@@ -906,20 +886,10 @@ fn atspi_set_current_value(
     value: f64,
 ) -> Result<bool> {
     let proxy = connection.with_proxy(object_ref.0.as_str(), object_ref.1.clone(), ATSPI_TIMEOUT);
-    let result: std::result::Result<(bool,), dbus::Error> =
-        proxy.method_call("org.a11y.atspi.Value", "SetCurrentValue", (value,));
-    match result {
-        Ok((ok,)) => Ok(ok),
-        Err(bool_error) => {
-            let result: std::result::Result<(), dbus::Error> =
-                proxy.method_call("org.a11y.atspi.Value", "SetCurrentValue", (value,));
-            result.map(|_| true).map_err(|void_error| {
-                PeekabooXError::new(format!(
-                    "AT-SPI SetCurrentValue failed: {bool_error}; void fallback failed: {void_error}"
-                ))
-            })
-        }
-    }
+    let (ok,): (bool,) = proxy
+        .method_call("org.a11y.atspi.Value", "SetCurrentValue", (value,))
+        .map_err(|error| PeekabooXError::new(format!("AT-SPI SetCurrentValue failed: {error}")))?;
+    Ok(ok)
 }
 
 fn variant_to_i64(value: &Variant<Box<dyn RefArg>>) -> Option<i64> {
@@ -944,6 +914,11 @@ fn atspi_ref_from_element_id(id: &str) -> Result<AtSpiRef> {
 }
 
 fn resolve_first_element(selector: &str) -> Result<UiElement> {
+    if selector.trim().is_empty() {
+        return Err(PeekabooXError::new(
+            "accessibility selector must not be empty",
+        ));
+    }
     let query = ElementQuery::parse(selector)?;
     let mut matches = semantic_tree()?
         .elements

@@ -3,6 +3,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -15,6 +16,7 @@ pub const LINUX_KEY_LEFTCTRL: u16 = 29;
 pub const LINUX_KEY_LEFTALT: u16 = 56;
 pub const LINUX_KEY_RIGHTCTRL: u16 = 97;
 pub const LINUX_KEY_RIGHTALT: u16 = 100;
+static CLIPBOARD_PASTE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputAction {
@@ -75,8 +77,10 @@ pub trait InputBackend {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct EmergencyHotkeyState {
-    ctrl_pressed: bool,
-    alt_pressed: bool,
+    left_ctrl_pressed: bool,
+    right_ctrl_pressed: bool,
+    left_alt_pressed: bool,
+    right_alt_pressed: bool,
     esc_pressed: bool,
 }
 
@@ -88,13 +92,23 @@ impl EmergencyHotkeyState {
 
         let pressed = value != 0;
         match key_code {
-            LINUX_KEY_LEFTCTRL | LINUX_KEY_RIGHTCTRL => self.ctrl_pressed = pressed,
-            LINUX_KEY_LEFTALT | LINUX_KEY_RIGHTALT => self.alt_pressed = pressed,
+            LINUX_KEY_LEFTCTRL => self.left_ctrl_pressed = pressed,
+            LINUX_KEY_RIGHTCTRL => self.right_ctrl_pressed = pressed,
+            LINUX_KEY_LEFTALT => self.left_alt_pressed = pressed,
+            LINUX_KEY_RIGHTALT => self.right_alt_pressed = pressed,
             LINUX_KEY_ESC => self.esc_pressed = pressed,
             _ => return false,
         }
 
-        pressed && self.ctrl_pressed && self.alt_pressed && self.esc_pressed
+        pressed && self.ctrl_pressed() && self.alt_pressed() && self.esc_pressed
+    }
+
+    fn ctrl_pressed(&self) -> bool {
+        self.left_ctrl_pressed || self.right_ctrl_pressed
+    }
+
+    fn alt_pressed(&self) -> bool {
+        self.left_alt_pressed || self.right_alt_pressed
     }
 }
 
@@ -440,7 +454,6 @@ impl InputTool {
                 | (Self::Ydotool, InputAction::Click { .. })
                 | (Self::Ydotool, InputAction::TypeText(_))
                 | (Self::Ydotool, InputAction::Hotkey(_))
-                | (Self::Ydotool, InputAction::Scroll { .. })
                 | (Self::Wtype, InputAction::TypeText(_))
                 | (Self::WlClipboard, InputAction::TypeText(_))
                 | (Self::XclipClipboard, InputAction::TypeText(_))
@@ -1227,6 +1240,11 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
             *position,
             ScrollOptions::default(),
         ),
+        (InputTool::WlClipboard, InputAction::TypeText(text))
+        | (InputTool::XclipClipboard, InputAction::TypeText(text))
+        | (InputTool::XselClipboard, InputAction::TypeText(text)) => {
+            run_type_text_tool(tool, text, TypeTextOptions::default())
+        }
         (
             InputTool::WlClipboard,
             InputAction::PasteText {
@@ -1422,7 +1440,11 @@ fn run_scroll_tool(
     let button = scroll_button(tool, direction)?;
     for index in 0..amount {
         match tool {
-            InputTool::Ydotool => run_command("ydotool", ["click", "--delay", "0", button])?,
+            InputTool::Ydotool => {
+                return Err(PeekabooXError::new(
+                    "ydotool does not support reliable wheel scrolling",
+                ));
+            }
             InputTool::Xdotool => run_command("xdotool", ["click", button])?,
             _ => {
                 return Err(PeekabooXError::new(format!(
@@ -1440,7 +1462,7 @@ fn run_scroll_tool(
 
 fn scroll_button(tool: InputTool, direction: ScrollDirection) -> Result<&'static str> {
     match tool {
-        InputTool::Ydotool | InputTool::Xdotool => Ok(match direction {
+        InputTool::Xdotool => Ok(match direction {
             ScrollDirection::Up => "4",
             ScrollDirection::Down => "5",
             ScrollDirection::Left => "6",
@@ -1610,6 +1632,9 @@ fn clipboard_paste_with_backend(
             backend.clipboard_tool.name()
         )));
     }
+    let _guard = CLIPBOARD_PASTE_LOCK.lock().map_err(|_| {
+        PeekabooXError::new("clipboard paste lock was poisoned by a previous paste operation")
+    })?;
 
     let should_restore =
         options.preserve_clipboard && options.restore_policy != ClipboardRestorePolicy::Off;
@@ -2920,6 +2945,18 @@ mod tests {
         state.update_linux_key_event(super::LINUX_EV_KEY, super::LINUX_KEY_LEFTCTRL, 0);
 
         assert!(!state.update_linux_key_event(super::LINUX_EV_KEY, super::LINUX_KEY_ESC, 1));
+    }
+
+    #[test]
+    fn emergency_hotkey_state_tracks_overlapping_modifiers() {
+        let mut state = super::EmergencyHotkeyState::default();
+
+        state.update_linux_key_event(super::LINUX_EV_KEY, super::LINUX_KEY_LEFTCTRL, 1);
+        state.update_linux_key_event(super::LINUX_EV_KEY, super::LINUX_KEY_RIGHTCTRL, 1);
+        state.update_linux_key_event(super::LINUX_EV_KEY, super::LINUX_KEY_LEFTALT, 1);
+        state.update_linux_key_event(super::LINUX_EV_KEY, super::LINUX_KEY_LEFTCTRL, 0);
+
+        assert!(state.update_linux_key_event(super::LINUX_EV_KEY, super::LINUX_KEY_ESC, 1));
     }
 
     fn environment<const N: usize>(

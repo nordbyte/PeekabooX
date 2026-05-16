@@ -4,8 +4,9 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -252,29 +253,34 @@ pub fn execute_plugin_tool(
     let mut child = command
         .spawn()
         .map_err(|error| format!("failed to start plugin {:?}: {error}", plugin.manifest.id))?;
+    let child_pid = child.id();
     let mut child_stdin = child
         .stdin
         .take()
         .ok_or_else(|| format!("failed to open stdin for plugin {:?}", plugin.manifest.id))?;
-    child_stdin
-        .write_all(request.to_string().as_bytes())
-        .map_err(|error| format!("failed to write plugin request: {error}"))?;
-    drop(child_stdin);
-
-    let started = Instant::now();
-    loop {
-        if child
-            .try_wait()
-            .map_err(|error| format!("failed to poll plugin process: {error}"))?
-            .is_some()
-        {
-            break;
-        }
-        if started.elapsed() >= policy.timeout {
-            let _ = child.kill();
-            let output = child
-                .wait_with_output()
+    let request_bytes = request.to_string().into_bytes();
+    let writer = thread::spawn(move || {
+        child_stdin
+            .write_all(&request_bytes)
+            .and_then(|_| child_stdin.flush())
+            .map_err(|error| format!("failed to write plugin request: {error}"))
+    });
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = child
+            .wait_with_output()
+            .map_err(|error| format!("failed to collect plugin output: {error}"));
+        let _ = tx.send(result);
+    });
+    let output = match rx.recv_timeout(policy.timeout) {
+        Ok(result) => result?,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            kill_process(child_pid);
+            let output = rx
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_| "failed to collect timed-out plugin output".to_owned())?
                 .map_err(|error| format!("failed to collect timed-out plugin output: {error}"))?;
+            let _ = writer.join();
             return Ok(PluginToolExecutionResult {
                 ok: false,
                 plugin_id: plugin.manifest.id.clone(),
@@ -289,12 +295,15 @@ pub fn execute_plugin_tool(
                 )),
             });
         }
-        sleep(Duration::from_millis(10));
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("plugin output collector disconnected".to_owned());
+        }
+    };
+    match writer.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(error),
+        Err(_) => return Err("plugin request writer panicked".to_owned()),
     }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("failed to collect plugin output: {error}"))?;
     let stdout_too_large = output.stdout.len() > policy.max_output_bytes;
     let stderr_too_large = output.stderr.len() > policy.max_output_bytes;
     let stdout = limited_output(&output.stdout, policy.max_output_bytes);
@@ -372,7 +381,17 @@ fn discover_path(
             return;
         }
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                errors.push(PluginDiscoveryError {
+                    path: path.to_path_buf(),
+                    message: error.to_string(),
+                });
+                continue;
+            }
+        };
         let entry_path = entry.path();
         let is_plugin_dir = entry_path.is_dir() && entry_path.join(PLUGIN_MANIFEST_FILE).is_file();
         let is_manifest_file = entry_path.is_file()
@@ -559,11 +578,9 @@ fn validate_object_schema(
         }
     }
 
-    if schema_object.get("additionalProperties") == Some(&Value::Bool(false))
-        && let Some(properties) = properties
-    {
+    if schema_object.get("additionalProperties") == Some(&Value::Bool(false)) {
         for field in object.keys() {
-            if !properties.contains_key(field) {
+            if !properties.is_some_and(|properties| properties.contains_key(field)) {
                 return Err(format!(
                     "{path}.{field}: additional property is not allowed"
                 ));
@@ -644,6 +661,12 @@ fn validate_array_bounds(
 fn limited_output(bytes: &[u8], max_output_bytes: usize) -> String {
     let limit = bytes.len().min(max_output_bytes);
     String::from_utf8_lossy(&bytes[..limit]).into_owned()
+}
+
+fn kill_process(pid: u32) {
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
 }
 
 fn parse_stdout_json(stdout: &str) -> Option<Value> {
@@ -795,6 +818,21 @@ mod tests {
             )
             .unwrap_err()
             .contains("additional property")
+        );
+    }
+
+    #[test]
+    fn additional_properties_false_without_properties_rejects_fields() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "additionalProperties": false
+        });
+
+        validate_json_schema(&schema, &serde_json::json!({})).unwrap();
+        assert!(
+            validate_json_schema(&schema, &serde_json::json!({"unexpected": true}))
+                .unwrap_err()
+                .contains("additional property")
         );
     }
 

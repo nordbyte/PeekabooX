@@ -1,12 +1,17 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::Cursor;
+use std::io::ErrorKind;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use image::{DynamicImage, ImageReader, Rgba, RgbaImage, imageops};
 use peekaboox_core::{CaptureFrame, PeekabooXError, PixelFormat, Rect, Result, UiElement};
+
+static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OcrText {
@@ -837,6 +842,12 @@ pub fn incremental_capture_delta(
     validate_frame(current, "current")?;
 
     if let Some(previous) = previous {
+        if previous.width != current.width
+            || previous.height != current.height
+            || previous.format != current.format
+        {
+            return full_frame_delta(current, sequence);
+        }
         let diff = compare_frames(previous, current, &options.compare)?;
         let Some(changed_bounds) = diff.changed_bounds else {
             return Ok(IncrementalCaptureDelta {
@@ -868,6 +879,10 @@ pub fn incremental_capture_delta(
         });
     }
 
+    full_frame_delta(current, sequence)
+}
+
+fn full_frame_delta(current: &CaptureFrame, sequence: u64) -> Result<IncrementalCaptureDelta> {
     let full_bounds = Rect::new(0, 0, current.width, current.height);
     let (patch_stride, patch_data) = frame_region_patch(current, full_bounds)?;
     Ok(IncrementalCaptureDelta {
@@ -898,7 +913,7 @@ fn capture_frame_from_image(image: DynamicImage) -> CaptureFrame {
 }
 
 pub fn ocr_screen_with_backend(backend: &impl OcrBackend) -> Result<OcrResult> {
-    let screenshot = capture_temp_path();
+    let screenshot = capture_temp_path()?;
     capture_to_temp_file(&screenshot)?;
     let result = backend.recognize_image(&screenshot, None);
     remove_temp_file(&screenshot);
@@ -906,7 +921,7 @@ pub fn ocr_screen_with_backend(backend: &impl OcrBackend) -> Result<OcrResult> {
 }
 
 pub fn ocr_region_with_backend(backend: &impl OcrBackend, region: Rect) -> Result<OcrResult> {
-    let screenshot = capture_temp_path();
+    let screenshot = capture_temp_path()?;
     capture_to_temp_file(&screenshot)?;
     let result = backend.recognize_image(&screenshot, Some(region));
     remove_temp_file(&screenshot);
@@ -1389,7 +1404,7 @@ fn prepare_ocr_image(
 
     apply_ocr_preprocessing(&mut image, &mut transform, &mut warnings, options)?;
 
-    let path = ocr_preprocessed_temp_path();
+    let path = ocr_preprocessed_temp_path()?;
     image.save(&path).map_err(|error| {
         PeekabooXError::new(format!(
             "failed to save OCR temporary image {}: {error}",
@@ -2585,20 +2600,44 @@ fn capture_to_temp_file(path: &Path) -> Result<()> {
     peekaboox_capture::capture_screen_to_file(path).map(|_| ())
 }
 
-fn capture_temp_path() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "peekaboox-ocr-{}-{}.png",
-        std::process::id(),
-        monotonic_ms()
-    ))
+fn capture_temp_path() -> Result<PathBuf> {
+    unique_temp_path("peekaboox-ocr", "png")
 }
 
-fn ocr_preprocessed_temp_path() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "peekaboox-ocr-preprocessed-{}-{}.png",
-        std::process::id(),
-        monotonic_ms()
-    ))
+fn ocr_preprocessed_temp_path() -> Result<PathBuf> {
+    unique_temp_path("peekaboox-ocr-preprocessed", "png")
+}
+
+fn unique_temp_path(prefix: &str, extension: &str) -> Result<PathBuf> {
+    for _ in 0..32 {
+        let counter = TEMP_PATH_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let path = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{nanos}-{counter}.{extension}",
+            std::process::id(),
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(_) => return Ok(path),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(PeekabooXError::new(format!(
+                    "failed to create OCR temporary image {}: {error}",
+                    path.display()
+                )));
+            }
+        }
+    }
+
+    Err(PeekabooXError::new(format!(
+        "failed to allocate unique OCR temporary {prefix} image"
+    )))
 }
 
 fn remove_temp_file(path: &Path) {
@@ -2612,6 +2651,7 @@ fn remove_temp_file(path: &Path) {
     }
 }
 
+#[cfg(test)]
 fn monotonic_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3020,6 +3060,48 @@ mod tests {
         assert_eq!(delta.patch_stride, 0);
         assert!(delta.patch_data.is_empty());
         assert_eq!(delta.patch_frame(), None);
+    }
+
+    #[test]
+    fn incremental_capture_delta_resets_on_pixel_format_change() {
+        let previous = solid_rgb_frame(1, 1, [0, 0, 0]);
+        let current = CaptureFrame {
+            width: 1,
+            height: 1,
+            stride: 4,
+            format: PixelFormat::Rgba8,
+            data: vec![0, 0, 0, 255],
+        };
+
+        let delta = incremental_capture_delta(
+            Some(&previous),
+            &current,
+            10,
+            &IncrementalCaptureOptions::default(),
+        )
+        .unwrap();
+
+        assert!(delta.full_frame);
+        assert_eq!(delta.changed_bounds, Some(Rect::new(0, 0, 1, 1)));
+        assert_eq!(delta.patch_data, current.data);
+    }
+
+    #[test]
+    fn incremental_capture_delta_resets_on_dimension_change() {
+        let previous = solid_rgb_frame(1, 1, [0, 0, 0]);
+        let current = solid_rgb_frame(2, 1, [0, 0, 0]);
+        let options = IncrementalCaptureOptions {
+            compare: VisualCompareOptions {
+                size_policy: VisualSizePolicy::CommonRegion,
+                ..VisualCompareOptions::default()
+            },
+        };
+
+        let delta = incremental_capture_delta(Some(&previous), &current, 11, &options).unwrap();
+
+        assert!(delta.full_frame);
+        assert_eq!(delta.changed_bounds, Some(Rect::new(0, 0, 2, 1)));
+        assert_eq!(delta.patch_data, current.data);
     }
 
     #[test]

@@ -3,10 +3,10 @@ use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener};
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -52,6 +52,8 @@ use tonic::{Request, Response, Status};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_GRPC_ADDR: &str = "127.0.0.1:47777";
 const DEFAULT_ACCESSIBILITY_CACHE_TTL_MS: u64 = 500;
+const MAX_INCREMENTAL_CAPTURE_STREAMS: usize = 64;
+const MAX_CAPTURE_STREAM_ID_LEN: usize = 128;
 const VISION_UI_BACKEND_NAME: &str = "heuristic_vision";
 const VISION_UI_BACKEND_KIND: &str = "vision";
 const ATSPI_EVENT_REGISTRY_DESTINATION: &str = "org.a11y.atspi.Registry";
@@ -72,6 +74,7 @@ const ATSPI_EVENT_INTERFACES: &[&str] = &[
     "org.a11y.atspi.Event.Window",
 ];
 const INPUT_EVENT_DIR: &str = "/dev/input";
+static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn main() {
     match run(std::env::args().skip(1).collect()) {
@@ -180,6 +183,7 @@ struct ServerConfig {
     allow_input: bool,
     vision_fallback: bool,
     grpc_addr: Option<SocketAddr>,
+    grpc_token: Option<String>,
     accessibility_cache_ttl: Duration,
     accessibility_events: bool,
     emergency_hotkey: bool,
@@ -248,6 +252,17 @@ fn parse_run_args(args: &[String]) -> Result<DaemonCommand, String> {
                         .map_err(|error| format!("invalid --grpc-addr {value:?}: {error}"))?,
                 );
             }
+            "--grpc-token" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("missing value for --grpc-token".to_owned());
+                };
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err("--grpc-token must not be empty".to_owned());
+                }
+                config.grpc_token = Some(value.to_owned());
+            }
             "--no-grpc" => config.grpc_addr = None,
             "--accessibility-cache-ttl-ms" => {
                 index += 1;
@@ -299,6 +314,7 @@ fn server_config_for_profile(policy_profile: DaemonPolicyProfile) -> ServerConfi
         allow_input: policy_profile.allow_input(),
         vision_fallback: policy_profile.vision_fallback(),
         grpc_addr: Some(default_grpc_addr()),
+        grpc_token: grpc_token_from_env(),
         accessibility_cache_ttl: default_accessibility_cache_ttl(),
         accessibility_events: true,
         emergency_hotkey: emergency_hotkey_enabled_from_env(),
@@ -461,11 +477,9 @@ fn run_server(config: ServerConfig) -> Result<(), String> {
         }
     };
     prepare_socket_path(&config.socket)?;
-    let _socket_guard = SocketGuard {
-        path: config.socket.clone(),
-    };
     let listener = UnixListener::bind(&config.socket)
         .map_err(|error| format!("failed to bind {}: {error}", config.socket.display()))?;
+    let _socket_guard = SocketGuard::new(config.socket.clone())?;
     listener
         .set_nonblocking(true)
         .map_err(|error| format!("failed to configure nonblocking socket: {error}"))?;
@@ -507,6 +521,7 @@ fn run_server(config: ServerConfig) -> Result<(), String> {
             "vision_fallback": config.vision_fallback,
             "once": config.once,
             "grpc_addr": config.grpc_addr.map(|addr| addr.to_string()),
+            "grpc_auth": config.grpc_token.as_ref().map(|_| "token").unwrap_or("loopback-only"),
             "accessibility_cache_ttl_ms": config.accessibility_cache_ttl.as_millis(),
             "accessibility_events": config.accessibility_events,
             "emergency_hotkey": config.emergency_hotkey,
@@ -577,6 +592,26 @@ type WindowListProvider = fn(
 #[derive(Debug, Default)]
 struct IncrementalCaptureState {
     streams: HashMap<String, IncrementalCaptureStream>,
+    order: Vec<String>,
+}
+
+impl IncrementalCaptureState {
+    fn insert(&mut self, stream_id: String, stream: IncrementalCaptureStream) {
+        if !self.streams.contains_key(&stream_id) {
+            self.order.push(stream_id.clone());
+        }
+        self.streams.insert(stream_id.clone(), stream);
+        self.order.retain(|id| self.streams.contains_key(id));
+        while self.streams.len() > MAX_INCREMENTAL_CAPTURE_STREAMS {
+            let Some(evicted) = self.order.first().cloned() else {
+                break;
+            };
+            self.order.remove(0);
+            if evicted != stream_id {
+                self.streams.remove(&evicted);
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -777,7 +812,7 @@ fn vision_fallback_elements(
     query: &ElementQuery,
     options: &ElementLookupOptions,
 ) -> Result<ElementLookupResult, String> {
-    let screenshot = vision_fallback_temp_path();
+    let screenshot = vision_fallback_temp_path().map_err(|error| error.to_string())?;
     let capture_region = element_vision_capture_region(options)?;
     capture_to_file(&screenshot, capture_region).map_err(|error| error.to_string())?;
     let result =
@@ -861,11 +896,43 @@ fn contains_case_insensitive(value: &str, needle: &str) -> bool {
         .contains(&needle.to_ascii_lowercase())
 }
 
-fn vision_fallback_temp_path() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "peekaboox-vision-fallback-{}-{}.png",
+fn vision_fallback_temp_path() -> std::io::Result<PathBuf> {
+    reserve_unique_temp_path_in(&std::env::temp_dir(), "peekaboox-vision-fallback", "png")
+}
+
+fn unique_temp_path_in(dir: &Path, prefix: &str, extension: &str) -> PathBuf {
+    let counter = TEMP_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    dir.join(format!(
+        "{prefix}-{}-{nanos}-{counter}.{extension}",
         std::process::id(),
-        unix_time_ms()
+    ))
+}
+
+fn reserve_unique_temp_path_in(
+    dir: &Path,
+    prefix: &str,
+    extension: &str,
+) -> std::io::Result<PathBuf> {
+    for _ in 0..32 {
+        let path = unique_temp_path_in(dir, prefix, extension);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(_) => return Ok(path),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(std::io::Error::new(
+        ErrorKind::AlreadyExists,
+        format!("failed to allocate unique temporary {prefix} file"),
     ))
 }
 
@@ -1263,6 +1330,12 @@ fn spawn_grpc_server(
     let Some(addr) = config.grpc_addr else {
         return Ok(None);
     };
+    if !addr.ip().is_loopback() && config.grpc_token.is_none() {
+        return Err(
+            "refusing to expose unauthenticated gRPC on a non-loopback address; set --grpc-token or PEEKABOOX_GRPC_TOKEN"
+                .to_owned(),
+        );
+    }
 
     let listener = TcpListener::bind(addr)
         .map_err(|error| format!("failed to bind gRPC listener at {addr}: {error}"))?;
@@ -1280,6 +1353,7 @@ fn spawn_grpc_server(
         list_windows: peekaboox_windows::list_windows_with_query,
     };
     let audit_for_thread = Arc::clone(&audit);
+    let grpc_token = config.grpc_token.clone();
 
     println!("peekabooxd grpc listening on {local_addr}");
     audit_write(
@@ -1316,15 +1390,36 @@ fn spawn_grpc_server(
             let listener = tokio::net::TcpListener::from_std(listener)
                 .map_err(|error| format!("failed to adopt gRPC listener: {error}"))?;
             let incoming = TcpListenerStream::new(listener);
-            tonic::transport::Server::builder()
-                .add_service(PeekabooXServer::new(service))
-                .serve_with_incoming_shutdown(incoming, async move {
-                    while !shutdown.load(Ordering::Relaxed) {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                })
-                .await
-                .map_err(|error| format!("gRPC server stopped with error: {error}"))
+            let shutdown_future = async move {
+                while !shutdown.load(Ordering::Relaxed) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            };
+            let mut builder = tonic::transport::Server::builder();
+            if let Some(expected_token) = grpc_token {
+                builder
+                    .add_service(PeekabooXServer::with_interceptor(
+                        service,
+                        move |request: Request<()>| {
+                            if grpc_request_has_token(&request, &expected_token) {
+                                Ok(request)
+                            } else {
+                                Err(Status::unauthenticated(
+                                    "missing or invalid PeekabooX gRPC token",
+                                ))
+                            }
+                        },
+                    ))
+                    .serve_with_incoming_shutdown(incoming, shutdown_future)
+                    .await
+                    .map_err(|error| format!("gRPC server stopped with error: {error}"))
+            } else {
+                builder
+                    .add_service(PeekabooXServer::new(service))
+                    .serve_with_incoming_shutdown(incoming, shutdown_future)
+                    .await
+                    .map_err(|error| format!("gRPC server stopped with error: {error}"))
+            }
         });
 
         if let Err(error) = result {
@@ -1341,6 +1436,19 @@ fn spawn_grpc_server(
     });
 
     Ok(Some(handle))
+}
+
+fn grpc_request_has_token(request: &Request<()>, expected_token: &str) -> bool {
+    let metadata = request.metadata();
+    metadata
+        .get("x-peekaboox-token")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == expected_token)
+        || metadata
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .is_some_and(|value| value == expected_token)
 }
 
 fn handle_stream(
@@ -1526,11 +1634,14 @@ fn dispatch_request(
             timeout_ms,
             max_output_bytes,
         } => {
-            let paths = if paths.is_empty() {
-                config.plugin_paths.clone()
-            } else {
-                paths.into_iter().map(PathBuf::from).collect()
-            };
+            ensure_plugin_execution_allowed(config)?;
+            if !paths.is_empty() {
+                return Err(
+                    "permission denied: daemon plugin execution only uses plugin paths configured at daemon startup"
+                        .to_owned(),
+                );
+            }
+            let paths = config.plugin_paths.clone();
             let discovery = peekaboox_plugins::discover_plugins(&paths);
             if !discovery.errors.is_empty() {
                 return Err(format!(
@@ -2930,6 +3041,11 @@ fn capture_delta_data(
     incremental_capture_state: &SharedIncrementalCaptureState,
 ) -> Result<CaptureDeltaData, String> {
     let stream_id = normalized_capture_stream_id(stream_id.unwrap_or_default());
+    if stream_id.len() > MAX_CAPTURE_STREAM_ID_LEN {
+        return Err(format!(
+            "capture_delta stream_id is too long: maximum {MAX_CAPTURE_STREAM_ID_LEN} bytes"
+        ));
+    }
     let CapturedFrame {
         frame,
         backend_name,
@@ -2968,7 +3084,7 @@ fn capture_delta_data(
     };
     let delta = peekaboox_vision::incremental_capture_delta(previous, &frame, sequence, &options)
         .map_err(|error| error.to_string())?;
-    state.streams.insert(
+    state.insert(
         stream_id.clone(),
         IncrementalCaptureStream { sequence, frame },
     );
@@ -3275,8 +3391,12 @@ fn capture_to_file_response(
     }
 
     if format == CaptureFileFormat::Xwd {
-        let metadata = peekaboox_capture::capture_screen_to_file(&output_path)
-            .map_err(|error| error.to_string())?;
+        let metadata = if no_overwrite {
+            capture_screen_to_file_no_overwrite(&output_path).map_err(|error| error.to_string())?
+        } else {
+            peekaboox_capture::capture_screen_to_file(&output_path)
+                .map_err(|error| error.to_string())?
+        };
         return Ok(CaptureResultDto {
             output_path: metadata.output_path.display().to_string(),
             backend_name: metadata.backend_name,
@@ -3300,8 +3420,13 @@ fn capture_to_file_response(
         None => peekaboox_capture::capture_screen_frame(),
     }
     .map_err(|error| error.to_string())?;
-    let bytes_written = peekaboox_capture::write_frame_png(&frame_metadata.frame, &output_path)
-        .map_err(|error| error.to_string())?;
+    let bytes_written = if no_overwrite {
+        write_frame_png_no_overwrite(&frame_metadata.frame, &output_path)
+            .map_err(|error| error.to_string())?
+    } else {
+        peekaboox_capture::write_frame_png(&frame_metadata.frame, &output_path)
+            .map_err(|error| error.to_string())?
+    };
     let window_id = target.window.as_ref().map(|window| window.id.clone());
     let window = target.window.as_ref().map(WindowDto::from);
 
@@ -3441,6 +3566,99 @@ fn ensure_capture_output_path(output: &Path, no_overwrite: bool) -> Result<PathB
         ));
     }
     Ok(output)
+}
+
+fn write_frame_png_no_overwrite(
+    frame: &CaptureFrame,
+    output: &Path,
+) -> Result<u64, peekaboox_core::PeekabooXError> {
+    if let Some(parent) = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            peekaboox_core::PeekabooXError::new(format!(
+                "failed to create {}: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    let png = peekaboox_capture::encode_frame_png(frame)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)
+        .map_err(|error| {
+            peekaboox_core::PeekabooXError::new(format!(
+                "failed to create {} without overwriting: {error}",
+                output.display()
+            ))
+        })?;
+    file.write_all(&png).map_err(|error| {
+        peekaboox_core::PeekabooXError::new(format!(
+            "failed to write {}: {error}",
+            output.display()
+        ))
+    })?;
+    Ok(png.len() as u64)
+}
+
+fn capture_screen_to_file_no_overwrite(
+    output: &Path,
+) -> Result<peekaboox_capture::CaptureFileMetadata, peekaboox_core::PeekabooXError> {
+    if let Some(parent) = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            peekaboox_core::PeekabooXError::new(format!(
+                "failed to create {}: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    if output.exists() {
+        return Err(peekaboox_core::PeekabooXError::new(format!(
+            "capture output already exists: {}",
+            output.display()
+        )));
+    }
+    let temp_parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let temp = reserve_unique_temp_path_in(
+        temp_parent,
+        ".peekaboox-capture",
+        output
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("tmp"),
+    )
+    .map_err(|error| {
+        peekaboox_core::PeekabooXError::new(format!(
+            "failed to reserve temporary capture output in {}: {error}",
+            temp_parent.display()
+        ))
+    })?;
+    let result = peekaboox_capture::capture_screen_to_file(&temp);
+    match result {
+        Ok(mut metadata) => {
+            fs::hard_link(&temp, output).map_err(|error| {
+                peekaboox_core::PeekabooXError::new(format!(
+                    "failed to install {} without overwriting: {error}",
+                    output.display()
+                ))
+            })?;
+            let _ = fs::remove_file(&temp);
+            metadata.output_path = output.to_path_buf();
+            Ok(metadata)
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temp);
+            Err(error)
+        }
+    }
 }
 
 fn capture_semantic_tree_dto(
@@ -5040,6 +5258,12 @@ fn grpc_call_plugin_tool(
     request: proto::CallPluginToolRequest,
     config: &ServerConfig,
 ) -> Result<proto::PluginToolExecutionResponse, Status> {
+    ensure_plugin_execution_allowed(config).map_err(Status::permission_denied)?;
+    if !request.paths.is_empty() {
+        return Err(Status::permission_denied(
+            "daemon plugin execution only uses plugin paths configured at daemon startup",
+        ));
+    }
     if request.plugin_id.trim().is_empty() {
         return Err(Status::invalid_argument("plugin_id must not be empty"));
     }
@@ -5052,11 +5276,7 @@ fn grpc_call_plugin_tool(
         serde_json::from_str(&request.arguments_json)
             .map_err(|error| Status::invalid_argument(format!("invalid arguments_json: {error}")))?
     };
-    let paths = if request.paths.is_empty() {
-        config.plugin_paths.clone()
-    } else {
-        request.paths.into_iter().map(PathBuf::from).collect()
-    };
+    let paths = config.plugin_paths.clone();
     let discovery = peekaboox_plugins::discover_plugins(&paths);
     if !discovery.errors.is_empty() {
         return Err(Status::failed_precondition(format!(
@@ -6413,6 +6633,17 @@ fn ensure_input_allowed(config: &ServerConfig) -> Result<(), String> {
     )
 }
 
+fn ensure_plugin_execution_allowed(config: &ServerConfig) -> Result<(), String> {
+    if config.allow_input {
+        return Ok(());
+    }
+
+    Err(
+        "permission denied: plugin execution requires peekabooxd --profile operator, --allow-input, or PEEKABOOX_ALLOW_INPUT=1"
+            .to_owned(),
+    )
+}
+
 fn prepare_socket_path(socket: &PathBuf) -> Result<(), String> {
     if let Some(parent) = socket.parent() {
         fs::create_dir_all(parent)
@@ -6426,6 +6657,12 @@ fn prepare_socket_path(socket: &PathBuf) -> Result<(), String> {
     let metadata = fs::metadata(socket)
         .map_err(|error| format!("failed to inspect {}: {error}", socket.display()))?;
     if metadata.file_type().is_socket() {
+        if UnixStream::connect(socket).is_ok() {
+            return Err(format!(
+                "{} is already in use by a running PeekabooX daemon",
+                socket.display()
+            ));
+        }
         fs::remove_file(socket).map_err(|error| {
             format!(
                 "failed to remove stale socket {}: {error}",
@@ -6443,10 +6680,30 @@ fn prepare_socket_path(socket: &PathBuf) -> Result<(), String> {
 
 struct SocketGuard {
     path: PathBuf,
+    dev: u64,
+    ino: u64,
+}
+
+impl SocketGuard {
+    fn new(path: PathBuf) -> Result<Self, String> {
+        let metadata = fs::metadata(&path)
+            .map_err(|error| format!("failed to inspect socket {}: {error}", path.display()))?;
+        Ok(Self {
+            path,
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        })
+    }
 }
 
 impl Drop for SocketGuard {
     fn drop(&mut self) {
+        let Ok(metadata) = fs::metadata(&self.path) else {
+            return;
+        };
+        if metadata.dev() != self.dev || metadata.ino() != self.ino {
+            return;
+        }
         if let Err(error) = fs::remove_file(&self.path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
@@ -6886,6 +7143,13 @@ fn vision_fallback_from_env() -> bool {
     std::env::var("PEEKABOOX_VISION_FALLBACK")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
+}
+
+fn grpc_token_from_env() -> Option<String> {
+    std::env::var("PEEKABOOX_GRPC_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 fn emergency_hotkey_enabled_from_env() -> bool {
@@ -7626,6 +7890,7 @@ mod tests {
                     allow_input: true,
                     vision_fallback: true,
                     grpc_addr: Some("127.0.0.1:47778".parse().unwrap()),
+                    grpc_token: None,
                     accessibility_cache_ttl: Duration::from_millis(250),
                     accessibility_events: false,
                     emergency_hotkey: false,
@@ -7808,6 +8073,7 @@ mod tests {
             allow_input: false,
             vision_fallback: false,
             grpc_addr: Some(default_grpc_addr()),
+            grpc_token: None,
             accessibility_cache_ttl: default_accessibility_cache_ttl(),
             accessibility_events: true,
             emergency_hotkey: true,
@@ -8045,6 +8311,7 @@ mod tests {
             allow_input: false,
             vision_fallback: false,
             grpc_addr: None,
+            grpc_token: None,
             accessibility_cache_ttl: default_accessibility_cache_ttl(),
             accessibility_events: true,
             emergency_hotkey: true,
@@ -8110,6 +8377,7 @@ mod tests {
             allow_input: false,
             vision_fallback: false,
             grpc_addr: None,
+            grpc_token: None,
             accessibility_cache_ttl: default_accessibility_cache_ttl(),
             accessibility_events: true,
             emergency_hotkey: true,
@@ -8205,6 +8473,7 @@ mod tests {
                 allow_input: false,
                 vision_fallback: false,
                 grpc_addr: None,
+                grpc_token: None,
                 accessibility_cache_ttl: default_accessibility_cache_ttl(),
                 accessibility_events: true,
                 emergency_hotkey: true,
@@ -8275,6 +8544,7 @@ mod tests {
                 allow_input: false,
                 vision_fallback: false,
                 grpc_addr: None,
+                grpc_token: None,
                 accessibility_cache_ttl: default_accessibility_cache_ttl(),
                 accessibility_events: true,
                 emergency_hotkey: true,
@@ -8333,6 +8603,7 @@ mod tests {
                 allow_input: false,
                 vision_fallback: false,
                 grpc_addr: None,
+                grpc_token: None,
                 accessibility_cache_ttl: default_accessibility_cache_ttl(),
                 accessibility_events: true,
                 emergency_hotkey: true,

@@ -1,7 +1,11 @@
 use std::cmp::{max, min};
 use std::env;
+use std::fs::OpenOptions;
+use std::io::ErrorKind;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -13,6 +17,7 @@ use peekaboox_input::MouseButton;
 const DEFAULT_FOCUS_WAIT_MS: u64 = 1_000;
 const DEFAULT_OVERVIEW_WAIT_MS: u64 = 800;
 const ACTION_FOCUS_OVERVIEW_WAIT_MS: u64 = 1_000;
+static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 const TELEGRAM_PROFILE_ID: &str = "telegram";
 const TELEGRAM_SEARCH_NAME: &str = "Telegram";
 const TELEGRAM_DESKTOP_IDS: &[&str] = &[
@@ -1066,6 +1071,8 @@ pub fn drag_target(
     target: &str,
     options: &DesktopDragOptions,
 ) -> Result<DesktopActionResult> {
+    let profile = resolve_profile(app)?;
+    ensure_target_capability(profile, target, "drag")?;
     let focus = focus_before_live_action(app, &options.locate, options.dry_run)?;
     let resolved = locate_target(app, target, &options.locate)?;
     let rect = resolved.rect.ok_or_else(|| {
@@ -1137,6 +1144,7 @@ pub fn type_into_target(
     options: &TypeIntoOptions,
 ) -> Result<DesktopActionResult> {
     let profile = resolve_profile(app)?;
+    ensure_target_capability(profile, target, "type-into")?;
     let focus = focus_before_live_action(app, &options.locate, options.dry_run)?;
     let resolved = locate_target(app, target, &options.locate)?;
     if options.dry_run {
@@ -1210,14 +1218,17 @@ pub fn assert_target(
         DesktopAssertion::Present => {
             locate_target(app, target, &options.locate)?;
         }
-        DesktopAssertion::NotPresent => {
-            if locate_target(app, target, &options.locate).is_ok() {
+        DesktopAssertion::NotPresent => match locate_target(app, target, &options.locate) {
+            Ok(_) => {
                 return Err(PeekabooXError::new(format!(
                     "target {target:?} is present but expected it to be absent"
                 )));
             }
-        }
+            Err(error) if is_target_absence_error(&error) => {}
+            Err(error) => return Err(error),
+        },
         DesktopAssertion::Active => {
+            ensure_target_capability(profile, target, "assert-active")?;
             if !profile.target_active(
                 target,
                 &load_or_capture_frame(options.locate.image.as_deref())?,
@@ -1232,6 +1243,7 @@ pub fn assert_target(
             }
         }
         DesktopAssertion::NotActive => {
+            ensure_target_capability(profile, target, "assert-active")?;
             if profile.target_active(
                 target,
                 &load_or_capture_frame(options.locate.image.as_deref())?,
@@ -1246,6 +1258,7 @@ pub fn assert_target(
             }
         }
         DesktopAssertion::Contains(expected) => {
+            ensure_target_capability(profile, target, "assert-contains")?;
             if !target_text_contains(
                 profile,
                 target,
@@ -1262,6 +1275,7 @@ pub fn assert_target(
             }
         }
         DesktopAssertion::NotContains(expected) => {
+            ensure_target_capability(profile, target, "assert-contains")?;
             if target_text_contains(
                 profile,
                 target,
@@ -1422,6 +1436,32 @@ fn focus_diagnostics_snapshot(diagnostics: &[String]) -> Vec<String> {
         .iter()
         .map(|entry| compact_diagnostic_text(entry))
         .collect()
+}
+
+fn ensure_target_capability(profile: &AppProfile, target: &str, capability: &str) -> Result<()> {
+    let supported = match capability {
+        "drag" => target_accepts_drag(profile.kind, target),
+        "type-into" => target_accepts_text(profile.kind, target),
+        "assert-active" => target_exposes_active_state(profile.kind, target),
+        "assert-contains" => {
+            target_has_visual_rect(profile.kind, target)
+                && target_can_contain_text(profile.kind, target)
+        }
+        _ => false,
+    };
+    if supported {
+        Ok(())
+    } else {
+        Err(PeekabooXError::new(format!(
+            "target {target:?} for app {} does not support {capability}",
+            profile.id
+        )))
+    }
+}
+
+fn is_target_absence_error(error: &PeekabooXError) -> bool {
+    let message = error.message().to_ascii_lowercase();
+    message.contains("could not locate")
 }
 
 fn compact_diagnostic_text(value: &str) -> String {
@@ -1758,17 +1798,19 @@ fn target_text_contains(
     let image_path = match image {
         Some(path) => path,
         None => {
-            temporary = capture_temp_path();
+            temporary = capture_temp_path()?;
             peekaboox_capture::capture_screen_to_file(&temporary)?;
             temporary.as_path()
         }
     };
 
-    let result = peekaboox_vision::ocr_image_file(image_path, rect)?;
     if image.is_none() {
+        let result = peekaboox_vision::ocr_image_file(image_path, rect);
         let _ = std::fs::remove_file(image_path);
+        return result.map(|result| contains_case_insensitive(&result.text, expected));
     }
 
+    let result = peekaboox_vision::ocr_image_file(image_path, rect)?;
     Ok(contains_case_insensitive(&result.text, expected))
 }
 
@@ -1783,14 +1825,36 @@ fn accessibility_contains(expected: &str, bounds: Option<Rect>) -> Result<bool> 
     }))
 }
 
-fn capture_temp_path() -> PathBuf {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    env::temp_dir().join(format!(
-        "peekaboox-desktop-{}-{millis}.png",
-        std::process::id()
+fn capture_temp_path() -> Result<PathBuf> {
+    for _ in 0..32 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let counter = TEMP_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = env::temp_dir().join(format!(
+            "peekaboox-desktop-{}-{nanos}-{counter}.png",
+            std::process::id()
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(_) => return Ok(path),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(PeekabooXError::new(format!(
+                    "failed to create desktop OCR temporary screenshot {}: {error}",
+                    path.display()
+                )));
+            }
+        }
+    }
+
+    Err(PeekabooXError::new(
+        "failed to allocate unique desktop OCR temporary screenshot",
     ))
 }
 

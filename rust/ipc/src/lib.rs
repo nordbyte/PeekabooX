@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
@@ -1063,10 +1064,68 @@ impl From<&WindowInfo> for WindowDto {
 }
 
 pub fn default_socket_path() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join(DEFAULT_SOCKET_NAME)
+    if let Some(runtime_dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        return PathBuf::from(runtime_dir).join(DEFAULT_SOCKET_NAME);
+    }
+    secure_fallback_runtime_dir().join(DEFAULT_SOCKET_NAME)
+}
+
+fn secure_fallback_runtime_dir() -> PathBuf {
+    let euid = unsafe { libc::geteuid() };
+    let path = std::env::temp_dir().join(format!("peekaboox-runtime-{euid}"));
+    if ensure_private_runtime_dir(&path, euid).is_ok() {
+        return path;
+    }
+
+    if let Some(home) = std::env::var_os("HOME") {
+        let home_path = PathBuf::from(home)
+            .join(".local")
+            .join("state")
+            .join("peekaboox")
+            .join("runtime");
+        if ensure_private_runtime_dir(&home_path, euid).is_ok() {
+            return home_path;
+        }
+    }
+
+    eprintln!(
+        "warning: failed to prepare a private PeekabooX runtime dir; falling back to {}",
+        path.display()
+    );
+    path
+}
+
+fn ensure_private_runtime_dir(path: &Path, euid: libc::uid_t) -> std::io::Result<()> {
+    if !path.exists() {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700).create(path)?;
+    }
+
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} is not a directory", path.display()),
+        ));
+    }
+    if metadata.uid() != euid {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{} is not owned by the current user", path.display()),
+        ));
+    }
+    if metadata.mode() & 0o077 != 0 {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        let metadata = std::fs::symlink_metadata(path)?;
+        if metadata.mode() & 0o077 != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("{} remains accessible to other users", path.display()),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 pub fn send_request(
