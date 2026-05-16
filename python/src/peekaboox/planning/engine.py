@@ -196,8 +196,30 @@ def _validate_step(step: WorkflowStep, index: int) -> None:
         if has_selector == has_coordinates:
             raise ValueError(f"steps[{index}] click requires selector or x/y")
     if action in {"move", "move_mouse"}:
-        if step.x is None or step.y is None:
-            raise ValueError(f"steps[{index}] move_mouse requires x/y")
+        has_coordinates = step.x is not None or step.y is not None
+        has_relative = step.relative_x is not None or step.relative_y is not None
+        has_scope = any(
+            value is not None
+            for value in (
+                step.region,
+                step.ratio_x,
+                step.ratio_y,
+                step.window_id,
+                step.app,
+                step.window_title,
+                step.title_regex,
+            )
+        )
+        if sum(1 for value in (has_coordinates, has_relative, has_scope) if value) != 1:
+            raise ValueError(f"steps[{index}] move_mouse requires exactly one target")
+        if has_coordinates and (step.x is None or step.y is None):
+            raise ValueError(f"steps[{index}] move_mouse x/y target is incomplete")
+        if has_relative and (step.relative_x is None or step.relative_y is None):
+            raise ValueError(f"steps[{index}] move_mouse relative target is incomplete")
+        if step.duration_ms is not None and step.duration_ms < 0:
+            raise ValueError(f"steps[{index}].duration_ms must be non-negative")
+        if step.steps is not None and step.steps <= 0:
+            raise ValueError(f"steps[{index}].steps must be greater than zero")
     if action == "drag":
         if (
             step.from_x is None

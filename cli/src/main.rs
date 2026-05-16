@@ -5825,13 +5825,40 @@ fn parse_click_args(args: Vec<String>) -> Result<ClickCommand, CliError> {
     }))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct MoveArgs {
-    position: Point,
+    target: MoveTarget,
     dry_run: bool,
+    json: bool,
+    duration_ms: u64,
+    steps: Option<u32>,
+    bounds_policy: peekaboox_input::MoveBoundsPolicy,
+    backend: peekaboox_input::InputToolSelection,
+    restore: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum MoveTarget {
+    Position(Point),
+    Relative(Point),
+    ScopeRatio {
+        ratio: (f32, f32),
+        region: Option<Rect>,
+        window_id: Option<String>,
+        app: Option<String>,
+        window_title: Option<String>,
+        title_regex: Option<String>,
+    },
+    CurrentPosition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedMoveTarget {
+    position: Point,
+    description: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 enum MoveCommand {
     Run(MoveArgs),
     Help,
@@ -5843,15 +5870,36 @@ fn move_mouse(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         return Err(CliError::HelpRequested);
     };
 
-    let action = peekaboox_input::InputAction::MoveMouse(args.position);
+    if matches!(args.target, MoveTarget::CurrentPosition) {
+        let position = peekaboox_input::current_mouse_position()
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+        print_current_position(&args, position);
+        return Ok(());
+    }
+
+    let target = resolve_move_target(&args)?;
+    let options = move_options_from_args(&args);
+    let effective_position =
+        peekaboox_input::resolve_move_position(target.position, args.bounds_policy)
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+    let target = ResolvedMoveTarget {
+        description: target.description,
+        position: effective_position,
+    };
+    let action = peekaboox_input::InputAction::MoveMouse(target.position);
 
     if context.use_daemon {
         let result = daemon_request(
             context,
             ApiRequest::MoveMouse {
-                x: args.position.x,
-                y: args.position.y,
+                x: target.position.x,
+                y: target.position.y,
                 dry_run: args.dry_run,
+                duration_ms: args.duration_ms,
+                steps: args.steps,
+                bounds_policy: args.bounds_policy.name().to_owned(),
+                backend: args.backend.name().to_owned(),
+                restore: args.restore,
             },
         )?;
         let ApiResult::MoveMouse(metadata) = result else {
@@ -5859,67 +5907,377 @@ fn move_mouse(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 "daemon returned unexpected move response".to_owned(),
             ));
         };
-        print_move_result(&args, metadata);
+        print_move_result(&args, &target, metadata, None);
         return Ok(());
     }
 
     if args.dry_run {
         let backend = peekaboox_input::CommandInputBackend
-            .detect_backend_for(&action)
+            .detect_backend_for_with_selection(&action, args.backend)
             .map_err(|error| CliError::Failure(error.to_string()))?;
-        println!(
-            "would move mouse to {},{} via {}",
-            args.position.x,
-            args.position.y,
-            backend.name()
+        print_move_result(
+            &args,
+            &target,
+            ActionResultDto {
+                backend_name: backend.name().to_owned(),
+                backend_kind: format!("{:?}", backend.backend_kind()).to_ascii_lowercase(),
+            },
+            None,
         );
         return Ok(());
     }
 
-    let metadata = peekaboox_input::move_mouse(args.position)
+    let restore_position = if args.restore {
+        Some(
+            peekaboox_input::current_mouse_position()
+                .map_err(|error| CliError::Failure(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    let metadata = peekaboox_input::move_mouse_with_options(target.position, options)
         .map_err(|error| CliError::Failure(error.to_string()))?;
-    print_move_result(&args, input_metadata_dto(metadata));
+    if let Some(position) = restore_position {
+        let restore_options = peekaboox_input::MoveMouseOptions {
+            duration_ms: args.duration_ms,
+            steps: args.steps,
+            bounds_policy: args.bounds_policy,
+            backend: args.backend,
+        };
+        peekaboox_input::move_mouse_with_options(position, restore_options)
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+    }
+    print_move_result(
+        &args,
+        &target,
+        input_metadata_dto(metadata),
+        restore_position,
+    );
 
     Ok(())
 }
 
-fn print_move_result(args: &MoveArgs, metadata: ActionResultDto) {
+fn resolve_move_target(args: &MoveArgs) -> Result<ResolvedMoveTarget, CliError> {
+    match &args.target {
+        MoveTarget::Position(position) => Ok(ResolvedMoveTarget {
+            position: *position,
+            description: format!("{},{}", position.x, position.y),
+        }),
+        MoveTarget::Relative(delta) => {
+            let current = peekaboox_input::current_mouse_position()
+                .map_err(|error| CliError::Failure(error.to_string()))?;
+            let x = current.x.checked_add(delta.x).ok_or_else(|| {
+                CliError::Failure("relative move x coordinate overflows i32".to_owned())
+            })?;
+            let y = current.y.checked_add(delta.y).ok_or_else(|| {
+                CliError::Failure("relative move y coordinate overflows i32".to_owned())
+            })?;
+            Ok(ResolvedMoveTarget {
+                position: Point::new(x, y),
+                description: format!(
+                    "relative {},{} from {},{}",
+                    delta.x, delta.y, current.x, current.y
+                ),
+            })
+        }
+        MoveTarget::ScopeRatio {
+            ratio,
+            region,
+            window_id,
+            app,
+            window_title,
+            title_regex,
+        } => {
+            let scope = resolve_move_scope(
+                *region,
+                window_id.as_deref(),
+                app.as_deref(),
+                window_title.as_deref(),
+                title_regex.as_deref(),
+            )?;
+            let position = point_from_ratio(scope, *ratio)?;
+            Ok(ResolvedMoveTarget {
+                position,
+                description: format!(
+                    "ratio {:.3},{:.3} in {}",
+                    ratio.0,
+                    ratio.1,
+                    format_rect(scope)
+                ),
+            })
+        }
+        MoveTarget::CurrentPosition => Err(CliError::Failure(
+            "--current-position does not resolve to a movement target".to_owned(),
+        )),
+    }
+}
+
+fn resolve_move_scope(
+    region: Option<Rect>,
+    window_id: Option<&str>,
+    app: Option<&str>,
+    window_title: Option<&str>,
+    title_regex: Option<&str>,
+) -> Result<Rect, CliError> {
+    let window = resolve_move_window(window_id, app, window_title, title_regex)?;
+    match (window, region) {
+        (Some(window), Some(region)) => offset_move_window_region(window.bounds, region),
+        (Some(window), None) => Ok(window.bounds),
+        (None, Some(region)) => Ok(region),
+        (None, None) => {
+            let (width, height) = peekaboox_input::screen_size().ok_or_else(|| {
+                CliError::Failure(
+                    "move --ratio without --region or window filters requires a detectable screen size"
+                        .to_owned(),
+                )
+            })?;
+            Ok(Rect::new(
+                0,
+                0,
+                u32::try_from(width)
+                    .map_err(|_| CliError::Failure("screen width overflows u32".to_owned()))?,
+                u32::try_from(height)
+                    .map_err(|_| CliError::Failure("screen height overflows u32".to_owned()))?,
+            ))
+        }
+    }
+}
+
+fn resolve_move_window(
+    window_id: Option<&str>,
+    app: Option<&str>,
+    window_title: Option<&str>,
+    title_regex: Option<&str>,
+) -> Result<Option<WindowInfo>, CliError> {
+    if window_id.is_none() && app.is_none() && window_title.is_none() && title_regex.is_none() {
+        return Ok(None);
+    }
+
+    let query = peekaboox_windows::WindowQuery {
+        id: window_id.map(str::to_owned),
+        app: app.map(str::to_owned),
+        title: window_title.map(str::to_owned),
+        title_regex: title_regex.map(str::to_owned),
+        focused_only: false,
+        limit: Some(1),
+        sort: peekaboox_windows::WindowSort::Focused,
+        backend: peekaboox_windows::WindowBackendSelection::Auto,
+        diagnose: false,
+    };
+    let metadata = peekaboox_windows::list_windows_with_query(query)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    let window = metadata
+        .windows
+        .into_iter()
+        .next()
+        .ok_or_else(|| CliError::Failure("no window matched move filters".to_owned()))?;
+    if window.bounds.width == 0 || window.bounds.height == 0 {
+        return Err(CliError::Failure(format!(
+            "window {} has empty bounds",
+            window.id
+        )));
+    }
+    Ok(Some(window))
+}
+
+fn offset_move_window_region(origin: Rect, region: Rect) -> Result<Rect, CliError> {
+    if region.x < 0 || region.y < 0 {
+        return Err(CliError::Failure(
+            "window-relative move region must start inside the window".to_owned(),
+        ));
+    }
+    let right = i64::from(region.x) + i64::from(region.width);
+    let bottom = i64::from(region.y) + i64::from(region.height);
+    if right > i64::from(origin.width) || bottom > i64::from(origin.height) {
+        return Err(CliError::Failure(
+            "window-relative move region must fit inside the window".to_owned(),
+        ));
+    }
+    let x = i64::from(origin.x) + i64::from(region.x);
+    let y = i64::from(origin.y) + i64::from(region.y);
+    Ok(Rect::new(
+        i32::try_from(x)
+            .map_err(|_| CliError::Failure("window-relative move region x overflow".to_owned()))?,
+        i32::try_from(y)
+            .map_err(|_| CliError::Failure("window-relative move region y overflow".to_owned()))?,
+        region.width,
+        region.height,
+    ))
+}
+
+fn point_from_ratio(rect: Rect, ratio: (f32, f32)) -> Result<Point, CliError> {
+    let x = f64::from(rect.x) + (f64::from(rect.width.saturating_sub(1)) * f64::from(ratio.0));
+    let y = f64::from(rect.y) + (f64::from(rect.height.saturating_sub(1)) * f64::from(ratio.1));
+    Ok(Point::new(
+        i32::try_from(x.round() as i64)
+            .map_err(|_| CliError::Failure("move ratio x coordinate overflows i32".to_owned()))?,
+        i32::try_from(y.round() as i64)
+            .map_err(|_| CliError::Failure("move ratio y coordinate overflows i32".to_owned()))?,
+    ))
+}
+
+fn move_options_from_args(args: &MoveArgs) -> peekaboox_input::MoveMouseOptions {
+    peekaboox_input::MoveMouseOptions {
+        duration_ms: args.duration_ms,
+        steps: args.steps,
+        bounds_policy: args.bounds_policy,
+        backend: args.backend,
+    }
+}
+
+fn print_move_result(
+    args: &MoveArgs,
+    target: &ResolvedMoveTarget,
+    metadata: ActionResultDto,
+    restored_to: Option<Point>,
+) {
+    if args.json {
+        let _ = print_json_pretty(&serde_json::json!({
+            "ok": true,
+            "dry_run": args.dry_run,
+            "target": {
+                "x": target.position.x,
+                "y": target.position.y,
+                "description": target.description,
+            },
+            "backend_name": metadata.backend_name,
+            "backend_kind": metadata.backend_kind,
+            "requested_backend": args.backend.name(),
+            "bounds_policy": args.bounds_policy.name(),
+            "duration_ms": args.duration_ms,
+            "steps": args.steps,
+            "restore": args.restore,
+            "restored_to": restored_to.map(|point| serde_json::json!({
+                "x": point.x,
+                "y": point.y,
+            })),
+        }));
+        return;
+    }
+
     if args.dry_run {
         println!(
-            "would move mouse to {},{} via {}",
-            args.position.x, args.position.y, metadata.backend_name
+            "would move mouse to {} via {}",
+            target.description, metadata.backend_name
         );
     } else {
-        println!(
-            "moved mouse to {},{} via {}",
-            args.position.x, args.position.y, metadata.backend_name
-        );
+        if let Some(restored_to) = restored_to {
+            println!(
+                "moved mouse to {} via {} and restored to {},{}",
+                target.description, metadata.backend_name, restored_to.x, restored_to.y
+            );
+        } else {
+            println!(
+                "moved mouse to {} via {}",
+                target.description, metadata.backend_name
+            );
+        }
+    }
+}
+
+fn print_current_position(args: &MoveArgs, position: Point) {
+    if args.json {
+        let _ = print_json_pretty(&serde_json::json!({
+            "ok": true,
+            "cursor": {
+                "x": position.x,
+                "y": position.y,
+            }
+        }));
+    } else {
+        println!("cursor at {},{}", position.x, position.y);
     }
 }
 
 fn parse_move_args(args: Vec<String>) -> Result<MoveCommand, CliError> {
     let mut x = None;
     let mut y = None;
+    let mut to = None;
+    let mut relative = None;
+    let mut dx = None;
+    let mut dy = None;
+    let mut ratio = None;
+    let mut region = None;
+    let mut window_id = None;
+    let mut app = None;
+    let mut window_title = None;
+    let mut title_regex = None;
     let mut dry_run = false;
+    let mut json = false;
+    let mut duration_ms = 0;
+    let mut steps = None;
+    let mut bounds_policy = peekaboox_input::MoveBoundsPolicy::Allow;
+    let mut backend = peekaboox_input::InputToolSelection::Auto;
+    let mut restore = false;
+    let mut current_position = false;
     let mut index = 0;
 
     while index < args.len() {
         match args[index].as_str() {
             "--x" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --x".to_owned()));
-                };
-                x = Some(parse_i32("--x", value)?);
+                let value = parse_next_string(&args, &mut index, "--x")?;
+                x = Some(parse_i32("--x", &value)?);
             }
             "--y" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err(CliError::Failure("missing value for --y".to_owned()));
-                };
-                y = Some(parse_i32("--y", value)?);
+                let value = parse_next_string(&args, &mut index, "--y")?;
+                y = Some(parse_i32("--y", &value)?);
+            }
+            "--to" => {
+                let value = parse_next_string(&args, &mut index, "--to")?;
+                to = Some(parse_point("--to", &value)?);
+            }
+            "--relative" => {
+                let value = parse_next_string(&args, &mut index, "--relative")?;
+                relative = Some(parse_point("--relative", &value)?);
+            }
+            "--dx" => {
+                let value = parse_next_string(&args, &mut index, "--dx")?;
+                dx = Some(parse_i32("--dx", &value)?);
+            }
+            "--dy" => {
+                let value = parse_next_string(&args, &mut index, "--dy")?;
+                dy = Some(parse_i32("--dy", &value)?);
+            }
+            "--ratio" => {
+                let value = parse_next_string(&args, &mut index, "--ratio")?;
+                ratio = Some(parse_ratio_pair("--ratio", &value)?);
+            }
+            "--region" | "-r" => {
+                let value = parse_next_string(&args, &mut index, "--region")?;
+                region = Some(parse_rect("--region", &value)?);
+            }
+            "--window-id" => {
+                window_id = Some(parse_next_string(&args, &mut index, "--window-id")?);
+            }
+            "--app" | "-a" => app = Some(parse_next_string(&args, &mut index, "--app")?),
+            "--window-title" => {
+                window_title = Some(parse_next_string(&args, &mut index, "--window-title")?)
+            }
+            "--title-regex" => {
+                title_regex = Some(parse_next_string(&args, &mut index, "--title-regex")?)
             }
             "--dry-run" => dry_run = true,
+            "--json" => json = true,
+            "--duration-ms" => {
+                let value = parse_next_string(&args, &mut index, "--duration-ms")?;
+                duration_ms = parse_u64("--duration-ms", &value)?;
+            }
+            "--steps" => {
+                let value = parse_next_string(&args, &mut index, "--steps")?;
+                steps = Some(parse_positive_u32("--steps", &value)?);
+            }
+            "--bounds" => {
+                let value = parse_next_string(&args, &mut index, "--bounds")?;
+                bounds_policy = parse_move_bounds_policy(&value)?;
+            }
+            "--clamp" => bounds_policy = peekaboox_input::MoveBoundsPolicy::Clamp,
+            "--fail-out-of-bounds" => bounds_policy = peekaboox_input::MoveBoundsPolicy::Fail,
+            "--backend" => {
+                let value = parse_next_string(&args, &mut index, "--backend")?;
+                backend = parse_input_backend_selection(&value)?;
+            }
+            "--restore" => restore = true,
+            "--current-position" | "--position" | "--query-position" => current_position = true,
             "--help" | "-h" => return Ok(MoveCommand::Help),
             unknown => {
                 return Err(CliError::Failure(format!(
@@ -5931,18 +6289,85 @@ fn parse_move_args(args: Vec<String>) -> Result<MoveCommand, CliError> {
         index += 1;
     }
 
-    let position = match (x, y) {
-        (Some(x), Some(y)) => Point::new(x, y),
+    let absolute = match (x, y) {
+        (Some(x), Some(y)) => Some(Point::new(x, y)),
         (Some(_), None) => return Err(CliError::Failure("missing required --y".to_owned())),
         (None, Some(_)) => return Err(CliError::Failure("missing required --x".to_owned())),
-        (None, None) => {
-            return Err(CliError::Failure(
-                "missing move target; provide --x and --y".to_owned(),
-            ));
-        }
+        (None, None) => None,
     };
 
-    Ok(MoveCommand::Run(MoveArgs { position, dry_run }))
+    let relative_delta = match (relative, dx, dy) {
+        (Some(relative), None, None) => Some(relative),
+        (None, Some(dx), Some(dy)) => Some(Point::new(dx, dy)),
+        (None, Some(_), None) => return Err(CliError::Failure("missing required --dy".to_owned())),
+        (None, None, Some(_)) => return Err(CliError::Failure("missing required --dx".to_owned())),
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+            return Err(CliError::Failure(
+                "provide either --relative or --dx/--dy, not both".to_owned(),
+            ));
+        }
+        (None, None, None) => None,
+    };
+
+    let has_scope = ratio.is_some()
+        || region.is_some()
+        || window_id.is_some()
+        || app.is_some()
+        || window_title.is_some()
+        || title_regex.is_some();
+    let scope_target = if has_scope {
+        Some(MoveTarget::ScopeRatio {
+            ratio: ratio.unwrap_or((0.5, 0.5)),
+            region,
+            window_id,
+            app,
+            window_title,
+            title_regex,
+        })
+    } else {
+        None
+    };
+
+    let mut targets = Vec::new();
+    if let Some(position) = absolute {
+        targets.push(MoveTarget::Position(position));
+    }
+    if let Some(position) = to {
+        targets.push(MoveTarget::Position(position));
+    }
+    if let Some(delta) = relative_delta {
+        targets.push(MoveTarget::Relative(delta));
+    }
+    if let Some(scope_target) = scope_target {
+        targets.push(scope_target);
+    }
+    if current_position {
+        targets.push(MoveTarget::CurrentPosition);
+    }
+
+    if targets.len() > 1 {
+        return Err(CliError::Failure(
+            "provide exactly one move target".to_owned(),
+        ));
+    }
+
+    let target = targets.into_iter().next().ok_or_else(|| {
+        CliError::Failure(
+            "missing move target; provide --x/--y, --to, --relative/--dx/--dy, --ratio, a region/window scope, or --current-position"
+                .to_owned(),
+        )
+    })?;
+
+    Ok(MoveCommand::Run(MoveArgs {
+        target,
+        dry_run,
+        json,
+        duration_ms,
+        steps,
+        bounds_policy,
+        backend,
+        restore,
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6603,6 +7028,31 @@ fn visual_alpha_mode_name(mode: VisualAlphaMode) -> &'static str {
     }
 }
 
+fn parse_move_bounds_policy(value: &str) -> Result<peekaboox_input::MoveBoundsPolicy, CliError> {
+    match value {
+        "allow" => Ok(peekaboox_input::MoveBoundsPolicy::Allow),
+        "clamp" => Ok(peekaboox_input::MoveBoundsPolicy::Clamp),
+        "fail" | "fail-out-of-bounds" => Ok(peekaboox_input::MoveBoundsPolicy::Fail),
+        _ => Err(CliError::Failure(format!(
+            "--bounds must be allow, clamp, or fail, got {value:?}"
+        ))),
+    }
+}
+
+fn parse_input_backend_selection(
+    value: &str,
+) -> Result<peekaboox_input::InputToolSelection, CliError> {
+    match value {
+        "auto" => Ok(peekaboox_input::InputToolSelection::Auto),
+        "uinput" => Ok(peekaboox_input::InputToolSelection::Uinput),
+        "ydotool" => Ok(peekaboox_input::InputToolSelection::Ydotool),
+        "xdotool" => Ok(peekaboox_input::InputToolSelection::Xdotool),
+        _ => Err(CliError::Failure(format!(
+            "--backend must be auto, uinput, ydotool, or xdotool, got {value:?}"
+        ))),
+    }
+}
+
 fn parse_ratio_pair(name: &str, value: &str) -> Result<(f32, f32), CliError> {
     let parts = value
         .split([',', ':', ';', '/'])
@@ -6912,7 +7362,9 @@ fn print_click_usage() {
 }
 
 fn print_move_usage() {
-    println!("Usage: peekaboox move --x <pixels> --y <pixels> [--dry-run]");
+    println!(
+        "Usage: peekaboox move [--x <px> --y <px>|--to x,y|--relative dx,dy|--dx <px> --dy <px>|--ratio x,y [--region x,y,w,h|--window-id <id>|--app <name>|--window-title <text>]|--current-position] [--duration-ms <ms>] [--steps <n>] [--bounds allow|clamp|fail|--clamp|--fail-out-of-bounds] [--backend auto|uinput|ydotool|xdotool] [--restore] [--dry-run] [--json]"
+    );
 }
 
 fn print_drag_usage() {
@@ -6937,7 +7389,7 @@ fn print_hotkey_usage() {
 mod tests {
     use std::path::PathBuf;
 
-    use peekaboox_input::MouseButton;
+    use peekaboox_input::{InputToolSelection, MouseButton, MoveBoundsPolicy};
     use peekaboox_ipc::CaptureBackendProbeDto;
 
     use super::{
@@ -6947,9 +7399,9 @@ mod tests {
         CompareArgs, CompareCommand, DesktopAssertArgs, DesktopClickArgs, DesktopCommand,
         DesktopDragArgs, DesktopFocusArgs, DesktopLocateArgs, DesktopProfilesArgs,
         DesktopTypeIntoArgs, DragArgs, DragCommand, ElementsArgs, ElementsCommand, GlobalArgs,
-        HotkeyArgs, HotkeyCommand, MoveArgs, MoveCommand, OcrArgs, OcrCommand, PluginsArgs,
-        PluginsCommand, TypeArgs, TypeCommand, UiStateArgs, UiStateCommand, VisionElementsArgs,
-        VisionElementsCommand, WindowsArgs, WindowsCommand, parse_capture_args,
+        HotkeyArgs, HotkeyCommand, MoveArgs, MoveCommand, MoveTarget, OcrArgs, OcrCommand,
+        PluginsArgs, PluginsCommand, TypeArgs, TypeCommand, UiStateArgs, UiStateCommand,
+        VisionElementsArgs, VisionElementsCommand, WindowsArgs, WindowsCommand, parse_capture_args,
         parse_capture_backends_args, parse_capture_delta_args, parse_capture_dmabuf_args,
         parse_click_args, parse_compare_args, parse_desktop_args, parse_drag_args,
         parse_elements_args, parse_global_args, parse_hotkey_args, parse_move_args, parse_ocr_args,
@@ -8447,8 +8899,14 @@ mod tests {
         assert_eq!(
             command,
             MoveCommand::Run(MoveArgs {
-                position: Point::new(10, 20),
-                dry_run: true
+                target: MoveTarget::Position(Point::new(10, 20)),
+                dry_run: true,
+                json: false,
+                duration_ms: 0,
+                steps: None,
+                bounds_policy: MoveBoundsPolicy::Allow,
+                backend: InputToolSelection::Auto,
+                restore: false,
             })
         );
     }
@@ -8458,6 +8916,81 @@ mod tests {
         let error = parse_move_args(vec!["--x".to_owned(), "10".to_owned()]).unwrap_err();
 
         assert_eq!(error, CliError::Failure("missing required --y".to_owned()));
+    }
+
+    #[test]
+    fn move_accepts_compact_relative_scope_and_options() {
+        let compact = parse_move_args(vec![
+            "--to".to_owned(),
+            "10,20".to_owned(),
+            "--duration-ms".to_owned(),
+            "120".to_owned(),
+            "--steps".to_owned(),
+            "6".to_owned(),
+            "--backend".to_owned(),
+            "xdotool".to_owned(),
+            "--clamp".to_owned(),
+            "--restore".to_owned(),
+            "--json".to_owned(),
+        ])
+        .unwrap();
+        let relative = parse_move_args(vec!["--relative".to_owned(), "-5,6".to_owned()]).unwrap();
+        let scoped = parse_move_args(vec![
+            "--window-title".to_owned(),
+            "Calculator".to_owned(),
+            "--region".to_owned(),
+            "10,20,300,200".to_owned(),
+            "--ratio".to_owned(),
+            "0.25,0.75".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            compact,
+            MoveCommand::Run(MoveArgs {
+                target: MoveTarget::Position(Point::new(10, 20)),
+                dry_run: false,
+                json: true,
+                duration_ms: 120,
+                steps: Some(6),
+                bounds_policy: MoveBoundsPolicy::Clamp,
+                backend: InputToolSelection::Xdotool,
+                restore: true,
+            })
+        );
+        assert_eq!(
+            relative,
+            MoveCommand::Run(MoveArgs {
+                target: MoveTarget::Relative(Point::new(-5, 6)),
+                dry_run: false,
+                json: false,
+                duration_ms: 0,
+                steps: None,
+                bounds_policy: MoveBoundsPolicy::Allow,
+                backend: InputToolSelection::Auto,
+                restore: false,
+            })
+        );
+        assert_eq!(
+            scoped,
+            MoveCommand::Run(MoveArgs {
+                target: MoveTarget::ScopeRatio {
+                    ratio: (0.25, 0.75),
+                    region: Some(Rect::new(10, 20, 300, 200)),
+                    window_id: None,
+                    app: None,
+                    window_title: Some("Calculator".to_owned()),
+                    title_regex: None,
+                },
+                dry_run: false,
+                json: false,
+                duration_ms: 0,
+                steps: None,
+                bounds_policy: MoveBoundsPolicy::Allow,
+                backend: InputToolSelection::Auto,
+                restore: false,
+            })
+        );
     }
 
     #[test]

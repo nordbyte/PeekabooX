@@ -93,6 +93,20 @@ def workflow_step_from_dict(value: Any, index: int = 0) -> WorkflowStep:
         to_y=_optional_int(value, "to_y"),
         button=_optional_string(value, "button"),
         duration_ms=_optional_int(value, "duration_ms"),
+        relative_x=_optional_int(value, "relative_x"),
+        relative_y=_optional_int(value, "relative_y"),
+        region=_optional_string(value, "region"),
+        ratio_x=_optional_float(value, "ratio_x"),
+        ratio_y=_optional_float(value, "ratio_y"),
+        window_id=_optional_string(value, "window_id"),
+        app=_optional_string(value, "app"),
+        window_title=_optional_string(value, "window_title"),
+        title_regex=_optional_string(value, "title_regex"),
+        steps=_optional_int(value, "steps"),
+        bounds_policy=_optional_string(value, "bounds_policy"),
+        backend=_optional_string(value, "backend"),
+        restore=_optional_bool(value, "restore", default=False),
+        dry_run=_optional_bool(value, "dry_run", default=False),
         vision_fallback=_optional_bool(value, "vision_fallback", default=False),
         verify=_optional_bool(value, "verify", default=True),
     )
@@ -120,6 +134,34 @@ def workflow_step_to_dict(step: WorkflowStep) -> dict[str, object]:
         value["button"] = step.button
     if step.duration_ms is not None:
         value["duration_ms"] = step.duration_ms
+    if step.relative_x is not None:
+        value["relative_x"] = step.relative_x
+    if step.relative_y is not None:
+        value["relative_y"] = step.relative_y
+    if step.region is not None:
+        value["region"] = step.region
+    if step.ratio_x is not None:
+        value["ratio_x"] = step.ratio_x
+    if step.ratio_y is not None:
+        value["ratio_y"] = step.ratio_y
+    if step.window_id is not None:
+        value["window_id"] = step.window_id
+    if step.app is not None:
+        value["app"] = step.app
+    if step.window_title is not None:
+        value["window_title"] = step.window_title
+    if step.title_regex is not None:
+        value["title_regex"] = step.title_regex
+    if step.steps is not None:
+        value["steps"] = step.steps
+    if step.bounds_policy is not None:
+        value["bounds_policy"] = step.bounds_policy
+    if step.backend is not None:
+        value["backend"] = step.backend
+    if step.restore:
+        value["restore"] = step.restore
+    if step.dry_run:
+        value["dry_run"] = step.dry_run
     if step.vision_fallback:
         value["vision_fallback"] = step.vision_fallback
     if not step.verify:
@@ -266,6 +308,15 @@ def _optional_int(value: dict[str, object], name: str) -> int | None:
     if isinstance(item, bool) or not isinstance(item, int):
         raise ValueError(f"{name} must be an integer")
     return item
+
+
+def _optional_float(value: dict[str, object], name: str) -> float | None:
+    item = value.get(name)
+    if item is None:
+        return None
+    if isinstance(item, bool) or not isinstance(item, int | float):
+        raise ValueError(f"{name} must be a number")
+    return float(item)
 
 
 def _optional_bool(value: dict[str, object], name: str, default: bool) -> bool:

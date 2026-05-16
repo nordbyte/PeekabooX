@@ -1543,12 +1543,96 @@ class AgentRuntime:
         )
         return result
 
-    def move_mouse(self, x: int, y: int) -> ActionResult:
-        self._require_capability(Capability.CLICK, "move_mouse", x=x, y=y)
-        self._require_preflight("move_mouse", "input")
-        self._require_confirmation(DangerousAction.CLICK, "move_mouse", x=x, y=y)
-        result = self._require_client().move_mouse(x, y)
-        self._record_step(WorkflowStep(action="move_mouse", x=x, y=y))
+    def move_mouse(
+        self,
+        x: int | None = None,
+        y: int | None = None,
+        *,
+        relative_x: int | None = None,
+        relative_y: int | None = None,
+        region: Rect | None = None,
+        ratio_x: float | None = None,
+        ratio_y: float | None = None,
+        window_id: str | None = None,
+        app: str | None = None,
+        window_title: str | None = None,
+        title_regex: str | None = None,
+        dry_run: bool = False,
+        duration_ms: int | None = None,
+        steps: int | None = None,
+        bounds_policy: str | None = None,
+        backend: str | None = None,
+        restore: bool = False,
+    ) -> ActionResult:
+        details = {
+            "x": x,
+            "y": y,
+            "relative_x": relative_x,
+            "relative_y": relative_y,
+            "region": region,
+            "ratio_x": ratio_x,
+            "ratio_y": ratio_y,
+            "window_id": window_id,
+            "app": app,
+            "window_title": window_title,
+            "title_regex": title_regex,
+            "dry_run": dry_run,
+            "duration_ms": duration_ms,
+            "steps": steps,
+            "bounds_policy": bounds_policy,
+            "backend": backend,
+            "restore": restore,
+        }
+        self._require_capability(Capability.CLICK, "move_mouse", **details)
+        if not dry_run:
+            self._require_preflight("move_mouse", "input")
+            self._require_confirmation(DangerousAction.CLICK, "move_mouse", **details)
+        client_kwargs = {
+            key: value
+            for key, value in {
+                "relative_x": relative_x,
+                "relative_y": relative_y,
+                "region": region,
+                "ratio_x": ratio_x,
+                "ratio_y": ratio_y,
+                "window_id": window_id,
+                "app": app,
+                "window_title": window_title,
+                "title_regex": title_regex,
+                "duration_ms": duration_ms,
+                "steps": steps,
+                "bounds_policy": bounds_policy,
+                "backend": backend,
+            }.items()
+            if value is not None
+        }
+        if dry_run:
+            client_kwargs["dry_run"] = True
+        if restore:
+            client_kwargs["restore"] = True
+        result = self._require_client().move_mouse(x, y, **client_kwargs)
+        self._record_step(
+            WorkflowStep(
+                action="move_mouse",
+                x=x,
+                y=y,
+                duration_ms=duration_ms,
+                relative_x=relative_x,
+                relative_y=relative_y,
+                region=_format_rect(region) if region is not None else None,
+                ratio_x=ratio_x,
+                ratio_y=ratio_y,
+                window_id=window_id,
+                app=app,
+                window_title=window_title,
+                title_regex=title_regex,
+                steps=steps,
+                bounds_policy=bounds_policy,
+                backend=backend,
+                restore=restore,
+                dry_run=dry_run,
+            )
+        )
         return result
 
     def drag(
@@ -1739,9 +1823,26 @@ class AgentRuntime:
                 raise ValueError("click step requires selector or x/y coordinates")
             return self.click(x=step.x, y=step.y, vision_fallback=step.vision_fallback)
         if action in {"move", "move_mouse"}:
-            if step.x is None or step.y is None:
-                raise ValueError("move_mouse step requires x/y coordinates")
-            return self.move_mouse(step.x, step.y)
+            region = _parse_rect(step.region) if step.region is not None else None
+            return self.move_mouse(
+                step.x,
+                step.y,
+                relative_x=step.relative_x,
+                relative_y=step.relative_y,
+                region=region,
+                ratio_x=step.ratio_x,
+                ratio_y=step.ratio_y,
+                window_id=step.window_id,
+                app=step.app,
+                window_title=step.window_title,
+                title_regex=step.title_regex,
+                dry_run=step.dry_run,
+                duration_ms=step.duration_ms,
+                steps=step.steps,
+                bounds_policy=step.bounds_policy,
+                backend=step.backend,
+                restore=step.restore,
+            )
         if action == "drag":
             if (
                 step.from_x is None
@@ -2527,6 +2628,20 @@ def _window_relative_rect(origin: Rect, region: Rect) -> Rect:
         width=region.width,
         height=region.height,
     )
+
+
+def _format_rect(rect: Rect) -> str:
+    return f"{rect.x},{rect.y},{rect.width},{rect.height}"
+
+
+def _parse_rect(value: str) -> Rect:
+    parts = [part.strip() for part in value.replace("x", ",").split(",") if part.strip()]
+    if len(parts) != 4:
+        raise ValueError("region must be x,y,width,height")
+    x, y, width, height = (int(part) for part in parts)
+    if width <= 0 or height <= 0:
+        raise ValueError("region width and height must be greater than zero")
+    return Rect(x=x, y=y, width=width, height=height)
 
 
 def _positive_int(value: str) -> int:

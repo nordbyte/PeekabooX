@@ -153,6 +153,71 @@ pub enum InputTool {
     XselClipboard,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputToolSelection {
+    Auto,
+    Uinput,
+    Ydotool,
+    Xdotool,
+}
+
+impl InputToolSelection {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Uinput => "uinput",
+            Self::Ydotool => "ydotool",
+            Self::Xdotool => "xdotool",
+        }
+    }
+
+    fn tool(self) -> Option<InputTool> {
+        match self {
+            Self::Auto => None,
+            Self::Uinput => Some(InputTool::Uinput),
+            Self::Ydotool => Some(InputTool::Ydotool),
+            Self::Xdotool => Some(InputTool::Xdotool),
+        }
+    }
+}
+
+impl Default for InputToolSelection {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveBoundsPolicy {
+    Allow,
+    Clamp,
+    Fail,
+}
+
+impl MoveBoundsPolicy {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Clamp => "clamp",
+            Self::Fail => "fail",
+        }
+    }
+}
+
+impl Default for MoveBoundsPolicy {
+    fn default() -> Self {
+        Self::Allow
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MoveMouseOptions {
+    pub duration_ms: u64,
+    pub steps: Option<u32>,
+    pub bounds_policy: MoveBoundsPolicy,
+    pub backend: InputToolSelection,
+}
+
 impl InputTool {
     pub fn name(self) -> &'static str {
         match self {
@@ -247,19 +312,39 @@ pub struct CommandInputBackend;
 
 impl CommandInputBackend {
     pub fn detect_backend_for(&self, action: &InputAction) -> Result<DetectedInputBackend> {
+        self.detect_backend_for_with_selection(action, InputToolSelection::Auto)
+    }
+
+    pub fn detect_backend_for_with_selection(
+        &self,
+        action: &InputAction,
+        selection: InputToolSelection,
+    ) -> Result<DetectedInputBackend> {
         let environment = InputEnvironment::detect();
-        candidate_backends(&environment, action)
+        candidate_backends_with_selection(&environment, action, selection)
             .into_iter()
             .next()
-            .ok_or_else(|| missing_backend_error(&environment, action))
+            .ok_or_else(|| missing_backend_error_for_selection(&environment, action, selection))
     }
 
     pub fn execute_with_metadata(&self, action: InputAction) -> Result<InputExecutionMetadata> {
+        self.execute_with_metadata_with_selection(action, InputToolSelection::Auto)
+    }
+
+    pub fn execute_with_metadata_with_selection(
+        &self,
+        action: InputAction,
+        selection: InputToolSelection,
+    ) -> Result<InputExecutionMetadata> {
         let environment = InputEnvironment::detect();
-        let candidates = candidate_backends(&environment, &action);
+        let candidates = candidate_backends_with_selection(&environment, &action, selection);
 
         if candidates.is_empty() {
-            return Err(missing_backend_error(&environment, &action));
+            return Err(missing_backend_error_for_selection(
+                &environment,
+                &action,
+                selection,
+            ));
         }
 
         let mut errors = Vec::new();
@@ -285,6 +370,28 @@ impl CommandInputBackend {
             errors.join("; ")
         )))
     }
+
+    pub fn move_mouse_with_options(
+        &self,
+        position: Point,
+        options: MoveMouseOptions,
+    ) -> Result<InputExecutionMetadata> {
+        let position = apply_move_bounds_policy(position, options.bounds_policy)?;
+        let action = InputAction::MoveMouse(position);
+
+        if options.duration_ms == 0 && options.steps.unwrap_or(1) <= 1 {
+            return self.execute_with_metadata_with_selection(action, options.backend);
+        }
+
+        let backend = self.detect_backend_for_with_selection(&action, options.backend)?;
+        let start = current_mouse_position()?;
+        smooth_move_mouse(backend.tool, start, position, options)?;
+        Ok(InputExecutionMetadata {
+            backend_name: backend.name().to_owned(),
+            backend_kind: backend.backend_kind(),
+            action,
+        })
+    }
 }
 
 impl InputBackend for CommandInputBackend {
@@ -302,7 +409,35 @@ pub fn click(position: Point, button: MouseButton) -> Result<InputExecutionMetad
 }
 
 pub fn move_mouse(position: Point) -> Result<InputExecutionMetadata> {
-    CommandInputBackend.execute_with_metadata(InputAction::MoveMouse(position))
+    move_mouse_with_options(position, MoveMouseOptions::default())
+}
+
+pub fn move_mouse_with_options(
+    position: Point,
+    options: MoveMouseOptions,
+) -> Result<InputExecutionMetadata> {
+    CommandInputBackend.move_mouse_with_options(position, options)
+}
+
+pub fn current_mouse_position() -> Result<Point> {
+    let environment = InputEnvironment::detect();
+    if !environment.has_command("xdotool") {
+        return Err(PeekabooXError::new(
+            "cursor position query requires xdotool",
+        ));
+    }
+
+    let output = run_command_capture_stdout("xdotool", ["getmouselocation", "--shell"])?;
+    parse_xdotool_mouse_location(&output)
+        .ok_or_else(|| PeekabooXError::new("failed to parse xdotool cursor position output"))
+}
+
+pub fn screen_size() -> Option<(i32, i32)> {
+    detect_screen_size()
+}
+
+pub fn resolve_move_position(position: Point, bounds_policy: MoveBoundsPolicy) -> Result<Point> {
+    apply_move_bounds_policy(position, bounds_policy)
 }
 
 pub fn drag(
@@ -410,9 +545,29 @@ pub fn candidate_backends(
         .collect()
 }
 
+pub fn candidate_backends_with_selection(
+    environment: &InputEnvironment,
+    action: &InputAction,
+    selection: InputToolSelection,
+) -> Vec<DetectedInputBackend> {
+    let candidates = candidate_backends(environment, action);
+    let Some(selected_tool) = selection.tool() else {
+        return candidates;
+    };
+
+    candidates
+        .into_iter()
+        .filter(|backend| backend.tool == selected_tool)
+        .collect()
+}
+
 fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
     match (tool, action) {
-        (InputTool::Uinput, InputAction::MoveMouse(position)) => uinput_move_mouse(*position),
+        (InputTool::Uinput, InputAction::MoveMouse(position))
+        | (InputTool::Ydotool, InputAction::MoveMouse(position))
+        | (InputTool::Xdotool, InputAction::MoveMouse(position)) => {
+            run_move_mouse_tool(tool, *position)
+        }
         (InputTool::Uinput, InputAction::Click { position, button }) => {
             uinput_click(*position, *button)
         }
@@ -425,7 +580,6 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
                 duration_ms,
             },
         ) => uinput_drag(*from, *to, *button, *duration_ms),
-        (InputTool::Ydotool, InputAction::MoveMouse(position)) => ydotool_mousemove(*position),
         (InputTool::Ydotool, InputAction::Click { position, button }) => {
             ydotool_mousemove(*position)?;
             run_command(
@@ -440,14 +594,6 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
         ),
         (InputTool::Ydotool, InputAction::Hotkey(keys)) => ydotool_hotkey(keys),
         (InputTool::Wtype, InputAction::TypeText(text)) => run_command("wtype", ["--", text]),
-        (InputTool::Xdotool, InputAction::MoveMouse(position)) => run_command(
-            "xdotool",
-            [
-                "mousemove",
-                &position.x.to_string(),
-                &position.y.to_string(),
-            ],
-        ),
         (InputTool::Xdotool, InputAction::Click { position, button }) => run_command(
             "xdotool",
             [
@@ -497,6 +643,124 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
             tool.name(),
             action
         ))),
+    }
+}
+
+fn run_move_mouse_tool(tool: InputTool, position: Point) -> Result<()> {
+    match tool {
+        InputTool::Uinput => uinput_move_mouse(position),
+        InputTool::Ydotool => ydotool_mousemove(position),
+        InputTool::Xdotool => run_command(
+            "xdotool",
+            [
+                "mousemove",
+                &position.x.to_string(),
+                &position.y.to_string(),
+            ],
+        ),
+        _ => Err(PeekabooXError::new(format!(
+            "{} does not support pointer movement",
+            tool.name()
+        ))),
+    }
+}
+
+fn smooth_move_mouse(
+    tool: InputTool,
+    from: Point,
+    to: Point,
+    options: MoveMouseOptions,
+) -> Result<()> {
+    if tool == InputTool::Uinput {
+        return smooth_uinput_move_mouse(from, to, options);
+    }
+
+    let steps = move_steps(options.duration_ms, from, to, options.steps)?;
+    let sleep_per_step = if options.duration_ms == 0 {
+        0
+    } else {
+        options.duration_ms / u64::from(steps)
+    };
+
+    for step in 1..=steps {
+        let next = interpolate_point(from, to, step, steps);
+        run_move_mouse_tool(tool, next)?;
+
+        if sleep_per_step > 0 && step < steps {
+            sleep(Duration::from_millis(sleep_per_step));
+        }
+    }
+
+    Ok(())
+}
+
+fn smooth_uinput_move_mouse(from: Point, to: Point, options: MoveMouseOptions) -> Result<()> {
+    let (screen_width, screen_height) = detect_screen_size().ok_or_else(|| {
+        PeekabooXError::new(
+            "uinput smooth move requires a detectable screen size from xrandr or xdpyinfo",
+        )
+    })?;
+    let mut device = UinputPointer::create(screen_width, screen_height)?;
+    let steps = move_steps(options.duration_ms, from, to, options.steps)?;
+    let sleep_per_step = if options.duration_ms == 0 {
+        0
+    } else {
+        options.duration_ms / u64::from(steps)
+    };
+
+    for step in 1..=steps {
+        let next = interpolate_point(from, to, step, steps);
+        device.move_to(next)?;
+
+        if sleep_per_step > 0 && step < steps {
+            sleep(Duration::from_millis(sleep_per_step));
+        }
+    }
+
+    Ok(())
+}
+
+fn move_steps(
+    duration_ms: u64,
+    from: Point,
+    to: Point,
+    requested_steps: Option<u32>,
+) -> Result<u32> {
+    if let Some(0) = requested_steps {
+        return Err(PeekabooXError::new("move steps must be greater than zero"));
+    }
+
+    Ok(requested_steps.unwrap_or_else(|| drag_steps(duration_ms, from, to)))
+}
+
+fn apply_move_bounds_policy(position: Point, policy: MoveBoundsPolicy) -> Result<Point> {
+    match policy {
+        MoveBoundsPolicy::Allow => Ok(position),
+        MoveBoundsPolicy::Clamp => {
+            let (width, height) = detect_screen_size().ok_or_else(|| {
+                PeekabooXError::new(
+                    "move --clamp requires a detectable screen size from xrandr or xdpyinfo",
+                )
+            })?;
+            Ok(Point::new(
+                clamp_to_range(position.x, width),
+                clamp_to_range(position.y, height),
+            ))
+        }
+        MoveBoundsPolicy::Fail => {
+            let (width, height) = detect_screen_size().ok_or_else(|| {
+                PeekabooXError::new(
+                    "move --fail-out-of-bounds requires a detectable screen size from xrandr or xdpyinfo",
+                )
+            })?;
+            if position.x < 0 || position.y < 0 || position.x >= width || position.y >= height {
+                return Err(PeekabooXError::new(format!(
+                    "move target {},{} is outside screen bounds 0,0,{}x{}",
+                    position.x, position.y, width, height
+                )));
+            }
+            Ok(position)
+        }
     }
 }
 
@@ -1014,6 +1278,24 @@ fn valid_screen_size(width: i32, height: i32) -> Option<(i32, i32)> {
     (width > 0 && height > 0).then_some((width, height))
 }
 
+fn parse_xdotool_mouse_location(output: &str) -> Option<Point> {
+    let mut x = None;
+    let mut y = None;
+
+    for line in output.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "X" => x = value.trim().parse::<i32>().ok(),
+            "Y" => y = value.trim().parse::<i32>().ok(),
+            _ => {}
+        }
+    }
+
+    Some(Point::new(x?, y?))
+}
+
 fn interpolate_point(from: Point, to: Point, step: u32, steps: u32) -> Point {
     Point::new(
         from.x + (((to.x - from.x) as i64 * i64::from(step)) / i64::from(steps)) as i32,
@@ -1116,6 +1398,23 @@ fn missing_backend_error(environment: &InputEnvironment, action: &InputAction) -
     ))
 }
 
+fn missing_backend_error_for_selection(
+    environment: &InputEnvironment,
+    action: &InputAction,
+    selection: InputToolSelection,
+) -> PeekabooXError {
+    if selection == InputToolSelection::Auto {
+        return missing_backend_error(environment, action);
+    }
+
+    PeekabooXError::new(format!(
+        "selected input backend {} is unavailable or does not support {:?} in {:?}",
+        selection.name(),
+        action,
+        environment.session_type
+    ))
+}
+
 fn run_command<const N: usize>(program: &str, args: [&str; N]) -> Result<()> {
     let output = Command::new(program).args(args).output()?;
 
@@ -1175,8 +1474,9 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        InputAction, InputBackend, InputEnvironment, InputTool, MouseButton, SessionType,
-        UnimplementedInputBackend, candidate_backends,
+        InputAction, InputBackend, InputEnvironment, InputTool, InputToolSelection, MouseButton,
+        SessionType, UnimplementedInputBackend, candidate_backends,
+        candidate_backends_with_selection,
     };
     use peekaboox_core::Point;
 
@@ -1345,6 +1645,18 @@ mod tests {
     }
 
     #[test]
+    fn backend_selection_filters_candidate_backends() {
+        let environment = environment(SessionType::X11, ["xdotool", "ydotool"], true);
+        let action = InputAction::MoveMouse(Point::new(10, 20));
+
+        let backend =
+            candidate_backends_with_selection(&environment, &action, InputToolSelection::Ydotool)
+                .remove(0);
+
+        assert_eq!(backend.tool, InputTool::Ydotool);
+    }
+
+    #[test]
     fn selects_uinput_for_wayland_drags() {
         let environment = environment(SessionType::Wayland, ["ydotool", "wtype"], true);
         let action = InputAction::Drag {
@@ -1386,6 +1698,14 @@ mod tests {
     }
 
     #[test]
+    fn parses_xdotool_mouse_location_output() {
+        let point =
+            super::parse_xdotool_mouse_location("X=11\nY=22\nSCREEN=0\nWINDOW=1\n").unwrap();
+
+        assert_eq!(point, Point::new(11, 22));
+    }
+
+    #[test]
     fn hotkey_sequence_joins_trimmed_keys() {
         let sequence = super::hotkey_sequence(&[" ctrl ".to_owned(), "s".to_owned()]).unwrap();
 
@@ -1397,6 +1717,14 @@ mod tests {
         let steps = super::drag_steps(0, Point::new(10, 20), Point::new(10, 20));
 
         assert_eq!(steps, 1);
+    }
+
+    #[test]
+    fn move_steps_reject_zero_requested_steps() {
+        let error =
+            super::move_steps(100, Point::new(0, 0), Point::new(10, 10), Some(0)).unwrap_err();
+
+        assert!(error.message().contains("greater than zero"));
     }
 
     #[test]

@@ -786,10 +786,89 @@ class PeekabooXClient:
     def click_selector(self, selector: str, vision_fallback: bool = False) -> ActionResult:
         return self.click(semantic_selector=selector, vision_fallback=vision_fallback)
 
-    def move_mouse(self, x: int, y: int) -> ActionResult:
-        request = self.messages.MoveMouseRequest(
-            coordinates=self.messages.Point(x=x, y=y),
+    def move_mouse(
+        self,
+        x: int | None = None,
+        y: int | None = None,
+        *,
+        relative_x: int | None = None,
+        relative_y: int | None = None,
+        region: Rect | None = None,
+        ratio_x: float | None = None,
+        ratio_y: float | None = None,
+        window_id: str | None = None,
+        app: str | None = None,
+        window_title: str | None = None,
+        title_regex: str | None = None,
+        dry_run: bool = False,
+        duration_ms: int | None = None,
+        steps: int | None = None,
+        bounds_policy: str | None = None,
+        backend: str | None = None,
+        restore: bool = False,
+    ) -> ActionResult:
+        if duration_ms is not None and duration_ms < 0:
+            raise ValueError("duration_ms must be non-negative")
+        if steps is not None and steps <= 0:
+            raise ValueError("steps must be greater than zero")
+        if bounds_policy is not None and bounds_policy not in {
+            "allow",
+            "clamp",
+            "fail",
+            "fail-out-of-bounds",
+        }:
+            raise ValueError("bounds_policy must be allow, clamp, fail, or fail-out-of-bounds")
+        if backend is not None and backend not in {"auto", "uinput", "ydotool", "xdotool"}:
+            raise ValueError("backend must be auto, uinput, ydotool, or xdotool")
+        for name, value in (("ratio_x", ratio_x), ("ratio_y", ratio_y)):
+            if value is not None and (not float(value) == float(value) or not 0.0 <= value <= 1.0):
+                raise ValueError(f"{name} must be between 0.0 and 1.0")
+
+        has_coordinates = x is not None or y is not None
+        has_relative = relative_x is not None or relative_y is not None
+        has_scope = any(
+            value is not None
+            for value in (region, ratio_x, ratio_y, window_id, app, window_title, title_regex)
         )
+        if sum(1 for value in (has_coordinates, has_relative, has_scope) if value) != 1:
+            raise ValueError("provide exactly one move target")
+
+        request_kwargs: dict[str, Any] = {
+            "dry_run": dry_run,
+            "restore": restore,
+        }
+        if has_coordinates:
+            if x is None or y is None:
+                raise ValueError("x and y are required for coordinate moves")
+            request_kwargs["coordinates"] = self.messages.Point(x=x, y=y)
+        if has_relative:
+            if relative_x is None or relative_y is None:
+                raise ValueError("relative_x and relative_y are required for relative moves")
+            request_kwargs["relative"] = self.messages.Point(x=relative_x, y=relative_y)
+        if region is not None:
+            request_kwargs["region"] = _rect_to_proto(self.messages, region)
+        if ratio_x is not None:
+            request_kwargs["ratio_x"] = ratio_x
+        if ratio_y is not None:
+            request_kwargs["ratio_y"] = ratio_y
+        if window_id is not None:
+            request_kwargs["window_id"] = window_id
+        if app is not None:
+            request_kwargs["app"] = app
+        if window_title is not None:
+            request_kwargs["window_title"] = window_title
+        if title_regex is not None:
+            request_kwargs["title_regex"] = title_regex
+        if duration_ms is not None:
+            request_kwargs["duration_ms"] = duration_ms
+        if steps is not None:
+            request_kwargs["steps"] = steps
+        if bounds_policy is not None:
+            request_kwargs["bounds_policy"] = bounds_policy
+        if backend is not None:
+            request_kwargs["backend"] = backend
+
+        request = self.messages.MoveMouseRequest(**request_kwargs)
         return _action_result_from_proto(self._call("MoveMouse", request))
 
     def drag(

@@ -47,11 +47,15 @@ LOG_LEVELS = (
 )
 
 PREFLIGHT_CATEGORIES = ("desktop", "capture", "input", "ocr", "python")
+MOVE_BACKEND_CHOICES = ("auto", "uinput", "ydotool", "xdotool")
+MOVE_BOUNDS_POLICY_CHOICES = ("allow", "clamp", "fail", "fail-out-of-bounds")
 WORKFLOW_ACTIONS = (
     "observe",
     "capture_screen",
     "find_element",
     "click",
+    "move_mouse",
+    "drag",
     "type_text",
     "paste_text",
     "hotkey",
@@ -171,6 +175,20 @@ WORKFLOW_STEP_SCHEMA: dict[str, Any] = {
         "to_y": {"type": "integer"},
         "button": {"type": "string", "enum": ["left", "middle", "right"]},
         "duration_ms": {"type": "integer", "minimum": 0},
+        "relative_x": {"type": "integer"},
+        "relative_y": {"type": "integer"},
+        "region": {"type": "string"},
+        "ratio_x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "ratio_y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "window_id": {"type": "string"},
+        "app": {"type": "string"},
+        "window_title": {"type": "string"},
+        "title_regex": {"type": "string"},
+        "steps": {"type": "integer", "minimum": 1},
+        "bounds_policy": {"type": "string", "enum": list(MOVE_BOUNDS_POLICY_CHOICES)},
+        "backend": {"type": "string", "enum": list(MOVE_BACKEND_CHOICES)},
+        "restore": {"type": "boolean", "default": False},
+        "dry_run": {"type": "boolean", "default": False},
         "vision_fallback": {"type": "boolean", "default": False},
         "verify": {"type": "boolean", "default": True},
     },
@@ -911,13 +929,40 @@ class McpServer:
             ),
             self._tool(
                 "move_mouse",
-                "Move the pointer to screen coordinates through the daemon input backend.",
+                "Move the pointer through the daemon input backend.",
                 _schema(
                     {
                         "x": {"type": "integer"},
                         "y": {"type": "integer"},
+                        "relative_x": {"type": "integer"},
+                        "relative_y": {"type": "integer"},
+                        "region": RECT_SCHEMA,
+                        "ratio_x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "ratio_y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "window_id": {"type": "string"},
+                        "app": {"type": "string"},
+                        "window_title": {"type": "string"},
+                        "title_regex": {"type": "string"},
+                        "dry_run": {"type": "boolean", "default": False},
+                        "duration_ms": {"type": "integer", "minimum": 0},
+                        "steps": {"type": "integer", "minimum": 1},
+                        "bounds_policy": {
+                            "type": "string",
+                            "enum": list(MOVE_BOUNDS_POLICY_CHOICES),
+                        },
+                        "backend": {"type": "string", "enum": list(MOVE_BACKEND_CHOICES)},
+                        "restore": {"type": "boolean", "default": False},
                     },
-                    required=["x", "y"],
+                    any_of=[
+                        {"required": ["x", "y"]},
+                        {"required": ["relative_x", "relative_y"]},
+                        {"required": ["ratio_x", "ratio_y"]},
+                        {"required": ["region"]},
+                        {"required": ["window_id"]},
+                        {"required": ["app"]},
+                        {"required": ["window_title"]},
+                        {"required": ["title_regex"]},
+                    ],
                 ),
                 self._move_mouse,
             ),
@@ -1897,10 +1942,28 @@ class McpServer:
         )
 
     def _move_mouse(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        region = _optional_rect(arguments, "region")
         return _to_mcp_value(
             self._require_runtime().move_mouse(
-                int(arguments["x"]),
-                int(arguments["y"]),
+                _optional_int(arguments, "x"),
+                _optional_int(arguments, "y"),
+                relative_x=_optional_int(arguments, "relative_x"),
+                relative_y=_optional_int(arguments, "relative_y"),
+                region=region,
+                ratio_x=_optional_float(arguments, "ratio_x"),
+                ratio_y=_optional_float(arguments, "ratio_y"),
+                window_id=_optional_string(arguments, "window_id"),
+                app=_optional_string(arguments, "app"),
+                window_title=_optional_string(arguments, "window_title"),
+                title_regex=_optional_string(arguments, "title_regex"),
+                dry_run=_optional_bool(arguments, "dry_run"),
+                duration_ms=_optional_int(arguments, "duration_ms"),
+                steps=_optional_positive_int(arguments, "steps"),
+                bounds_policy=_optional_choice(
+                    arguments, "bounds_policy", MOVE_BOUNDS_POLICY_CHOICES
+                ),
+                backend=_optional_choice(arguments, "backend", MOVE_BACKEND_CHOICES),
+                restore=_optional_bool(arguments, "restore"),
             )
         )
 

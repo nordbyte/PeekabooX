@@ -95,6 +95,7 @@ bash examples/desktop/windows_inventory.sh
 bash examples/desktop/elements_accessibility_probe.sh
 bash examples/desktop/elements_calculator.sh
 bash examples/desktop/ocr_visible_window.sh
+bash examples/desktop/move_pointer_path.sh
 bash examples/desktop/paint_draw_and_save.sh
 bash examples/desktop/text_editor_save_dialog.sh
 bash examples/desktop/telegram_saved_messages.sh
@@ -160,6 +161,12 @@ draws with ratio-based `desktop drag` actions, saves with `hotkey ctrl+s`, falls
 back to the detected Save toolbar button when needed, and verifies that the
 output file changed. Override `PEEKABOOX_PAINT_APP` to force a specific paint
 application.
+
+`examples/desktop/move_pointer_path.sh` exercises the `move` command surface:
+cursor position JSON, compact `--to`, region-ratio targeting, relative deltas,
+smooth movement options, bounds policies, and backend selection. It runs as
+dry-run by default; set `PEEKABOOX_MOVE_POINTER_LIVE=1` to move the real pointer
+and restore the original cursor position at the end.
 
 `examples/desktop/windows_inventory.sh` runs the enhanced `peekaboox windows`
 command with backend diagnostics, focused-window filtering, Calculator

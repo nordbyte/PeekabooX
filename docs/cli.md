@@ -109,6 +109,11 @@ Check or execute basic input automation:
 cargo run -q -p peekaboox-cli -- click --x 100 --y 200 --dry-run
 cargo run -q -p peekaboox-cli -- click --text "Submit" --dry-run
 cargo run -q -p peekaboox-cli -- move --x 100 --y 200 --dry-run
+cargo run -q -p peekaboox-cli -- move --to 100,200 --duration-ms 180 --steps 8 --dry-run --json
+cargo run -q -p peekaboox-cli -- move --relative 20,0 --backend xdotool --dry-run
+cargo run -q -p peekaboox-cli -- move --region 0,0,400,240 --ratio 0.5,0.5 --clamp --dry-run
+cargo run -q -p peekaboox-cli -- move --window-title Calculator --ratio 0.5,0.5 --dry-run
+cargo run -q -p peekaboox-cli -- move --current-position --json
 cargo run -q -p peekaboox-cli -- drag --from 100,200 --to 320,240 --dry-run
 cargo run -q -p peekaboox-cli -- type --dry-run "Hello World"
 cargo run -q -p peekaboox-cli -- paste --dry-run "/tmp/PeekabooX Example.txt"
@@ -116,13 +121,17 @@ cargo run -q -p peekaboox-cli -- type --paste --preserve-clipboard --dry-run "/t
 cargo run -q -p peekaboox-cli -- hotkey --dry-run ctrl+s
 ```
 
-Remove `--dry-run` to perform the action. Input prefers direct `/dev/uinput`
-pointer events on Wayland, uses `ydotool` for Wayland hotkeys, prefers `wtype`
-for Wayland text where available with `ydotool` as fallback, and prefers
-`xdotool` on X11. Clipboard paste uses `wl-copy`, `xclip`, or `xsel` plus the
-safest available `ctrl+v` backend, can restore the previous textual clipboard
-with `--preserve-clipboard`, and is better than synthetic typing for paths and
-layout-sensitive text.
+Remove `--dry-run` to perform the action. `move` accepts absolute coordinates,
+compact `--to x,y`, relative deltas, region/window ratio targets, smooth
+movement with `--duration-ms` and `--steps`, bounds policies with `--clamp` or
+`--fail-out-of-bounds`, cursor query via `--current-position`, optional
+`--restore`, and backend selection via `--backend auto|uinput|ydotool|xdotool`.
+Input prefers direct `/dev/uinput` pointer events on Wayland, uses `ydotool` for
+Wayland hotkeys, prefers `wtype` for Wayland text where available with
+`ydotool` as fallback, and prefers `xdotool` on X11. Clipboard paste uses
+`wl-copy`, `xclip`, or `xsel` plus the safest available `ctrl+v` backend, can
+restore the previous textual clipboard with `--preserve-clipboard`, and is
+better than synthetic typing for paths and layout-sensitive text.
 
 Semantic click targets use AT-SPI and resolve to the center of the matching UI
 element. Add `--vision-fallback` when a semantic lookup may need screenshot

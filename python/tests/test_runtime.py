@@ -4076,15 +4076,35 @@ class RuntimeTests(unittest.TestCase):
         client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
 
         self.assertTrue(client.move_mouse(7, 9).ok)
+        self.assertTrue(
+            client.move_mouse(
+                relative_x=3,
+                relative_y=-2,
+                dry_run=True,
+                duration_ms=120,
+                steps=4,
+                bounds_policy="clamp",
+                backend="xdotool",
+                restore=True,
+            ).ok
+        )
         self.assertTrue(client.drag(1, 2, 3, 4, button="right", duration_ms=500).ok)
         self.assertTrue(client.hotkey(["ctrl", "s"]).ok)
 
         self.assertEqual(stub.requests[0][1].coordinates.x, 7)
-        self.assertEqual(getattr(stub.requests[1][1], "from").x, 1)
-        self.assertEqual(stub.requests[1][1].to.y, 4)
-        self.assertEqual(stub.requests[1][1].button, peekaboox_pb2.MOUSE_BUTTON_RIGHT)
-        self.assertEqual(stub.requests[1][1].duration_ms, 500)
-        self.assertEqual(list(stub.requests[2][1].keys), ["ctrl", "s"])
+        self.assertEqual(stub.requests[1][1].relative.x, 3)
+        self.assertEqual(stub.requests[1][1].relative.y, -2)
+        self.assertTrue(stub.requests[1][1].dry_run)
+        self.assertEqual(stub.requests[1][1].duration_ms, 120)
+        self.assertEqual(stub.requests[1][1].steps, 4)
+        self.assertEqual(stub.requests[1][1].bounds_policy, "clamp")
+        self.assertEqual(stub.requests[1][1].backend, "xdotool")
+        self.assertTrue(stub.requests[1][1].restore)
+        self.assertEqual(getattr(stub.requests[2][1], "from").x, 1)
+        self.assertEqual(stub.requests[2][1].to.y, 4)
+        self.assertEqual(stub.requests[2][1].button, peekaboox_pb2.MOUSE_BUTTON_RIGHT)
+        self.assertEqual(stub.requests[2][1].duration_ms, 500)
+        self.assertEqual(list(stub.requests[3][1].keys), ["ctrl", "s"])
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_python_client_builds_generated_paste_probe_and_plugin_requests(self) -> None:

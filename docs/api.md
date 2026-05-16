@@ -108,7 +108,8 @@ Current gRPC method coverage:
   full-frame mode
 - `CaptureBackends` for screenshot backend discovery plus optional file, frame,
   region, or DMA-BUF probe diagnostics
-- `MoveMouse` for absolute pointer movement
+- `MoveMouse` for absolute, relative, region/window ratio, dry-run, smooth, and
+  bounds-aware pointer movement
 - `Click` for coordinate clicks and AT-SPI `semantic_selector` clicks, with
   optional `vision_fallback`
 - `Drag` for coordinate drags with button and duration controls
@@ -235,6 +236,17 @@ runtime.desktop_click("telegram", "search-input", dry_run=True)
 runtime.desktop_type_into("telegram", "message-input", "PeekabooX", dry_run=True)
 runtime.click_selector("role=push button,label=Submit", vision_fallback=True)
 runtime.move_mouse(100, 200)
+runtime.move_mouse(relative_x=24, relative_y=0, dry_run=True)
+runtime.move_mouse(
+    region=Rect(x=0, y=0, width=400, height=240),
+    ratio_x=0.5,
+    ratio_y=0.5,
+    duration_ms=180,
+    steps=8,
+    bounds_policy="clamp",
+    backend="auto",
+    dry_run=True,
+)
 runtime.drag(100, 200, 360, 260, button="left", duration_ms=350)
 runtime.hotkey(["ctrl", "s"])
 ```
@@ -520,6 +532,10 @@ returns the structured `peekaboox doctor --json` health checks with per-check
 `preflight` accepts `categories`, optional `operation`, `refresh`,
 `timeout_seconds`, and `require`; it returns the Doctor-backed category gate
 used by `AgentRuntime(preflight_mode="strict")` before live automation.
+`move_mouse` accepts absolute `x`/`y`, `relative_x`/`relative_y`,
+`region`/window filters with `ratio_x`/`ratio_y`, `dry_run`, `duration_ms`,
+`steps`, `bounds_policy`, `backend`, and `restore`, matching the CLI move
+surface.
 The desktop helper tools accept supported app profile names such as `telegram`,
 `paint`, `drawing`, `pinta`, `kolourpaint`, and `text-editor`, plus named
 targets such as Telegram's `search-input`/`message-input`, Paint's `canvas`, or

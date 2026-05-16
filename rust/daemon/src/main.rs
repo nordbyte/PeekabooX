@@ -1588,17 +1588,48 @@ fn dispatch_request(
             };
             Ok(ApiResult::Click(metadata))
         }
-        ApiRequest::MoveMouse { x, y, dry_run } => {
-            let action = peekaboox_input::InputAction::MoveMouse(Point::new(x, y));
+        ApiRequest::MoveMouse {
+            x,
+            y,
+            dry_run,
+            duration_ms,
+            steps,
+            bounds_policy,
+            backend,
+            restore,
+        } => {
+            let options = move_options_from_fields(
+                Some(duration_ms),
+                steps,
+                Some(bounds_policy.as_str()),
+                Some(backend.as_str()),
+            )
+            .map_err(|error| error.to_string())?;
+            let position =
+                peekaboox_input::resolve_move_position(Point::new(x, y), options.bounds_policy)
+                    .map_err(|error| error.to_string())?;
+            let action = peekaboox_input::InputAction::MoveMouse(position);
             let metadata = if dry_run {
                 let backend = peekaboox_input::CommandInputBackend
-                    .detect_backend_for(&action)
+                    .detect_backend_for_with_selection(&action, options.backend)
                     .map_err(|error| error.to_string())?;
                 detected_input_backend_dto(backend)
             } else {
                 ensure_input_allowed(config)?;
-                let metadata = peekaboox_input::move_mouse(Point::new(x, y))
+                let restore_position = if restore {
+                    Some(
+                        peekaboox_input::current_mouse_position()
+                            .map_err(|error| error.to_string())?,
+                    )
+                } else {
+                    None
+                };
+                let metadata = peekaboox_input::move_mouse_with_options(Point::new(x, y), options)
                     .map_err(|error| error.to_string())?;
+                if let Some(position) = restore_position {
+                    peekaboox_input::move_mouse_with_options(position, options)
+                        .map_err(|error| error.to_string())?;
+                }
                 input_metadata_dto(metadata)
             };
             Ok(ApiResult::MoveMouse(metadata))
@@ -2222,10 +2253,23 @@ impl PeekabooX for GrpcPeekabooXService {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let request = request.into_inner();
         let details = json!({
-            "has_coordinates": request.coordinates.is_some()
+            "has_coordinates": request.coordinates.is_some(),
+            "has_relative": request.relative.is_some(),
+            "has_region": request.region.is_some(),
+            "has_ratio": request.ratio_x.is_some() || request.ratio_y.is_some(),
+            "has_window_filter": request.window_id.is_some()
+                || request.app.is_some()
+                || request.window_title.is_some()
+                || request.title_regex.is_some(),
+            "dry_run": request.dry_run,
+            "duration_ms": request.duration_ms,
+            "steps": request.steps,
+            "bounds_policy": request.bounds_policy.as_deref(),
+            "backend": request.backend.as_deref(),
+            "restore": request.restore
         });
 
-        let result = grpc_move_mouse(request, &self.config);
+        let result = grpc_move_mouse(request, &self.config, self.list_windows);
         audit_grpc_result(&self.audit, "grpc.move_mouse", &result, details);
         result.map(Response::new)
     }
@@ -3610,26 +3654,220 @@ fn grpc_click(
 fn grpc_move_mouse(
     request: proto::MoveMouseRequest,
     config: &ServerConfig,
+    list_windows: WindowListProvider,
 ) -> Result<proto::ActionResponse, Status> {
-    ensure_input_allowed(config).map_err(Status::permission_denied)?;
-    let coordinates = request
-        .coordinates
-        .ok_or_else(|| Status::invalid_argument("coordinates are required"))?;
-    let position = Point::new(coordinates.x, coordinates.y);
-    let metadata = peekaboox_input::move_mouse(position)
-        .map_err(|error| Status::internal(error.to_string()))?;
+    let options = move_options_from_fields(
+        request.duration_ms,
+        request.steps,
+        request.bounds_policy.as_deref(),
+        request.backend.as_deref(),
+    )
+    .map_err(Status::invalid_argument)?;
+    let resolved = resolve_grpc_move_target(&request, list_windows)?;
+    let position = peekaboox_input::resolve_move_position(resolved.position, options.bounds_policy)
+        .map_err(|error| Status::invalid_argument(error.to_string()))?;
+
+    let metadata = if request.dry_run {
+        let action = peekaboox_input::InputAction::MoveMouse(position);
+        let backend = peekaboox_input::CommandInputBackend
+            .detect_backend_for_with_selection(&action, options.backend)
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        peekaboox_input::InputExecutionMetadata {
+            backend_name: backend.name().to_owned(),
+            backend_kind: backend.backend_kind(),
+            action,
+        }
+    } else {
+        ensure_input_allowed(config).map_err(Status::permission_denied)?;
+        let restore_position = if request.restore {
+            Some(
+                peekaboox_input::current_mouse_position()
+                    .map_err(|error| Status::failed_precondition(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+        let metadata = peekaboox_input::move_mouse_with_options(position, options)
+            .map_err(|error| Status::internal(error.to_string()))?;
+        if let Some(position) = restore_position {
+            peekaboox_input::move_mouse_with_options(position, options)
+                .map_err(|error| Status::internal(error.to_string()))?;
+        }
+        metadata
+    };
     let backend_kind = backend_kind_name(metadata.backend_kind);
     let backend_name = metadata.backend_name;
+    let action = if request.dry_run {
+        "would move"
+    } else {
+        "moved"
+    };
+    let restore_suffix = if request.restore && !request.dry_run {
+        " and restored"
+    } else {
+        ""
+    };
 
     Ok(proto::ActionResponse {
         ok: true,
         message: format!(
-            "moved mouse to {},{} using {}/{}",
-            position.x, position.y, backend_name, backend_kind
+            "{action} mouse to {} ({},{}) using {}/{}{restore_suffix}",
+            resolved.description, position.x, position.y, backend_name, backend_kind
         ),
         backend_name: Some(backend_name),
         backend_kind: Some(backend_kind),
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedMoveTarget {
+    position: Point,
+    description: String,
+}
+
+fn resolve_grpc_move_target(
+    request: &proto::MoveMouseRequest,
+    list_windows: WindowListProvider,
+) -> Result<ResolvedMoveTarget, Status> {
+    let has_scope = request.region.is_some()
+        || request.ratio_x.is_some()
+        || request.ratio_y.is_some()
+        || request.window_id.is_some()
+        || request.app.is_some()
+        || request.window_title.is_some()
+        || request.title_regex.is_some();
+    let target_count = usize::from(request.coordinates.is_some())
+        + usize::from(request.relative.is_some())
+        + usize::from(has_scope);
+    if target_count != 1 {
+        return Err(Status::invalid_argument(
+            "provide exactly one move target: coordinates, relative, or ratio/region/window scope",
+        ));
+    }
+
+    if let Some(coordinates) = request.coordinates.as_ref() {
+        return Ok(ResolvedMoveTarget {
+            position: Point::new(coordinates.x, coordinates.y),
+            description: format!("{},{}", coordinates.x, coordinates.y),
+        });
+    }
+
+    if let Some(relative) = request.relative.as_ref() {
+        let current = peekaboox_input::current_mouse_position()
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        let x = current
+            .x
+            .checked_add(relative.x)
+            .ok_or_else(|| Status::invalid_argument("relative move x coordinate overflows i32"))?;
+        let y = current
+            .y
+            .checked_add(relative.y)
+            .ok_or_else(|| Status::invalid_argument("relative move y coordinate overflows i32"))?;
+        return Ok(ResolvedMoveTarget {
+            position: Point::new(x, y),
+            description: format!(
+                "relative {},{} from {},{}",
+                relative.x, relative.y, current.x, current.y
+            ),
+        });
+    }
+
+    let ratio = (
+        request.ratio_x.unwrap_or(0.5),
+        request.ratio_y.unwrap_or(0.5),
+    );
+    validate_ratio_status("ratio_x", ratio.0)?;
+    validate_ratio_status("ratio_y", ratio.1)?;
+    let scope = resolve_grpc_move_scope(request, list_windows)?;
+    Ok(ResolvedMoveTarget {
+        position: point_from_ratio_status(scope, ratio)?,
+        description: format!(
+            "ratio {:.3},{:.3} in {}",
+            ratio.0,
+            ratio.1,
+            format_rect(scope)
+        ),
+    })
+}
+
+fn resolve_grpc_move_scope(
+    request: &proto::MoveMouseRequest,
+    list_windows: WindowListProvider,
+) -> Result<Rect, Status> {
+    let region = request.region.clone().map(rect_from_proto);
+    let window = resolve_grpc_move_window(request, list_windows)?;
+    match (window, region) {
+        (Some(window), Some(region)) => {
+            offset_window_relative_capture_region(window.bounds, region)
+                .map_err(Status::invalid_argument)
+        }
+        (Some(window), None) => Ok(window.bounds),
+        (None, Some(region)) => Ok(region),
+        (None, None) => {
+            let (width, height) = peekaboox_input::screen_size().ok_or_else(|| {
+                Status::failed_precondition(
+                    "move ratio without region/window requires a detectable screen size",
+                )
+            })?;
+            Ok(Rect::new(
+                0,
+                0,
+                u32::try_from(width).map_err(|_| Status::internal("screen width overflows u32"))?,
+                u32::try_from(height)
+                    .map_err(|_| Status::internal("screen height overflows u32"))?,
+            ))
+        }
+    }
+}
+
+fn resolve_grpc_move_window(
+    request: &proto::MoveMouseRequest,
+    list_windows: WindowListProvider,
+) -> Result<Option<WindowInfo>, Status> {
+    let id = clean_optional_string(request.window_id.clone());
+    let app = clean_optional_string(request.app.clone());
+    let title = clean_optional_string(request.window_title.clone());
+    let title_regex = clean_optional_string(request.title_regex.clone());
+    if id.is_none() && app.is_none() && title.is_none() && title_regex.is_none() {
+        return Ok(None);
+    }
+
+    let query = window_query_from_fields(WindowQueryFields {
+        id,
+        app,
+        title,
+        title_regex,
+        focused: false,
+        limit: Some(1),
+        sort: Some("focused".to_owned()),
+        backend: None,
+        diagnose: false,
+    })
+    .map_err(Status::invalid_argument)?;
+    let metadata = list_windows(query).map_err(|error| Status::internal(error.to_string()))?;
+    let window = metadata
+        .windows
+        .into_iter()
+        .next()
+        .ok_or_else(|| Status::not_found("no window matched move filters"))?;
+    if window.bounds.width == 0 || window.bounds.height == 0 {
+        return Err(Status::failed_precondition(format!(
+            "window {} has empty bounds",
+            window.id
+        )));
+    }
+    Ok(Some(window))
+}
+
+fn point_from_ratio_status(rect: Rect, ratio: (f32, f32)) -> Result<Point, Status> {
+    let x = f64::from(rect.x) + (f64::from(rect.width.saturating_sub(1)) * f64::from(ratio.0));
+    let y = f64::from(rect.y) + (f64::from(rect.height.saturating_sub(1)) * f64::from(ratio.1));
+    Ok(Point::new(
+        i32::try_from(x.round() as i64)
+            .map_err(|_| Status::invalid_argument("move ratio x coordinate overflows i32"))?,
+        i32::try_from(y.round() as i64)
+            .map_err(|_| Status::invalid_argument("move ratio y coordinate overflows i32"))?,
+    ))
 }
 
 fn grpc_drag(
@@ -5575,6 +5813,49 @@ fn validate_ratio_status(name: &str, value: f32) -> Result<(), Status> {
     validate_ratio(name, value).map_err(Status::invalid_argument)
 }
 
+fn move_options_from_fields(
+    duration_ms: Option<u64>,
+    steps: Option<u32>,
+    bounds_policy: Option<&str>,
+    backend: Option<&str>,
+) -> Result<peekaboox_input::MoveMouseOptions, String> {
+    if steps == Some(0) {
+        return Err("move steps must be greater than zero".to_owned());
+    }
+
+    Ok(peekaboox_input::MoveMouseOptions {
+        duration_ms: duration_ms.unwrap_or_default(),
+        steps,
+        bounds_policy: parse_move_bounds_policy(bounds_policy.unwrap_or("allow"))?,
+        backend: parse_input_backend_selection(backend.unwrap_or("auto"))?,
+    })
+}
+
+fn parse_move_bounds_policy(value: &str) -> Result<peekaboox_input::MoveBoundsPolicy, String> {
+    match value.trim() {
+        "" | "allow" => Ok(peekaboox_input::MoveBoundsPolicy::Allow),
+        "clamp" => Ok(peekaboox_input::MoveBoundsPolicy::Clamp),
+        "fail" | "fail-out-of-bounds" => Ok(peekaboox_input::MoveBoundsPolicy::Fail),
+        value => Err(format!(
+            "bounds_policy must be allow, clamp, or fail, got {value:?}"
+        )),
+    }
+}
+
+fn parse_input_backend_selection(
+    value: &str,
+) -> Result<peekaboox_input::InputToolSelection, String> {
+    match value.trim() {
+        "" | "auto" => Ok(peekaboox_input::InputToolSelection::Auto),
+        "uinput" => Ok(peekaboox_input::InputToolSelection::Uinput),
+        "ydotool" => Ok(peekaboox_input::InputToolSelection::Ydotool),
+        "xdotool" => Ok(peekaboox_input::InputToolSelection::Xdotool),
+        value => Err(format!(
+            "backend must be auto, uinput, ydotool, or xdotool, got {value:?}"
+        )),
+    }
+}
+
 fn validate_hotkey_keys(keys: &[String]) -> Result<(), Status> {
     if keys.is_empty() {
         return Err(Status::invalid_argument(
@@ -5847,10 +6128,24 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             "button": format!("{button:?}").to_ascii_lowercase(),
             "dry_run": dry_run
         }),
-        ApiRequest::MoveMouse { x, y, dry_run } => json!({
+        ApiRequest::MoveMouse {
+            x,
+            y,
+            dry_run,
+            duration_ms,
+            steps,
+            bounds_policy,
+            backend,
+            restore,
+        } => json!({
             "x": x,
             "y": y,
-            "dry_run": dry_run
+            "dry_run": dry_run,
+            "duration_ms": duration_ms,
+            "steps": steps,
+            "bounds_policy": bounds_policy,
+            "backend": backend,
+            "restore": restore
         }),
         ApiRequest::Drag {
             from_x,

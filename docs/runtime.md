@@ -67,6 +67,7 @@ runtime.desktop_click("telegram", "search-input", dry_run=True)
 runtime.desktop_type_into("telegram", "message-input", "PeekabooX", dry_run=True)
 runtime.click_selector("role=push button,label=Submit", vision_fallback=True)
 runtime.move_mouse(100, 200)
+runtime.move_mouse(window_title="Calculator", ratio_x=0.5, ratio_y=0.5, dry_run=True)
 runtime.drag(100, 200, 320, 240, duration_ms=350)
 runtime.hotkey(["ctrl", "s"])
 ```

@@ -20,6 +20,14 @@ fn default_ui_element_sort() -> String {
     "position".to_owned()
 }
 
+fn default_move_bounds_policy() -> String {
+    "allow".to_owned()
+}
+
+fn default_input_backend() -> String {
+    "auto".to_owned()
+}
+
 pub mod proto {
     tonic::include_proto!("peekaboox.v1");
 }
@@ -144,6 +152,16 @@ pub enum ApiRequest {
         y: i32,
         #[serde(default)]
         dry_run: bool,
+        #[serde(default)]
+        duration_ms: u64,
+        #[serde(default)]
+        steps: Option<u32>,
+        #[serde(default = "default_move_bounds_policy")]
+        bounds_policy: String,
+        #[serde(default = "default_input_backend")]
+        backend: String,
+        #[serde(default)]
+        restore: bool,
     },
     Drag {
         from_x: i32,
@@ -1023,6 +1041,11 @@ mod tests {
             x: 10,
             y: 20,
             dry_run: true,
+            duration_ms: 120,
+            steps: Some(6),
+            bounds_policy: "clamp".to_owned(),
+            backend: "xdotool".to_owned(),
+            restore: true,
         });
         let payload = serde_json::to_string(&request).unwrap();
 
