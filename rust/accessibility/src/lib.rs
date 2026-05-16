@@ -312,6 +312,14 @@ pub struct AccessibilityActionResult {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct AccessibilityFocusResult {
+    pub backend_name: String,
+    pub backend_kind: BackendKind,
+    pub element_id: String,
+    pub ok: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct AccessibilitySetValueResult {
     pub backend_name: String,
     pub backend_kind: BackendKind,
@@ -454,6 +462,24 @@ pub fn perform_action(
         element: target,
         action: resolved_name,
         action_index: Some(index),
+        ok,
+    })
+}
+
+pub fn grab_focus_by_id(element_id: &str) -> Result<AccessibilityFocusResult> {
+    let connection = atspi_connection()?;
+    let object_ref = atspi_ref_from_element_id(element_id)?;
+    let interfaces = atspi_interfaces(&connection, &object_ref).unwrap_or_default();
+    if !interfaces_include_component(&interfaces) {
+        return Err(PeekabooXError::new(format!(
+            "AT-SPI element {element_id} does not expose Component"
+        )));
+    }
+    let ok = atspi_grab_focus(&connection, &object_ref)?;
+    Ok(AccessibilityFocusResult {
+        backend_name: "at-spi".to_owned(),
+        backend_kind: BackendKind::AtSpi,
+        element_id: element_id.to_owned(),
         ok,
     })
 }
@@ -842,6 +868,14 @@ fn atspi_do_action(connection: &Connection, object_ref: &AtSpiRef, index: i32) -
             })
         }
     }
+}
+
+fn atspi_grab_focus(connection: &Connection, object_ref: &AtSpiRef) -> Result<bool> {
+    let proxy = connection.with_proxy(object_ref.0.as_str(), object_ref.1.clone(), ATSPI_TIMEOUT);
+    proxy
+        .method_call("org.a11y.atspi.Component", "GrabFocus", ())
+        .map(|(ok,): (bool,)| ok)
+        .map_err(|error| PeekabooXError::new(format!("AT-SPI GrabFocus failed: {error}")))
 }
 
 fn atspi_set_text_contents(

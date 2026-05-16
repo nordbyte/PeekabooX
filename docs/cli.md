@@ -206,10 +206,11 @@ cargo run -q -p peekaboox-cli -- --daemon desktop click --app telegram --target 
 
 Built-in profiles include `telegram`, `paint`, `drawing`, `pinta`,
 `kolourpaint`, and `text-editor`. They use the safest available path in order:
-existing window focus where window enumeration is available, GNOME Overview or
-application launch fallback, then app-specific visual layout targets such as
-Telegram's `search-input` and `message-input`, Paint's `canvas`, or Text
-Editor's `document`.
+existing window focus through the window manager or AT-SPI, GNOME Overview
+activation, coordinate click only as the last focus fallback, application launch
+when no matching window is available, then app-specific visual layout targets
+such as Telegram's `search-input` and `message-input`, Paint's `canvas`, or
+Text Editor's `document`.
 
 Pass `--window-id <id>` or `--window-title <text>` to `desktop focus`,
 `locate`, `click`, `drag`, `type-into`, or `assert` when an action must target

@@ -5,7 +5,9 @@ use std::process::{Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use peekaboox_core::{CaptureFrame, PeekabooXError, PixelFormat, Point, Rect, Result};
+use peekaboox_core::{
+    CaptureFrame, PeekabooXError, PixelFormat, Point, Rect, Result, UiElement, WindowInfo,
+};
 use peekaboox_input::MouseButton;
 
 const DEFAULT_FOCUS_WAIT_MS: u64 = 1_000;
@@ -697,12 +699,59 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                 action: "focus".to_owned(),
                 detail: "already focused".to_owned(),
                 backend_name: metadata.backend_name,
-                verified: false,
-                verification_detail: None,
+                verified: true,
+                verification_detail: Some(format!("window {} is focused", window.id)),
             };
             return maybe_verify_action(result, options.verify, || {
                 verify_focused_window(profile, window_scope)
             });
+        }
+
+        let mut last_result = None;
+
+        if peekaboox_windows::focus_window(&window.id).is_ok() {
+            let result = DesktopActionResult {
+                app: profile.id.to_owned(),
+                action: "focus".to_owned(),
+                detail: format!("focused existing window {}", window.id),
+                backend_name: "window-manager".to_owned(),
+                verified: false,
+                verification_detail: None,
+            };
+            if let Some(result) = confirmed_focus_result(&result, options, profile, window_scope) {
+                return Ok(result);
+            }
+            last_result = Some(unconfirmed_focus_result(result, profile, window_scope));
+        }
+
+        if let Ok(detail) = focus_window_via_accessibility(window) {
+            let result = DesktopActionResult {
+                app: profile.id.to_owned(),
+                action: "focus".to_owned(),
+                detail,
+                backend_name: "at-spi".to_owned(),
+                verified: false,
+                verification_detail: None,
+            };
+            if let Some(result) = confirmed_focus_result(&result, options, profile, window_scope) {
+                return Ok(result);
+            }
+            last_result = Some(unconfirmed_focus_result(result, profile, window_scope));
+        }
+
+        if options.use_gnome_overview && focus_from_gnome_overview(profile, options).is_ok() {
+            let result = DesktopActionResult {
+                app: profile.id.to_owned(),
+                action: "focus".to_owned(),
+                detail: "focused existing app via GNOME overview".to_owned(),
+                backend_name: "gnome-overview".to_owned(),
+                verified: false,
+                verification_detail: None,
+            };
+            if let Some(result) = confirmed_focus_result(&result, options, profile, window_scope) {
+                return Ok(result);
+            }
+            last_result = Some(unconfirmed_focus_result(result, profile, window_scope));
         }
 
         if window.bounds.width > 0 && window.bounds.height > 0 {
@@ -711,7 +760,6 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                 window.bounds.y + i32::try_from(window.bounds.height / 2).unwrap_or(0),
             );
             let metadata = peekaboox_input::click(center, MouseButton::Left)?;
-            sleep_after_focus(options);
             let result = DesktopActionResult {
                 app: profile.id.to_owned(),
                 action: "focus".to_owned(),
@@ -720,9 +768,21 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                 verified: false,
                 verification_detail: None,
             };
-            return maybe_verify_action(result, options.verify, || {
-                verify_focused_window(profile, window_scope)
-            });
+            if let Some(result) = confirmed_focus_result(&result, options, profile, window_scope) {
+                return Ok(result);
+            }
+            last_result = Some(unconfirmed_focus_result(result, profile, window_scope));
+        }
+
+        if let Some(result) = last_result {
+            if options.verify {
+                return Err(PeekabooXError::new(
+                    result
+                        .verification_detail
+                        .unwrap_or_else(|| format!("could not verify focused {}", profile.id)),
+                ));
+            }
+            return Ok(result);
         }
     }
 
@@ -1103,6 +1163,33 @@ fn maybe_verify_action(
     Ok(result)
 }
 
+fn confirmed_focus_result(
+    result: &DesktopActionResult,
+    options: &FocusOptions,
+    profile: &AppProfile,
+    scope: WindowScope<'_>,
+) -> Option<DesktopActionResult> {
+    sleep_after_focus(options);
+    if let Ok(detail) = verify_focused_window(profile, scope) {
+        let mut result = result.clone();
+        result.verified = true;
+        result.verification_detail = Some(detail);
+        return Some(result);
+    }
+    None
+}
+
+fn unconfirmed_focus_result(
+    mut result: DesktopActionResult,
+    profile: &AppProfile,
+    scope: WindowScope<'_>,
+) -> DesktopActionResult {
+    if let Err(error) = verify_focused_window(profile, scope) {
+        result.verification_detail = Some(format!("focus not confirmed: {error}"));
+    }
+    result
+}
+
 fn verify_focused_window(profile: &AppProfile, scope: WindowScope<'_>) -> Result<String> {
     let metadata = peekaboox_windows::list_windows()?;
     let window = preferred_profile_window(profile, &metadata.windows, scope).ok_or_else(|| {
@@ -1151,6 +1238,46 @@ fn profile_window_rect(profile: &AppProfile, scope: WindowScope<'_>) -> Option<R
     preferred_profile_window(profile, &metadata.windows, scope).map(|window| window.bounds)
 }
 
+fn focus_window_via_accessibility(window: &WindowInfo) -> Result<String> {
+    let candidate_ids = peekaboox_accessibility::semantic_tree()
+        .map(|metadata| accessibility_focus_candidate_ids(window, &metadata.elements))
+        .unwrap_or_else(|_| vec![window.id.clone()]);
+
+    let mut errors = Vec::new();
+    for element_id in candidate_ids.into_iter().take(12) {
+        match peekaboox_accessibility::grab_focus_by_id(&element_id) {
+            Ok(result) if result.ok => {
+                return Ok(format!("grabbed AT-SPI focus on {}", result.element_id));
+            }
+            Ok(_) => errors.push(format!("{element_id}: GrabFocus returned false")),
+            Err(error) => errors.push(format!("{element_id}: {error}")),
+        }
+    }
+
+    Err(PeekabooXError::new(format!(
+        "could not focus {} through AT-SPI{}",
+        window.id,
+        if errors.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", errors.join("; "))
+        }
+    )))
+}
+
+fn accessibility_focus_candidate_ids(window: &WindowInfo, elements: &[UiElement]) -> Vec<String> {
+    let mut candidate_ids = vec![window.id.clone()];
+    for element in elements {
+        if element.window_id.as_deref() == Some(window.id.as_str())
+            && element.states.iter().any(|state| state == "focusable")
+            && !candidate_ids.iter().any(|id| id == &element.id)
+        {
+            candidate_ids.push(element.id.clone());
+        }
+    }
+    candidate_ids
+}
+
 fn normalized_title_hint(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
@@ -1191,9 +1318,9 @@ impl WindowScope<'_> {
 fn focus_from_gnome_overview(profile: &AppProfile, options: &FocusOptions) -> Result<()> {
     activate_gnome_overview()?;
     sleep(Duration::from_millis(options.overview_wait_ms));
-    let _ = peekaboox_input::hotkey(vec!["ctrl+a".to_owned()]);
+    let _ = focus_hotkey(["ctrl+a"]);
     sleep(Duration::from_millis(200));
-    let _ = peekaboox_input::hotkey(vec!["Backspace".to_owned()]);
+    let _ = focus_hotkey(["Backspace"]);
     sleep(Duration::from_millis(200));
     peekaboox_input::type_text(profile.search_name.to_owned())?;
     sleep(Duration::from_millis(options.overview_wait_ms));
@@ -1203,7 +1330,7 @@ fn focus_from_gnome_overview(profile: &AppProfile, options: &FocusOptions) -> Re
         let target = locate_overview_icon(&frame)?;
         peekaboox_input::click(target.point, MouseButton::Left)?;
     } else {
-        peekaboox_input::hotkey(vec!["Enter".to_owned()])?;
+        focus_hotkey(["Enter"])?;
     }
     Ok(())
 }
@@ -1232,7 +1359,19 @@ fn activate_gnome_overview() -> Result<()> {
         }
     }
 
-    peekaboox_input::hotkey(vec!["super".to_owned()]).map(|_| ())
+    focus_hotkey(["super"])
+}
+
+fn focus_hotkey<const N: usize>(keys: [&str; N]) -> Result<()> {
+    peekaboox_input::hotkey_with_options(
+        keys.into_iter().map(str::to_owned).collect(),
+        peekaboox_input::HotkeyOptions {
+            release_before: true,
+            release_after: true,
+            ..Default::default()
+        },
+    )
+    .map(|_| ())
 }
 
 fn launch_desktop_entry(profile: &AppProfile) -> Option<&'static str> {
@@ -2545,6 +2684,67 @@ mod tests {
         .unwrap();
 
         assert_eq!(selected.id, "second");
+    }
+
+    #[test]
+    fn accessibility_focus_candidates_prefer_window_then_focusable_children() {
+        let window = peekaboox_core::WindowInfo {
+            id: "window-1".to_owned(),
+            title: "Text Editor".to_owned(),
+            app_id: Some("gnome-text-editor".to_owned()),
+            bounds: Rect::new(0, 0, 900, 700),
+            focused: false,
+            state: peekaboox_core::WindowState::Normal,
+        };
+        let elements = vec![
+            UiElement {
+                id: "window-1".to_owned(),
+                role: "application".to_owned(),
+                label: Some("Text Editor".to_owned()),
+                bounds: Rect::new(0, 0, 900, 700),
+                center: Some(Point::new(450, 350)),
+                confidence: 1.0,
+                states: vec!["focusable".to_owned()],
+                window_id: Some("window-1".to_owned()),
+                window_title: Some("Text Editor".to_owned()),
+                app_id: Some("gnome-text-editor".to_owned()),
+                parent_id: None,
+                child_ids: Vec::new(),
+            },
+            UiElement {
+                id: "document".to_owned(),
+                role: "text box".to_owned(),
+                label: Some("Document".to_owned()),
+                bounds: Rect::new(20, 80, 860, 590),
+                center: Some(Point::new(450, 375)),
+                confidence: 1.0,
+                states: vec!["focusable".to_owned(), "editable".to_owned()],
+                window_id: Some("window-1".to_owned()),
+                window_title: Some("Text Editor".to_owned()),
+                app_id: Some("gnome-text-editor".to_owned()),
+                parent_id: Some("window-1".to_owned()),
+                child_ids: Vec::new(),
+            },
+            UiElement {
+                id: "other-window-document".to_owned(),
+                role: "text box".to_owned(),
+                label: Some("Document".to_owned()),
+                bounds: Rect::new(20, 80, 860, 590),
+                center: Some(Point::new(450, 375)),
+                confidence: 1.0,
+                states: vec!["focusable".to_owned()],
+                window_id: Some("window-2".to_owned()),
+                window_title: Some("Other".to_owned()),
+                app_id: Some("gnome-text-editor".to_owned()),
+                parent_id: Some("window-2".to_owned()),
+                child_ids: Vec::new(),
+            },
+        ];
+
+        assert_eq!(
+            accessibility_focus_candidate_ids(&window, &elements),
+            vec!["window-1".to_owned(), "document".to_owned()]
+        );
     }
 
     fn synthetic_telegram_frame(active_send: bool) -> CaptureFrame {

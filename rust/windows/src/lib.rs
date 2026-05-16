@@ -545,6 +545,10 @@ pub fn list_windows() -> Result<WindowListMetadata> {
     CommandWindowBackend.list_windows_with_metadata()
 }
 
+pub fn focus_window(window_id: &str) -> Result<()> {
+    CommandWindowBackend.focus_window(window_id)
+}
+
 pub fn list_windows_with_query(query: WindowQuery) -> Result<WindowListMetadata> {
     CommandWindowBackend.list_windows_with_query(query)
 }
