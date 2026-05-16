@@ -153,8 +153,9 @@ pub enum InputTool {
     XselClipboard,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InputToolSelection {
+    #[default]
     Auto,
     Uinput,
     Ydotool,
@@ -181,14 +182,9 @@ impl InputToolSelection {
     }
 }
 
-impl Default for InputToolSelection {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MoveBoundsPolicy {
+    #[default]
     Allow,
     Clamp,
     Fail,
@@ -201,12 +197,6 @@ impl MoveBoundsPolicy {
             Self::Clamp => "clamp",
             Self::Fail => "fail",
         }
-    }
-}
-
-impl Default for MoveBoundsPolicy {
-    fn default() -> Self {
-        Self::Allow
     }
 }
 

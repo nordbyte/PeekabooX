@@ -3839,7 +3839,7 @@ fn resolve_grpc_move_scope(
     request: &proto::MoveMouseRequest,
     list_windows: WindowListProvider,
 ) -> Result<Rect, Status> {
-    let region = request.region.clone().map(rect_from_proto);
+    let region = request.region.map(rect_from_proto);
     let window = resolve_grpc_move_window(request, list_windows)?;
     match (window, region) {
         (Some(window), Some(region)) => {
