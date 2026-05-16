@@ -161,6 +161,7 @@ bash examples/mcp/jsonrpc_capture_delta.sh
 bash examples/desktop/windows_inventory.sh
 bash examples/desktop/desktop_profiles_registry.sh
 bash examples/desktop/desktop_profiles_daemon_parity.sh
+python3 examples/python/desktop_focus_diagnostics_runtime.py
 bash examples/desktop/elements_accessibility_probe.sh
 bash examples/desktop/elements_calculator.sh
 bash examples/desktop/ocr_visible_window.sh
@@ -293,6 +294,16 @@ then writes all three JSON responses under
 `target/examples/desktop-profiles-daemon-parity`. Set `PEEKABOOX_PYTHON_BIN`
 when your system Python does not already have `grpcio`, `protobuf`, and the
 local PeekabooX package importable.
+
+`examples/python/desktop_focus_diagnostics_runtime.py` starts a temporary
+operator daemon and validates `AgentRuntime.desktop_focus(..., verify=True)`.
+It focuses GNOME Text Editor by default, checks that `focus_diagnostics`
+contains the ordered lookup/fallback/verification trace, and writes the full
+Python result under `target/examples/python-desktop-focus`. Override
+`PEEKABOOX_DESKTOP_FOCUS_APP`, `PEEKABOOX_DESKTOP_FOCUS_WINDOW_TITLE`,
+`PEEKABOOX_DESKTOP_FOCUS_WINDOW_ID`, or
+`PEEKABOOX_DESKTOP_FOCUS_START_DAEMON=0` for custom desktops or an already
+running daemon.
 
 `examples/desktop/ocr_visible_window.sh` opens
 `examples/desktop/assets/ocr_desktop_sample.png` in the desktop's image viewer,
