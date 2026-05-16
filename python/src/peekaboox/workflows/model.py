@@ -36,6 +36,10 @@ class WorkflowStep:
     typing_speed_chars_per_second: int | None = None
     delay_ms: int | None = None
     key_delay_ms: int | None = None
+    repeat: int | None = None
+    interval_ms: int | None = None
+    release_before: bool = False
+    release_after: bool = False
     preserve_clipboard: bool = False
     restore_delay_ms: int | None = None
     restore_policy: str | None = None

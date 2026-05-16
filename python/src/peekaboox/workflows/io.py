@@ -117,6 +117,10 @@ def workflow_step_from_dict(value: Any, index: int = 0) -> WorkflowStep:
         ),
         delay_ms=_optional_int(value, "delay_ms"),
         key_delay_ms=_optional_int(value, "key_delay_ms"),
+        repeat=_optional_int(value, "repeat"),
+        interval_ms=_optional_int(value, "interval_ms"),
+        release_before=_optional_bool(value, "release_before", default=False),
+        release_after=_optional_bool(value, "release_after", default=False),
         preserve_clipboard=_optional_bool(value, "preserve_clipboard", default=False),
         restore_delay_ms=_optional_int(value, "restore_delay_ms"),
         restore_policy=_optional_string(value, "restore_policy"),
@@ -193,6 +197,14 @@ def workflow_step_to_dict(step: WorkflowStep) -> dict[str, object]:
         value["delay_ms"] = step.delay_ms
     if step.key_delay_ms is not None:
         value["key_delay_ms"] = step.key_delay_ms
+    if step.repeat is not None:
+        value["repeat"] = step.repeat
+    if step.interval_ms is not None:
+        value["interval_ms"] = step.interval_ms
+    if step.release_before:
+        value["release_before"] = step.release_before
+    if step.release_after:
+        value["release_after"] = step.release_after
     if step.preserve_clipboard:
         value["preserve_clipboard"] = step.preserve_clipboard
     if step.restore_delay_ms is not None:

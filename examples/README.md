@@ -64,6 +64,10 @@ Doctor categories fail the example instead of being reported.
 mode with direct text, file, and stdin sources plus clipboard backend,
 hotkey backend, delay, restore delay, and restore-policy options.
 
+`examples/cli/hotkey_dry_run.sh` validates the `hotkey` CLI surface in dry-run
+mode with backend selection, timing, repeats, modifier release, JSON output,
+alias normalization, and the `--` separator for dash-prefixed key names.
+
 `examples/python/doctor_runtime.py` and `examples/mcp/jsonrpc_doctor.sh` run the
 same structured environment diagnostics through `AgentRuntime.doctor(...)` and
 MCP JSON-RPC `tools/call`. They validate per-check categories, severities, and
@@ -73,6 +77,9 @@ category rollups, then write JSON under
 `examples/python/paste_runtime.py` checks the Python runtime and workflow
 surface for `paste_text` without mutating the desktop by using a recording
 client and `dry_run=True`.
+`examples/python/hotkey_runtime.py` checks the Python runtime and workflow
+surface for `hotkey`, including normalized aliases, dry-runs, backend/timing
+options, repeats, and modifier release flags.
 `examples/mcp/jsonrpc_preflight.sh` uses those Doctor categories through the MCP
 `preflight` tool before a capture-style operation.
 `examples/mcp/jsonrpc_preflight_error_client.sh` injects a deterministic Doctor
@@ -87,7 +94,9 @@ failures, CLI-compatible tool aliases, tool annotations/output schemas, and MCP
 image content blocks. `jsonrpc_paste_text.sh` verifies the MCP `paste_text`
 schema for clipboard/hotkey backend selection, timing, dry-run, and restore
 policy fields, with an optional live dry-run call when
-`PEEKABOOX_MCP_PASTE_LIVE=1`.
+`PEEKABOOX_MCP_PASTE_LIVE=1`. `jsonrpc_hotkey.sh` verifies the MCP `hotkey`
+schema for backend selection, timing, repeats, dry-run, and modifier release
+fields, with an optional dry-run daemon call when `PEEKABOOX_MCP_HOTKEY_LIVE=1`.
 
 ## Live desktop examples
 
@@ -114,6 +123,7 @@ bash examples/desktop/move_pointer_path.sh
 bash examples/desktop/click_calculator_keypad.sh
 bash examples/desktop/type_text_editor_input.sh
 bash examples/desktop/paste_text_editor_input.sh
+bash examples/desktop/hotkey_text_editor_save.sh
 bash examples/desktop/paint_draw_and_save.sh
 bash examples/desktop/text_editor_save_dialog.sh
 bash examples/desktop/telegram_saved_messages.sh
@@ -205,6 +215,13 @@ command with `--text`, `--file`, `--stdin`, JSON dry-runs, backend selection,
 typing speed, initial delay, and per-key delay. It runs as dry-run by default;
 set `PEEKABOOX_TYPE_LIVE=1` to open GNOME Text Editor on a unique draft file,
 focus the document, type the sample text, save, and verify the file content.
+
+`examples/desktop/hotkey_text_editor_save.sh` exercises the raw
+`peekaboox hotkey` command with JSON dry-runs, backend selection, initial and
+per-key timing, alias normalization, and modifier release flags. It runs as
+dry-run by default; set `PEEKABOOX_HOTKEY_LIVE=1` to open GNOME Text Editor on
+a unique draft file, replace its text, save with `ctrl+s`, and verify the file
+content. The editor window is left open.
 
 `examples/desktop/windows_inventory.sh` runs the enhanced `peekaboox windows`
 command with backend diagnostics, focused-window filtering, Calculator

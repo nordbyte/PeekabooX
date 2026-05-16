@@ -1786,17 +1786,39 @@ fn dispatch_request(
             };
             Ok(ApiResult::PasteText(metadata))
         }
-        ApiRequest::Hotkey { keys, dry_run } => {
+        ApiRequest::Hotkey {
+            keys,
+            dry_run,
+            backend,
+            delay_ms,
+            key_delay_ms,
+            repeat,
+            interval_ms,
+            release_before,
+            release_after,
+        } => {
             validate_hotkey_keys(&keys).map_err(|status| status.message().to_owned())?;
+            let keys =
+                peekaboox_input::normalize_hotkey_keys(&keys).map_err(|error| error.to_string())?;
+            let options = hotkey_options_from_fields(
+                Some(backend.as_str()),
+                delay_ms,
+                key_delay_ms,
+                repeat,
+                interval_ms,
+                release_before,
+                release_after,
+            )?;
             let action = peekaboox_input::InputAction::Hotkey(keys.clone());
             let metadata = if dry_run {
                 let backend = peekaboox_input::CommandInputBackend
-                    .detect_backend_for(&action)
+                    .detect_backend_for_with_selection(&action, options.backend)
                     .map_err(|error| error.to_string())?;
                 detected_input_backend_dto(backend)
             } else {
                 ensure_input_allowed(config)?;
-                let metadata = peekaboox_input::hotkey(keys).map_err(|error| error.to_string())?;
+                let metadata = peekaboox_input::hotkey_with_options(keys, options)
+                    .map_err(|error| error.to_string())?;
                 input_metadata_dto(metadata)
             };
             Ok(ApiResult::Hotkey(metadata))
@@ -2470,7 +2492,15 @@ impl PeekabooX for GrpcPeekabooXService {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let request = request.into_inner();
         let details = json!({
-            "key_count": request.keys.len()
+            "key_count": request.keys.len(),
+            "dry_run": request.dry_run,
+            "backend": request.backend.as_deref(),
+            "delay_ms": request.delay_ms,
+            "key_delay_ms": request.key_delay_ms,
+            "repeat": request.repeat,
+            "interval_ms": request.interval_ms,
+            "release_before": request.release_before,
+            "release_after": request.release_after
         });
 
         let result = grpc_hotkey(request, &self.config);
@@ -4592,16 +4622,45 @@ fn grpc_hotkey(
     request: proto::HotkeyRequest,
     config: &ServerConfig,
 ) -> Result<proto::ActionResponse, Status> {
-    ensure_input_allowed(config).map_err(Status::permission_denied)?;
     validate_hotkey_keys(&request.keys)?;
-    let metadata = peekaboox_input::hotkey(request.keys)
-        .map_err(|error| Status::internal(error.to_string()))?;
+    let keys = peekaboox_input::normalize_hotkey_keys(&request.keys)
+        .map_err(|error| Status::invalid_argument(error.to_string()))?;
+    let options = hotkey_options_from_fields(
+        request.backend.as_deref(),
+        request.delay_ms,
+        request.key_delay_ms,
+        request.repeat,
+        request.interval_ms,
+        request.release_before,
+        request.release_after,
+    )
+    .map_err(Status::invalid_argument)?;
+    let action = peekaboox_input::InputAction::Hotkey(keys.clone());
+    let metadata = if request.dry_run {
+        let backend = peekaboox_input::CommandInputBackend
+            .detect_backend_for_with_selection(&action, options.backend)
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        peekaboox_input::InputExecutionMetadata {
+            backend_name: backend.name().to_owned(),
+            backend_kind: backend.backend_kind(),
+            action,
+        }
+    } else {
+        ensure_input_allowed(config).map_err(Status::permission_denied)?;
+        peekaboox_input::hotkey_with_options(keys, options)
+            .map_err(|error| Status::internal(error.to_string()))?
+    };
     let backend_kind = backend_kind_name(metadata.backend_kind);
     let backend_name = metadata.backend_name;
+    let action = if request.dry_run {
+        "would press hotkey"
+    } else {
+        "pressed hotkey"
+    };
 
     Ok(proto::ActionResponse {
         ok: true,
-        message: format!("pressed hotkey using {backend_name}/{backend_kind}"),
+        message: format!("{action} using {backend_name}/{backend_kind}"),
         backend_name: Some(backend_name),
         backend_kind: Some(backend_kind),
     })
@@ -6625,6 +6684,30 @@ fn paste_options_from_fields(
     })
 }
 
+fn hotkey_options_from_fields(
+    backend: Option<&str>,
+    delay_ms: Option<u64>,
+    key_delay_ms: Option<u64>,
+    repeat: Option<u32>,
+    interval_ms: Option<u64>,
+    release_before: bool,
+    release_after: bool,
+) -> Result<peekaboox_input::HotkeyOptions, String> {
+    if repeat == Some(0) {
+        return Err("hotkey repeat must be greater than zero".to_owned());
+    }
+
+    Ok(peekaboox_input::HotkeyOptions {
+        backend: parse_hotkey_backend_selection(backend.unwrap_or("auto"))?,
+        delay_ms,
+        key_delay_ms,
+        repeat: repeat.unwrap_or(1),
+        interval_ms: interval_ms.unwrap_or(0),
+        release_before,
+        release_after,
+    })
+}
+
 fn drag_options_from_fields(
     duration_ms: Option<u64>,
     steps: Option<u32>,
@@ -6705,6 +6788,19 @@ fn parse_paste_hotkey_backend_selection(
         "xdotool" => Ok(peekaboox_input::PasteHotkeyBackendSelection::Xdotool),
         value => Err(format!(
             "hotkey_backend must be auto, ydotool, or xdotool, got {value:?}"
+        )),
+    }
+}
+
+fn parse_hotkey_backend_selection(
+    value: &str,
+) -> Result<peekaboox_input::InputToolSelection, String> {
+    match value.trim() {
+        "" | "auto" => Ok(peekaboox_input::InputToolSelection::Auto),
+        "ydotool" => Ok(peekaboox_input::InputToolSelection::Ydotool),
+        "xdotool" => Ok(peekaboox_input::InputToolSelection::Xdotool),
+        value => Err(format!(
+            "backend must be auto, ydotool, or xdotool for hotkey, got {value:?}"
         )),
     }
 }
@@ -7094,8 +7190,28 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
                 "restore_policy": restore_policy
             })
         }
-        ApiRequest::Hotkey { keys, dry_run } => {
-            json!({ "key_count": keys.len(), "dry_run": dry_run })
+        ApiRequest::Hotkey {
+            keys,
+            dry_run,
+            backend,
+            delay_ms,
+            key_delay_ms,
+            repeat,
+            interval_ms,
+            release_before,
+            release_after,
+        } => {
+            json!({
+                "key_count": keys.len(),
+                "dry_run": dry_run,
+                "backend": backend,
+                "delay_ms": delay_ms,
+                "key_delay_ms": key_delay_ms,
+                "repeat": repeat,
+                "interval_ms": interval_ms,
+                "release_before": release_before,
+                "release_after": release_after
+            })
         }
         ApiRequest::ListWindows {
             id,

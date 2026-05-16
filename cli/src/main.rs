@@ -7800,6 +7800,14 @@ fn parse_paste_args(args: Vec<String>) -> Result<PasteCommand, CliError> {
 struct HotkeyArgs {
     keys: Vec<String>,
     dry_run: bool,
+    json: bool,
+    backend: peekaboox_input::InputToolSelection,
+    delay_ms: Option<u64>,
+    key_delay_ms: Option<u64>,
+    repeat: Option<u32>,
+    interval_ms: Option<u64>,
+    release_before: bool,
+    release_after: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7814,14 +7822,24 @@ fn hotkey(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
         return Err(CliError::HelpRequested);
     };
 
-    let action = peekaboox_input::InputAction::Hotkey(args.keys.clone());
+    let options = hotkey_options_from_args(&args);
+    let keys = peekaboox_input::normalize_hotkey_keys(&args.keys)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    let action = peekaboox_input::InputAction::Hotkey(keys.clone());
 
     if context.use_daemon {
         let result = daemon_request(
             context,
             ApiRequest::Hotkey {
-                keys: args.keys.clone(),
+                keys: keys.clone(),
                 dry_run: args.dry_run,
+                backend: args.backend.name().to_owned(),
+                delay_ms: args.delay_ms,
+                key_delay_ms: args.key_delay_ms,
+                repeat: args.repeat,
+                interval_ms: args.interval_ms,
+                release_before: args.release_before,
+                release_after: args.release_after,
             },
         )?;
         let ApiResult::Hotkey(metadata) = result else {
@@ -7829,40 +7847,75 @@ fn hotkey(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
                 "daemon returned unexpected hotkey response".to_owned(),
             ));
         };
-        print_hotkey_result(&args, metadata);
+        print_hotkey_result(&args, &keys, metadata);
         return Ok(());
     }
 
     if args.dry_run {
         let backend = peekaboox_input::CommandInputBackend
-            .detect_backend_for(&action)
+            .detect_backend_for_with_selection(&action, args.backend)
             .map_err(|error| CliError::Failure(error.to_string()))?;
-        println!(
-            "would press hotkey {} via {}",
-            args.keys.join("+"),
-            backend.name()
+        print_hotkey_result(
+            &args,
+            &keys,
+            ActionResultDto {
+                backend_name: backend.name().to_owned(),
+                backend_kind: format!("{:?}", backend.backend_kind()).to_ascii_lowercase(),
+            },
         );
         return Ok(());
     }
 
-    let metadata = peekaboox_input::hotkey(args.keys.clone())
+    let metadata = peekaboox_input::hotkey_with_options(keys.clone(), options)
         .map_err(|error| CliError::Failure(error.to_string()))?;
-    print_hotkey_result(&args, input_metadata_dto(metadata));
+    print_hotkey_result(&args, &keys, input_metadata_dto(metadata));
 
     Ok(())
 }
 
-fn print_hotkey_result(args: &HotkeyArgs, metadata: ActionResultDto) {
+fn hotkey_options_from_args(args: &HotkeyArgs) -> peekaboox_input::HotkeyOptions {
+    peekaboox_input::HotkeyOptions {
+        backend: args.backend,
+        delay_ms: args.delay_ms,
+        key_delay_ms: args.key_delay_ms,
+        repeat: args.repeat.unwrap_or(1),
+        interval_ms: args.interval_ms.unwrap_or(0),
+        release_before: args.release_before,
+        release_after: args.release_after,
+    }
+}
+
+fn print_hotkey_result(args: &HotkeyArgs, keys: &[String], metadata: ActionResultDto) {
+    if args.json {
+        let _ = print_json_pretty(&serde_json::json!({
+            "ok": true,
+            "dry_run": args.dry_run,
+            "action": "hotkey",
+            "keys": keys,
+            "key_count": keys.len(),
+            "backend_name": metadata.backend_name,
+            "backend_kind": metadata.backend_kind,
+            "requested_backend": args.backend.name(),
+            "delay_ms": args.delay_ms,
+            "key_delay_ms": args.key_delay_ms,
+            "repeat": args.repeat,
+            "interval_ms": args.interval_ms,
+            "release_before": args.release_before,
+            "release_after": args.release_after,
+        }));
+        return;
+    }
+
     if args.dry_run {
         println!(
             "would press hotkey {} via {}",
-            args.keys.join("+"),
+            keys.join("+"),
             metadata.backend_name
         );
     } else {
         println!(
             "pressed hotkey {} via {}",
-            args.keys.join("+"),
+            keys.join("+"),
             metadata.backend_name
         );
     }
@@ -7871,6 +7924,14 @@ fn print_hotkey_result(args: &HotkeyArgs, metadata: ActionResultDto) {
 fn parse_hotkey_args(args: Vec<String>) -> Result<HotkeyCommand, CliError> {
     let mut keys = Vec::new();
     let mut dry_run = false;
+    let mut json = false;
+    let mut backend = peekaboox_input::InputToolSelection::Auto;
+    let mut delay_ms = None;
+    let mut key_delay_ms = None;
+    let mut repeat = None;
+    let mut interval_ms = None;
+    let mut release_before = false;
+    let mut release_after = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -7883,10 +7944,37 @@ fn parse_hotkey_args(args: Vec<String>) -> Result<HotkeyCommand, CliError> {
                 keys.push(value.to_owned());
             }
             "--dry-run" => dry_run = true,
+            "--json" => json = true,
+            "--backend" => {
+                let value = parse_next_string(&args, &mut index, "--backend")?;
+                backend = parse_hotkey_backend_selection(&value)?;
+            }
+            "--delay-ms" => {
+                let value = parse_next_string(&args, &mut index, "--delay-ms")?;
+                delay_ms = Some(parse_u64("--delay-ms", &value)?);
+            }
+            "--key-delay-ms" => {
+                let value = parse_next_string(&args, &mut index, "--key-delay-ms")?;
+                key_delay_ms = Some(parse_u64("--key-delay-ms", &value)?);
+            }
+            "--repeat" => {
+                let value = parse_next_string(&args, &mut index, "--repeat")?;
+                repeat = Some(parse_positive_u32("--repeat", &value)?);
+            }
+            "--interval-ms" => {
+                let value = parse_next_string(&args, &mut index, "--interval-ms")?;
+                interval_ms = Some(parse_u64("--interval-ms", &value)?);
+            }
+            "--release-before" => release_before = true,
+            "--release-after" => release_after = true,
             "--help" | "-h" => return Ok(HotkeyCommand::Help),
+            "--" => {
+                keys.extend(args.iter().skip(index + 1).cloned());
+                break;
+            }
             value if value.starts_with('-') => {
                 return Err(CliError::Failure(format!(
-                    "unknown hotkey argument: {value}"
+                    "unknown hotkey argument: {value}; use -- before key names that start with '-'"
                 )));
             }
             value => keys.push(value.to_owned()),
@@ -7907,7 +7995,21 @@ fn parse_hotkey_args(args: Vec<String>) -> Result<HotkeyCommand, CliError> {
         ));
     }
 
-    Ok(HotkeyCommand::Run(HotkeyArgs { keys, dry_run }))
+    peekaboox_input::normalize_hotkey_keys(&keys)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+
+    Ok(HotkeyCommand::Run(HotkeyArgs {
+        keys,
+        dry_run,
+        json,
+        backend,
+        delay_ms,
+        key_delay_ms,
+        repeat,
+        interval_ms,
+        release_before,
+        release_after,
+    }))
 }
 
 fn parse_i32(name: &str, value: &str) -> Result<i32, CliError> {
@@ -8171,6 +8273,19 @@ fn parse_paste_hotkey_backend_selection(
         "xdotool" => Ok(peekaboox_input::PasteHotkeyBackendSelection::Xdotool),
         _ => Err(CliError::Failure(format!(
             "--hotkey-backend must be auto, ydotool, or xdotool, got {value:?}"
+        ))),
+    }
+}
+
+fn parse_hotkey_backend_selection(
+    value: &str,
+) -> Result<peekaboox_input::InputToolSelection, CliError> {
+    match value {
+        "auto" => Ok(peekaboox_input::InputToolSelection::Auto),
+        "ydotool" => Ok(peekaboox_input::InputToolSelection::Ydotool),
+        "xdotool" => Ok(peekaboox_input::InputToolSelection::Xdotool),
+        _ => Err(CliError::Failure(format!(
+            "--backend must be auto, ydotool, or xdotool for hotkey, got {value:?}"
         ))),
     }
 }
@@ -8544,7 +8659,9 @@ fn print_paste_usage() {
 }
 
 fn print_hotkey_usage() {
-    println!("Usage: peekaboox hotkey [--dry-run] <key-or-combo> [more-keys]");
+    println!(
+        "Usage: peekaboox hotkey [--dry-run] [--json] [--backend auto|ydotool|xdotool] [--delay-ms <ms>] [--key-delay-ms <ms>] [--repeat <n>] [--interval-ms <ms>] [--release-before] [--release-after] [--key <key>] [-- <key-or-combo>...] <key-or-combo> [more-keys]"
+    );
 }
 
 #[cfg(test)]
@@ -10591,6 +10708,19 @@ mod tests {
     fn hotkey_accepts_positional_keys_and_dry_run() {
         let command = parse_hotkey_args(vec![
             "--dry-run".to_owned(),
+            "--json".to_owned(),
+            "--backend".to_owned(),
+            "ydotool".to_owned(),
+            "--delay-ms".to_owned(),
+            "25".to_owned(),
+            "--key-delay-ms".to_owned(),
+            "30".to_owned(),
+            "--repeat".to_owned(),
+            "2".to_owned(),
+            "--interval-ms".to_owned(),
+            "40".to_owned(),
+            "--release-before".to_owned(),
+            "--release-after".to_owned(),
             "ctrl".to_owned(),
             "s".to_owned(),
         ])
@@ -10600,9 +10730,39 @@ mod tests {
             command,
             HotkeyCommand::Run(HotkeyArgs {
                 keys: vec!["ctrl".to_owned(), "s".to_owned()],
-                dry_run: true
+                dry_run: true,
+                json: true,
+                backend: InputToolSelection::Ydotool,
+                delay_ms: Some(25),
+                key_delay_ms: Some(30),
+                repeat: Some(2),
+                interval_ms: Some(40),
+                release_before: true,
+                release_after: true,
             })
         );
+    }
+
+    #[test]
+    fn hotkey_accepts_dash_separator_and_rejects_empty_chords() {
+        let command = parse_hotkey_args(vec![
+            "--key".to_owned(),
+            "control+escape".to_owned(),
+            "--".to_owned(),
+            "s".to_owned(),
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            command,
+            HotkeyCommand::Run(HotkeyArgs {
+                keys,
+                ..
+            }) if keys == vec!["control+escape".to_owned(), "s".to_owned()]
+        ));
+
+        let error = parse_hotkey_args(vec!["ctrl++".to_owned()]).unwrap_err();
+        assert!(format!("{error:?}").contains("empty"));
     }
 
     #[test]

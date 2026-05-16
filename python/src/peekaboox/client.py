@@ -1171,14 +1171,48 @@ class PeekabooXClient:
         request = self.messages.PasteTextRequest(**request_kwargs)
         return _action_result_from_proto(self._call("PasteText", request))
 
-    def hotkey(self, keys: Sequence[str] | str) -> ActionResult:
-        if isinstance(keys, str):
-            key_values = [keys]
-        else:
-            key_values = list(keys)
-        if not key_values or any(not str(key).strip() for key in key_values):
-            raise ValueError("hotkey requires at least one non-empty key")
-        request = self.messages.HotkeyRequest(keys=[str(key) for key in key_values])
+    def hotkey(
+        self,
+        keys: Sequence[str] | str,
+        *,
+        dry_run: bool = False,
+        backend: str | None = None,
+        delay_ms: int | None = None,
+        key_delay_ms: int | None = None,
+        repeat: int | None = None,
+        interval_ms: int | None = None,
+        release_before: bool = False,
+        release_after: bool = False,
+    ) -> ActionResult:
+        key_values = _normalize_hotkey_keys(keys)
+        if backend is not None and backend not in {"auto", "ydotool", "xdotool"}:
+            raise ValueError("backend must be auto, ydotool, or xdotool")
+        if delay_ms is not None and delay_ms < 0:
+            raise ValueError("delay_ms must be non-negative")
+        if key_delay_ms is not None and key_delay_ms < 0:
+            raise ValueError("key_delay_ms must be non-negative")
+        if repeat is not None and repeat <= 0:
+            raise ValueError("repeat must be greater than zero")
+        if interval_ms is not None and interval_ms < 0:
+            raise ValueError("interval_ms must be non-negative")
+
+        request_kwargs: dict[str, Any] = {
+            "keys": key_values,
+            "dry_run": dry_run,
+            "release_before": release_before,
+            "release_after": release_after,
+        }
+        if backend is not None:
+            request_kwargs["backend"] = backend
+        if delay_ms is not None:
+            request_kwargs["delay_ms"] = delay_ms
+        if key_delay_ms is not None:
+            request_kwargs["key_delay_ms"] = key_delay_ms
+        if repeat is not None:
+            request_kwargs["repeat"] = repeat
+        if interval_ms is not None:
+            request_kwargs["interval_ms"] = interval_ms
+        request = self.messages.HotkeyRequest(**request_kwargs)
         return _action_result_from_proto(self._call("Hotkey", request))
 
     def find_elements(
@@ -2215,6 +2249,56 @@ def _message_accepts_field(message_type: Any, field_name: str) -> bool:
     descriptor = getattr(message_type, "DESCRIPTOR", None)
     fields = getattr(descriptor, "fields_by_name", {})
     return field_name in fields
+
+
+def _normalize_hotkey_keys(keys: Sequence[str] | str) -> list[str]:
+    raw_values = [keys] if isinstance(keys, str) else [str(key) for key in keys]
+    normalized: list[str] = []
+    for raw_value in raw_values:
+        text = str(raw_value).strip()
+        if not text:
+            raise ValueError("hotkey requires at least one non-empty key")
+        for part in text.split("+"):
+            part = part.strip()
+            if not part:
+                raise ValueError(f"hotkey contains an empty key segment: {raw_value!r}")
+            normalized.append(_normalize_hotkey_part(part))
+    if not normalized:
+        raise ValueError("hotkey requires at least one non-empty key")
+    return normalized
+
+
+def _normalize_hotkey_part(value: str) -> str:
+    lowered = value.casefold()
+    aliases = {
+        "control": "ctrl",
+        "ctrl_l": "ctrl",
+        "ctrl_r": "ctrl",
+        "leftctrl": "ctrl",
+        "rightctrl": "ctrl",
+        "option": "alt",
+        "command": "super",
+        "cmd": "super",
+        "windows": "super",
+        "win": "super",
+        "escape": "Escape",
+        "esc": "Escape",
+        "return": "Enter",
+        "enter": "Enter",
+        "spacebar": "space",
+        "delete": "Delete",
+        "del": "Delete",
+        "backspace": "BackSpace",
+        "bksp": "BackSpace",
+        "tab": "Tab",
+    }
+    if lowered in aliases:
+        return aliases[lowered]
+    if lowered in {"shift", "ctrl", "alt", "super", "meta"}:
+        return lowered
+    if len(value) == 1:
+        return lowered
+    return value
 
 
 def _action_result_from_proto(response: Any) -> ActionResult:

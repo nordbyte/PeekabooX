@@ -233,6 +233,20 @@ pub enum ApiRequest {
         keys: Vec<String>,
         #[serde(default)]
         dry_run: bool,
+        #[serde(default = "default_input_backend")]
+        backend: String,
+        #[serde(default)]
+        delay_ms: Option<u64>,
+        #[serde(default)]
+        key_delay_ms: Option<u64>,
+        #[serde(default)]
+        repeat: Option<u32>,
+        #[serde(default)]
+        interval_ms: Option<u64>,
+        #[serde(default)]
+        release_before: bool,
+        #[serde(default)]
+        release_after: bool,
     },
     ListWindows {
         #[serde(default)]
@@ -1198,9 +1212,18 @@ mod tests {
         let request = ApiRequestEnvelope::new(ApiRequest::Hotkey {
             keys: vec!["ctrl".to_owned(), "s".to_owned()],
             dry_run: true,
+            backend: "ydotool".to_owned(),
+            delay_ms: Some(25),
+            key_delay_ms: Some(30),
+            repeat: Some(2),
+            interval_ms: Some(40),
+            release_before: true,
+            release_after: true,
         });
         let payload = serde_json::to_string(&request).unwrap();
 
+        assert!(payload.contains(r#""backend":"ydotool""#));
+        assert!(payload.contains(r#""repeat":2"#));
         assert_eq!(decode_request(&payload).unwrap(), request);
     }
 

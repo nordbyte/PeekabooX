@@ -86,6 +86,7 @@ class FakeClient:
         self.preserve_clipboard: bool | None = None
         self.last_type_options: dict[str, object] = {}
         self.last_paste_options: dict[str, object] = {}
+        self.last_hotkey_options: dict[str, object] = {}
         self.last_find_selector: str | None = None
         self.desktop_calls: list[tuple[str, dict[str, object]]] = []
         self.last_window_query: dict[str, object] | None = None
@@ -622,12 +623,34 @@ class FakeClient:
         }
         return ActionResult(ok=True, message=f"pasted {len(text)} chars")
 
-    def hotkey(self, keys: list[str] | tuple[str, ...] | str) -> ActionResult:
+    def hotkey(
+        self,
+        keys: list[str] | tuple[str, ...] | str,
+        *,
+        dry_run: bool = False,
+        backend: str | None = None,
+        delay_ms: int | None = None,
+        key_delay_ms: int | None = None,
+        repeat: int | None = None,
+        interval_ms: int | None = None,
+        release_before: bool = False,
+        release_after: bool = False,
+    ) -> ActionResult:
         if isinstance(keys, str):
             key_values = tuple(keys.split("+"))
         else:
             key_values = tuple(keys)
         self.hotkeys.append(key_values)
+        self.last_hotkey_options = {
+            "dry_run": dry_run,
+            "backend": backend,
+            "delay_ms": delay_ms,
+            "key_delay_ms": key_delay_ms,
+            "repeat": repeat,
+            "interval_ms": interval_ms,
+            "release_before": release_before,
+            "release_after": release_after,
+        }
         return ActionResult(ok=True, message="hotkey")
 
     def find_element(self, selector: str, vision_fallback: bool = False) -> tuple[UiElement, ...]:
@@ -988,6 +1011,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("preflight_audit", server.tools)
         self.assertIn("hotkey", server.tools)
         self.assertIn("vision_fallback", server.tools["find_element"].input_schema["properties"])
+        hotkey_schema = server.tools["hotkey"].input_schema["properties"]
+        self.assertEqual(hotkey_schema["backend"]["enum"], ["auto", "ydotool", "xdotool"])
+        self.assertEqual(hotkey_schema["repeat"]["minimum"], 1)
+        self.assertIn("release_before", hotkey_schema)
+        self.assertIn("release_after", hotkey_schema)
         self.assertIn("outputSchema", server.tools["capture_screen"].descriptor())
         self.assertIn("annotations", server.tools["click"].descriptor())
         self.assertTrue(server.tools["capture_screen"].descriptor()["annotations"]["readOnlyHint"])
@@ -1055,8 +1083,28 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(fake_client.moved_to, (30, 40))
         self.assertTrue(runtime.drag(1, 2, 3, 4, button="middle", duration_ms=500).ok)
         self.assertEqual(fake_client.dragged, (1, 2, 3, 4, "middle", 500))
-        self.assertTrue(runtime.hotkey(["ctrl", "s"]).ok)
+        self.assertTrue(
+            runtime.hotkey(
+                ["control+s"],
+                dry_run=True,
+                backend="auto",
+                delay_ms=25,
+                key_delay_ms=30,
+                repeat=2,
+                interval_ms=40,
+                release_before=True,
+                release_after=True,
+            ).ok
+        )
         self.assertEqual(fake_client.hotkeys[-1], ("ctrl", "s"))
+        self.assertTrue(fake_client.last_hotkey_options["dry_run"])
+        self.assertEqual(fake_client.last_hotkey_options["backend"], "auto")
+        self.assertEqual(fake_client.last_hotkey_options["delay_ms"], 25)
+        self.assertEqual(fake_client.last_hotkey_options["key_delay_ms"], 30)
+        self.assertEqual(fake_client.last_hotkey_options["repeat"], 2)
+        self.assertEqual(fake_client.last_hotkey_options["interval_ms"], 40)
+        self.assertTrue(fake_client.last_hotkey_options["release_before"])
+        self.assertTrue(fake_client.last_hotkey_options["release_after"])
         self.assertEqual(runtime.ocr_region(Rect(x=1, y=2, width=3, height=4)).text, "Submit")
         self.assertEqual(runtime.capture_delta(stream_id="agent-loop").stream_id, "agent-loop")
         self.assertEqual(runtime.capture_backends(probe="file").probes[0].probe, "file")
@@ -2223,7 +2271,19 @@ class RuntimeTests(unittest.TestCase):
                     duration_ms=100,
                     verify=False,
                 ),
-                WorkflowStep(action="hotkey", value="ctrl+s", verify=False),
+                WorkflowStep(
+                    action="hotkey",
+                    value="ctrl+s",
+                    dry_run=True,
+                    backend="xdotool",
+                    delay_ms=25,
+                    key_delay_ms=30,
+                    repeat=2,
+                    interval_ms=40,
+                    release_before=True,
+                    release_after=True,
+                    verify=False,
+                ),
             ],
         )
 
@@ -2233,6 +2293,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(fake_client.moved_to, (10, 20))
         self.assertEqual(fake_client.dragged, (10, 20, 30, 40, "right", 100))
         self.assertEqual(fake_client.hotkeys[-1], ("ctrl", "s"))
+        self.assertTrue(fake_client.last_hotkey_options["dry_run"])
+        self.assertEqual(fake_client.last_hotkey_options["backend"], "xdotool")
+        self.assertEqual(fake_client.last_hotkey_options["delay_ms"], 25)
+        self.assertEqual(fake_client.last_hotkey_options["key_delay_ms"], 30)
+        self.assertEqual(fake_client.last_hotkey_options["repeat"], 2)
+        self.assertEqual(fake_client.last_hotkey_options["interval_ms"], 40)
+        self.assertTrue(fake_client.last_hotkey_options["release_before"])
+        self.assertTrue(fake_client.last_hotkey_options["release_after"])
 
     def test_agent_runtime_retries_failed_actions_and_records_attempts(self) -> None:
         fake_client = FlakyActionClient(failures_before_success=1)
@@ -2511,6 +2579,20 @@ class RuntimeTests(unittest.TestCase):
                 restore_policy="best-effort",
             )
         )
+        recorder.record_step(
+            WorkflowStep(
+                action="hotkey",
+                value="ctrl+s",
+                dry_run=True,
+                backend="ydotool",
+                delay_ms=25,
+                key_delay_ms=30,
+                repeat=2,
+                interval_ms=40,
+                release_before=True,
+                release_after=True,
+            )
+        )
 
         json_workflow = load_workflow_text(recorder.to_json(), format_name="json")
         yaml_workflow = load_workflow_text(recorder.to_yaml(), format_name="yaml")
@@ -2529,6 +2611,15 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(yaml_workflow.steps[3].delay_ms, 30)
         self.assertEqual(yaml_workflow.steps[3].restore_delay_ms, 70)
         self.assertEqual(yaml_workflow.steps[3].restore_policy, "best-effort")
+        self.assertEqual(yaml_workflow.steps[4].value, "ctrl+s")
+        self.assertTrue(yaml_workflow.steps[4].dry_run)
+        self.assertEqual(yaml_workflow.steps[4].backend, "ydotool")
+        self.assertEqual(yaml_workflow.steps[4].delay_ms, 25)
+        self.assertEqual(yaml_workflow.steps[4].key_delay_ms, 30)
+        self.assertEqual(yaml_workflow.steps[4].repeat, 2)
+        self.assertEqual(yaml_workflow.steps[4].interval_ms, 40)
+        self.assertTrue(yaml_workflow.steps[4].release_before)
+        self.assertTrue(yaml_workflow.steps[4].release_after)
 
     def test_agent_runtime_executes_workflow_file(self) -> None:
         fake_client = FakeClient()
@@ -2620,7 +2711,17 @@ class RuntimeTests(unittest.TestCase):
         runtime.start_recording("input")
         runtime.move_mouse(10, 20)
         runtime.drag(10, 20, 30, 40, button="middle", duration_ms=125)
-        runtime.hotkey("ctrl+s")
+        runtime.hotkey(
+            "control+s",
+            dry_run=True,
+            backend="ydotool",
+            delay_ms=25,
+            key_delay_ms=30,
+            repeat=2,
+            interval_ms=40,
+            release_before=True,
+            release_after=True,
+        )
         workflow = runtime.stop_recording()
 
         self.assertEqual(
@@ -2632,6 +2733,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(workflow.steps[1].button, "middle")
         self.assertEqual(workflow.steps[1].duration_ms, 125)
         self.assertEqual(workflow.steps[2].value, "ctrl+s")
+        self.assertTrue(workflow.steps[2].dry_run)
+        self.assertEqual(workflow.steps[2].backend, "ydotool")
+        self.assertEqual(workflow.steps[2].delay_ms, 25)
+        self.assertEqual(workflow.steps[2].key_delay_ms, 30)
+        self.assertEqual(workflow.steps[2].repeat, 2)
+        self.assertEqual(workflow.steps[2].interval_ms, 40)
+        self.assertTrue(workflow.steps[2].release_before)
+        self.assertTrue(workflow.steps[2].release_after)
 
     def test_agent_runtime_requires_client_for_rpc_calls(self) -> None:
         runtime = AgentRuntime()
@@ -2843,7 +2952,20 @@ class RuntimeTests(unittest.TestCase):
                 "restore_policy": "best-effort",
             },
         )
-        hotkey = server.call_tool("hotkey", {"keys": ["ctrl", "s"]})
+        hotkey = server.call_tool(
+            "hotkey",
+            {
+                "keys": ["control+s"],
+                "dry_run": True,
+                "backend": "auto",
+                "delay_ms": 25,
+                "key_delay_ms": 30,
+                "repeat": 2,
+                "interval_ms": 40,
+                "release_before": True,
+                "release_after": True,
+            },
+        )
         state = server.call_tool("get_desktop_state", {})
         desktop_focus = server.call_tool("desktop_focus", {"app": "telegram"})
         desktop_locate = server.call_tool(
@@ -2913,6 +3035,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(pasted["message"], "pasted 5 chars")
         self.assertTrue(hotkey["ok"])
         self.assertEqual(fake_client.hotkeys[-1], ("ctrl", "s"))
+        self.assertTrue(fake_client.last_hotkey_options["dry_run"])
+        self.assertEqual(fake_client.last_hotkey_options["backend"], "auto")
+        self.assertEqual(fake_client.last_hotkey_options["delay_ms"], 25)
+        self.assertEqual(fake_client.last_hotkey_options["key_delay_ms"], 30)
+        self.assertEqual(fake_client.last_hotkey_options["repeat"], 2)
+        self.assertEqual(fake_client.last_hotkey_options["interval_ms"], 40)
+        self.assertTrue(fake_client.last_hotkey_options["release_before"])
+        self.assertTrue(fake_client.last_hotkey_options["release_after"])
         self.assertEqual(state["active_window"]["title"], "Terminal")
         self.assertEqual(desktop_focus["action"], "focus")
         self.assertEqual(desktop_locate["x"], 10)
@@ -4437,7 +4567,19 @@ class RuntimeTests(unittest.TestCase):
                 delay_ms=10,
             ).ok
         )
-        self.assertTrue(client.hotkey(["ctrl", "s"]).ok)
+        self.assertTrue(
+            client.hotkey(
+                ["control+s"],
+                dry_run=True,
+                backend="ydotool",
+                delay_ms=25,
+                key_delay_ms=30,
+                repeat=2,
+                interval_ms=40,
+                release_before=True,
+                release_after=True,
+            ).ok
+        )
 
         self.assertEqual(stub.requests[0][1].coordinates.x, 7)
         self.assertEqual(stub.requests[1][1].relative.x, 3)
@@ -4467,6 +4609,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(stub.requests[4][1].backend, "wtype")
         self.assertEqual(stub.requests[4][1].delay_ms, 10)
         self.assertEqual(list(stub.requests[5][1].keys), ["ctrl", "s"])
+        self.assertTrue(stub.requests[5][1].dry_run)
+        self.assertEqual(stub.requests[5][1].backend, "ydotool")
+        self.assertEqual(stub.requests[5][1].delay_ms, 25)
+        self.assertEqual(stub.requests[5][1].key_delay_ms, 30)
+        self.assertEqual(stub.requests[5][1].repeat, 2)
+        self.assertEqual(stub.requests[5][1].interval_ms, 40)
+        self.assertTrue(stub.requests[5][1].release_before)
+        self.assertTrue(stub.requests[5][1].release_after)
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_python_client_builds_generated_paste_probe_and_plugin_requests(self) -> None:

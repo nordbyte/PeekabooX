@@ -134,7 +134,7 @@ Shell-native completion generation is not part of the current CLI surface.
 | [drag](docs/cli.md#input-actions) | `--from`, `--to`, `--duration-ms`, `--dry-run` | Drag between coordinates |
 | [type](docs/cli.md#input-actions) | `--paste`, `--preserve-clipboard`, `--dry-run` | Type or paste text |
 | [paste](docs/cli.md#input-actions) | `--clipboard-backend`, `--hotkey-backend`, `--preserve-clipboard`, `--restore-policy`, `--dry-run` | Clipboard-backed text insertion |
-| [hotkey](docs/cli.md#input-actions) | combos like `ctrl+s` | Send keyboard shortcuts |
+| [hotkey](docs/cli.md#input-actions) | `--backend`, `--delay-ms`, `--key-delay-ms`, `--repeat`, `--json`, `--dry-run` | Send keyboard shortcuts |
 | [plugins](docs/plugins.md#discovery) | `--path`, `--json` | Discover Plugin SDK packages |
 | [plugin-call](docs/plugins.md#discovery) | `plugin_id`, `tool`, `--json` | Execute a bounded plugin process tool |
 

@@ -29,5 +29,13 @@ steps:
     restore_policy: best-effort
     verify: false
   - action: hotkey
-    value: ctrl+s
+    value: control+s
+    dry_run: true
+    backend: auto
+    delay_ms: 25
+    key_delay_ms: 30
+    repeat: 2
+    interval_ms: 40
+    release_before: true
+    release_after: true
     verify: false

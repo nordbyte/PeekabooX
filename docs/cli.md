@@ -125,7 +125,8 @@ printf 'multi-line\ntext\n' | cargo run -q -p peekaboox-cli -- type --stdin --dr
 cargo run -q -p peekaboox-cli -- paste --dry-run "/tmp/PeekabooX Example.txt"
 cargo run -q -p peekaboox-cli -- paste --clipboard-backend wl-copy --hotkey-backend ydotool --delay-ms 80 --restore-delay-ms 120 --restore-policy best-effort --preserve-clipboard --dry-run --json --text "/tmp/PeekabooX Example.txt"
 cargo run -q -p peekaboox-cli -- type --paste --preserve-clipboard --dry-run "/tmp/PeekabooX Example.txt"
-cargo run -q -p peekaboox-cli -- hotkey --dry-run ctrl+s
+cargo run -q -p peekaboox-cli -- hotkey --backend auto --delay-ms 25 --key-delay-ms 30 --repeat 2 --interval-ms 40 --release-before --release-after --dry-run --json control+s
+cargo run -q -p peekaboox-cli -- hotkey --dry-run -- --help
 ```
 
 Remove `--dry-run` to perform the action. `click` accepts absolute coordinates,
@@ -151,7 +152,12 @@ better than synthetic typing for paths and layout-sensitive text. Paste accepts
 `--clipboard-backend auto|wl-copy|xclip|xsel`, `--hotkey-backend
 auto|ydotool|xdotool`, `--delay-ms`, `--restore-delay-ms`, `--restore-policy
 strict|best-effort|off`, `--dry-run`, `--json`, and the same `--text`,
-`--stdin`, `--file`, positional, and `--` text sources as `type`.
+`--stdin`, `--file`, positional, and `--` text sources as `type`. Hotkeys
+accept positional chords such as `ctrl+s`, split `+`-separated aliases such as
+`control`, `escape`, and `win`, and support `--backend auto|ydotool|xdotool`,
+`--delay-ms`, `--key-delay-ms`, `--repeat`, `--interval-ms`,
+`--release-before`, `--release-after`, `--json`, and `--dry-run`. Use `--`
+before literal key names that start with a dash.
 
 Semantic click targets use AT-SPI and resolve to the center of the matching UI
 element. Add `--vision-fallback` when a semantic lookup may need screenshot

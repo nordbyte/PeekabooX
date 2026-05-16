@@ -69,6 +69,7 @@ from peekaboox import __version__ as PEEKABOOX_VERSION
 WINDOW_SORT_CHOICES = ("backend", "focused", "title", "app", "area", "id", "state")
 WINDOW_BACKEND_CHOICES = ("auto", "gnome", "at-spi", "xdotool")
 TYPE_BACKEND_CHOICES = ("auto", "wtype", "ydotool", "xdotool")
+HOTKEY_BACKEND_CHOICES = ("auto", "ydotool", "xdotool")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1988,17 +1989,70 @@ class AgentRuntime:
         )
         return result
 
-    def hotkey(self, keys: Sequence[str] | str) -> ActionResult:
+    def hotkey(
+        self,
+        keys: Sequence[str] | str,
+        *,
+        dry_run: bool = False,
+        backend: str | None = None,
+        delay_ms: int | None = None,
+        key_delay_ms: int | None = None,
+        repeat: int | None = None,
+        interval_ms: int | None = None,
+        release_before: bool = False,
+        release_after: bool = False,
+    ) -> ActionResult:
         key_values = _hotkey_keys(keys)
+        if backend is not None and backend not in HOTKEY_BACKEND_CHOICES:
+            raise ValueError("backend must be auto, ydotool, or xdotool")
+        if delay_ms is not None and delay_ms < 0:
+            raise ValueError("delay_ms must be non-negative")
+        if key_delay_ms is not None and key_delay_ms < 0:
+            raise ValueError("key_delay_ms must be non-negative")
+        if repeat is not None and repeat <= 0:
+            raise ValueError("repeat must be greater than zero")
+        if interval_ms is not None and interval_ms < 0:
+            raise ValueError("interval_ms must be non-negative")
         self._require_capability(Capability.CLICK, "hotkey", key_count=len(key_values))
-        self._require_preflight("hotkey", "input")
-        self._require_confirmation(
-            DangerousAction.CLICK,
-            "hotkey",
-            key_count=len(key_values),
+        if not dry_run:
+            self._require_preflight("hotkey", "input")
+            self._require_confirmation(
+                DangerousAction.CLICK,
+                "hotkey",
+                key_count=len(key_values),
+                backend=backend,
+                delay_ms=delay_ms,
+                key_delay_ms=key_delay_ms,
+                repeat=repeat,
+                interval_ms=interval_ms,
+                release_before=release_before,
+                release_after=release_after,
+            )
+        result = self._require_client().hotkey(
+            key_values,
+            dry_run=dry_run,
+            backend=backend,
+            delay_ms=delay_ms,
+            key_delay_ms=key_delay_ms,
+            repeat=repeat,
+            interval_ms=interval_ms,
+            release_before=release_before,
+            release_after=release_after,
         )
-        result = self._require_client().hotkey(key_values)
-        self._record_step(WorkflowStep(action="hotkey", value="+".join(key_values)))
+        self._record_step(
+            WorkflowStep(
+                action="hotkey",
+                value="+".join(key_values),
+                dry_run=dry_run,
+                backend=backend,
+                delay_ms=delay_ms,
+                key_delay_ms=key_delay_ms,
+                repeat=repeat,
+                interval_ms=interval_ms,
+                release_before=release_before,
+                release_after=release_after,
+            )
+        )
         return result
 
     def find_element(
@@ -2209,7 +2263,17 @@ class AgentRuntime:
         if action == "hotkey":
             if step.value is None:
                 raise ValueError("hotkey step requires value")
-            return self.hotkey(step.value)
+            return self.hotkey(
+                step.value,
+                dry_run=step.dry_run,
+                backend=step.backend,
+                delay_ms=step.delay_ms,
+                key_delay_ms=step.key_delay_ms,
+                repeat=step.repeat,
+                interval_ms=step.interval_ms,
+                release_before=step.release_before,
+                release_after=step.release_after,
+            )
         if action == "list_windows":
             return self.list_windows()
         if action == "get_desktop_state":
@@ -2707,13 +2771,55 @@ def _unix_ms() -> int:
 
 def _hotkey_keys(keys: Sequence[str] | str) -> list[str]:
     if isinstance(keys, str):
-        key_values = [part.strip() for part in keys.split("+")]
+        raw_values = [keys]
     else:
-        key_values = [str(key).strip() for key in keys]
-    key_values = [key for key in key_values if key]
+        raw_values = [str(key) for key in keys]
+    key_values: list[str] = []
+    for raw_value in raw_values:
+        text = raw_value.strip()
+        if not text:
+            raise ValueError("hotkey requires at least one key")
+        for part in text.split("+"):
+            part = part.strip()
+            if not part:
+                raise ValueError(f"hotkey contains an empty key segment: {raw_value!r}")
+            key_values.append(_normalize_hotkey_part(part))
     if not key_values:
         raise ValueError("hotkey requires at least one key")
     return key_values
+
+
+def _normalize_hotkey_part(value: str) -> str:
+    lowered = value.casefold()
+    aliases = {
+        "control": "ctrl",
+        "ctrl_l": "ctrl",
+        "ctrl_r": "ctrl",
+        "leftctrl": "ctrl",
+        "rightctrl": "ctrl",
+        "option": "alt",
+        "command": "super",
+        "cmd": "super",
+        "windows": "super",
+        "win": "super",
+        "escape": "Escape",
+        "esc": "Escape",
+        "return": "Enter",
+        "enter": "Enter",
+        "spacebar": "space",
+        "delete": "Delete",
+        "del": "Delete",
+        "backspace": "BackSpace",
+        "bksp": "BackSpace",
+        "tab": "Tab",
+    }
+    if lowered in aliases:
+        return aliases[lowered]
+    if lowered in {"shift", "ctrl", "alt", "super", "meta"}:
+        return lowered
+    if len(value) == 1:
+        return lowered
+    return value
 
 
 def _selector_value(value: str | None) -> str | None:

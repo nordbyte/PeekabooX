@@ -322,6 +322,31 @@ impl Default for PasteTextOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HotkeyOptions {
+    pub backend: InputToolSelection,
+    pub delay_ms: Option<u64>,
+    pub key_delay_ms: Option<u64>,
+    pub repeat: u32,
+    pub interval_ms: u64,
+    pub release_before: bool,
+    pub release_after: bool,
+}
+
+impl Default for HotkeyOptions {
+    fn default() -> Self {
+        Self {
+            backend: InputToolSelection::Auto,
+            delay_ms: None,
+            key_delay_ms: None,
+            repeat: 1,
+            interval_ms: 0,
+            release_before: false,
+            release_after: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DragMouseOptions {
     pub duration_ms: u64,
     pub steps: Option<u32>,
@@ -702,6 +727,48 @@ impl CommandInputBackend {
             errors.join("; ")
         )))
     }
+
+    pub fn hotkey_with_options(
+        &self,
+        keys: Vec<String>,
+        options: HotkeyOptions,
+    ) -> Result<InputExecutionMetadata> {
+        validate_hotkey_options(options)?;
+        let keys = normalize_hotkey_keys(&keys)?;
+        let action = InputAction::Hotkey(keys.clone());
+        let environment = InputEnvironment::detect();
+        let candidates = candidate_backends_with_selection(&environment, &action, options.backend);
+
+        if candidates.is_empty() {
+            return Err(missing_backend_error_for_selection(
+                &environment,
+                &action,
+                options.backend,
+            ));
+        }
+
+        let mut errors = Vec::new();
+        for backend in candidates {
+            match run_hotkey_tool(backend.tool, &keys, options) {
+                Ok(()) => {
+                    return Ok(InputExecutionMetadata {
+                        backend_name: backend.name().to_owned(),
+                        backend_kind: backend.backend_kind(),
+                        action,
+                    });
+                }
+                Err(error) => {
+                    let _ = release_modifiers();
+                    errors.push(format!("{}: {}", backend.name(), error.message()));
+                }
+            }
+        }
+
+        Err(PeekabooXError::new(format!(
+            "all hotkey backends failed: {}",
+            errors.join("; ")
+        )))
+    }
 }
 
 impl InputBackend for CommandInputBackend {
@@ -807,7 +874,14 @@ pub fn paste_text_with_options(
 }
 
 pub fn hotkey(keys: Vec<String>) -> Result<InputExecutionMetadata> {
-    CommandInputBackend.execute_with_metadata(InputAction::Hotkey(keys))
+    hotkey_with_options(keys, HotkeyOptions::default())
+}
+
+pub fn hotkey_with_options(
+    keys: Vec<String>,
+    options: HotkeyOptions,
+) -> Result<InputExecutionMetadata> {
+    CommandInputBackend.hotkey_with_options(keys, options)
 }
 
 pub fn emergency_stop() -> Result<()> {
@@ -978,7 +1052,9 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
         (InputTool::Ydotool, InputAction::TypeText(text)) => {
             run_type_text_tool(tool, text, TypeTextOptions::default())
         }
-        (InputTool::Ydotool, InputAction::Hotkey(keys)) => ydotool_hotkey(keys),
+        (InputTool::Ydotool, InputAction::Hotkey(keys)) => {
+            run_hotkey_tool(tool, keys, HotkeyOptions::default())
+        }
         (InputTool::Wtype, InputAction::TypeText(text)) => {
             run_type_text_tool(tool, text, TypeTextOptions::default())
         }
@@ -1012,7 +1088,9 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
         (InputTool::Xdotool, InputAction::TypeText(text)) => {
             run_type_text_tool(tool, text, TypeTextOptions::default())
         }
-        (InputTool::Xdotool, InputAction::Hotkey(keys)) => xdotool_hotkey(keys),
+        (InputTool::Xdotool, InputAction::Hotkey(keys)) => {
+            run_hotkey_tool(tool, keys, HotkeyOptions::default())
+        }
         (
             InputTool::WlClipboard,
             InputAction::PasteText {
@@ -1145,6 +1223,23 @@ fn validate_type_text_options(options: TypeTextOptions) -> Result<()> {
     if options.backend == InputToolSelection::Uinput {
         return Err(PeekabooXError::new(
             "type backend must be auto, wtype, ydotool, or xdotool",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_hotkey_options(options: HotkeyOptions) -> Result<()> {
+    if options.repeat == 0 {
+        return Err(PeekabooXError::new(
+            "hotkey repeat must be greater than zero",
+        ));
+    }
+    if matches!(
+        options.backend,
+        InputToolSelection::Uinput | InputToolSelection::Wtype
+    ) {
+        return Err(PeekabooXError::new(
+            "hotkey backend must be auto, ydotool, or xdotool",
         ));
     }
     Ok(())
@@ -1495,12 +1590,66 @@ fn ydotool_mousemove(position: Point) -> Result<()> {
     )
 }
 
-fn ydotool_hotkey(keys: &[String]) -> Result<()> {
+fn run_hotkey_tool(tool: InputTool, keys: &[String], options: HotkeyOptions) -> Result<()> {
+    validate_hotkey_options(options)?;
+    let normalized_keys = normalize_hotkey_keys(keys)?;
+    if options.release_before {
+        release_modifiers()?;
+    }
+
+    for index in 0..options.repeat {
+        match tool {
+            InputTool::Ydotool => ydotool_hotkey(&normalized_keys, options)?,
+            InputTool::Xdotool => xdotool_hotkey(&normalized_keys, options)?,
+            _ => {
+                return Err(PeekabooXError::new(format!(
+                    "{} does not support hotkeys",
+                    tool.name()
+                )));
+            }
+        }
+        if index + 1 < options.repeat {
+            sleep_ms(options.interval_ms);
+        }
+    }
+
+    if options.release_after {
+        release_modifiers()?;
+    }
+
+    Ok(())
+}
+
+fn ydotool_hotkey(keys: &[String], options: HotkeyOptions) -> Result<()> {
     let sequence = hotkey_sequence(keys)?;
-    run_command(
+    run_command_vec(
         "ydotool",
-        ["key", "--delay", "100", "--key-delay", "60", &sequence],
+        hotkey_command_args(InputTool::Ydotool, options, &sequence),
     )
+}
+
+fn hotkey_command_args(tool: InputTool, options: HotkeyOptions, sequence: &str) -> Vec<String> {
+    match tool {
+        InputTool::Ydotool => vec![
+            "key".to_owned(),
+            "--delay".to_owned(),
+            options.delay_ms.unwrap_or(100).to_string(),
+            "--key-delay".to_owned(),
+            options.key_delay_ms.unwrap_or(60).to_string(),
+            sequence.to_owned(),
+        ],
+        InputTool::Xdotool => vec![
+            "key".to_owned(),
+            "--delay".to_owned(),
+            options
+                .delay_ms
+                .or(options.key_delay_ms)
+                .unwrap_or(60)
+                .to_string(),
+            sequence.to_owned(),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 fn ydotool_button(button: MouseButton) -> &'static str {
@@ -1912,16 +2061,19 @@ fn interpolate_point(from: Point, to: Point, step: u32, steps: u32) -> Point {
     )
 }
 
-fn xdotool_hotkey(keys: &[String]) -> Result<()> {
+fn xdotool_hotkey(keys: &[String], options: HotkeyOptions) -> Result<()> {
     let sequence = hotkey_sequence(keys)?;
-    run_command("xdotool", ["key", "--delay", "60", &sequence])
+    run_command_vec(
+        "xdotool",
+        hotkey_command_args(InputTool::Xdotool, options, &sequence),
+    )
 }
 
 fn send_paste_hotkey_with_tool(tool: InputTool) -> Result<()> {
     let keys = vec!["ctrl".to_owned(), "v".to_owned()];
     match tool {
-        InputTool::Ydotool => ydotool_hotkey(&keys),
-        InputTool::Xdotool => xdotool_hotkey(&keys),
+        InputTool::Ydotool => ydotool_hotkey(&keys, HotkeyOptions::default()),
+        InputTool::Xdotool => xdotool_hotkey(&keys, HotkeyOptions::default()),
         _ => Err(PeekabooXError::new(format!(
             "{} is not a paste hotkey backend",
             tool.name()
@@ -1998,20 +2150,50 @@ fn clipboard_command_name(tool: InputTool) -> &'static str {
     }
 }
 
-fn hotkey_sequence(keys: &[String]) -> Result<String> {
+pub fn normalize_hotkey_keys(keys: &[String]) -> Result<Vec<String>> {
     if keys.is_empty() {
         return Err(PeekabooXError::new("hotkey must contain at least one key"));
     }
 
-    if keys.iter().any(|key| key.trim().is_empty()) {
-        return Err(PeekabooXError::new("hotkey keys must not be empty"));
+    let mut normalized = Vec::new();
+    for key in keys {
+        for part in key.split('+') {
+            let part = part.trim();
+            if part.is_empty() {
+                return Err(PeekabooXError::new(
+                    "hotkey keys must not be empty; use named keys such as plus instead of empty '+' segments",
+                ));
+            }
+            normalized.push(normalize_hotkey_key(part));
+        }
     }
 
-    Ok(keys
-        .iter()
-        .map(|key| key.trim())
-        .collect::<Vec<_>>()
-        .join("+"))
+    if normalized.is_empty() {
+        return Err(PeekabooXError::new("hotkey must contain at least one key"));
+    }
+
+    Ok(normalized)
+}
+
+fn normalize_hotkey_key(key: &str) -> String {
+    match key.to_ascii_lowercase().as_str() {
+        "control" | "ctrl_l" | "ctrl_r" | "leftctrl" | "rightctrl" => "ctrl".to_owned(),
+        "option" => "alt".to_owned(),
+        "command" | "cmd" | "windows" | "win" => "super".to_owned(),
+        "escape" | "esc" => "Escape".to_owned(),
+        "return" | "enter" => "Enter".to_owned(),
+        "spacebar" => "space".to_owned(),
+        "delete" | "del" => "Delete".to_owned(),
+        "backspace" | "bksp" => "BackSpace".to_owned(),
+        "tab" => "Tab".to_owned(),
+        "shift" | "ctrl" | "alt" | "super" | "meta" => key.to_ascii_lowercase(),
+        value if value.len() == 1 => value.to_owned(),
+        _ => key.trim().to_owned(),
+    }
+}
+
+fn hotkey_sequence(keys: &[String]) -> Result<String> {
+    Ok(normalize_hotkey_keys(keys)?.join("+"))
 }
 
 fn release_modifiers() -> Result<()> {
@@ -2087,6 +2269,20 @@ fn run_command<const N: usize>(program: &str, args: [&str; N]) -> Result<()> {
     )))
 }
 
+fn run_command_vec(program: &str, args: Vec<String>) -> Result<()> {
+    let output = Command::new(program).args(args).output()?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(PeekabooXError::new(format!(
+        "{program} failed with status {}; stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    )))
+}
+
 fn run_command_with_stdin_vec(program: &str, args: Vec<String>, stdin: &str) -> Result<()> {
     let mut child = Command::new(program)
         .args(args)
@@ -2128,10 +2324,11 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        ClipboardBackendSelection, ClipboardRestorePolicy, InputAction, InputBackend,
-        InputEnvironment, InputTool, InputToolSelection, MouseButton, PasteHotkeyBackendSelection,
-        PasteTextOptions, SessionType, TypeTextOptions, UnimplementedInputBackend,
-        candidate_backends, candidate_backends_with_selection, candidate_paste_backends,
+        ClipboardBackendSelection, ClipboardRestorePolicy, HotkeyOptions, InputAction,
+        InputBackend, InputEnvironment, InputTool, InputToolSelection, MouseButton,
+        PasteHotkeyBackendSelection, PasteTextOptions, SessionType, TypeTextOptions,
+        UnimplementedInputBackend, candidate_backends, candidate_backends_with_selection,
+        candidate_paste_backends,
     };
     use peekaboox_core::Point;
 
@@ -2460,9 +2657,49 @@ mod tests {
 
     #[test]
     fn hotkey_sequence_joins_trimmed_keys() {
-        let sequence = super::hotkey_sequence(&[" ctrl ".to_owned(), "s".to_owned()]).unwrap();
+        let sequence = super::hotkey_sequence(&[" control ".to_owned(), "s".to_owned()]).unwrap();
 
         assert_eq!(sequence, "ctrl+s");
+    }
+
+    #[test]
+    fn hotkey_sequence_splits_chords_and_normalizes_aliases() {
+        let sequence = super::hotkey_sequence(&["control+escape".to_owned()]).unwrap();
+
+        assert_eq!(sequence, "ctrl+Escape");
+    }
+
+    #[test]
+    fn hotkey_sequence_rejects_empty_chord_segments() {
+        let error = super::hotkey_sequence(&["ctrl++".to_owned()]).unwrap_err();
+
+        assert!(error.message().contains("empty"));
+    }
+
+    #[test]
+    fn hotkey_options_map_backend_delays() {
+        let options = HotkeyOptions {
+            delay_ms: Some(25),
+            key_delay_ms: Some(30),
+            repeat: 2,
+            interval_ms: 40,
+            backend: InputToolSelection::Ydotool,
+            release_before: true,
+            release_after: true,
+        };
+
+        assert_eq!(
+            super::hotkey_command_args(InputTool::Ydotool, options, "ctrl+s"),
+            ["key", "--delay", "25", "--key-delay", "30", "ctrl+s"]
+                .map(str::to_owned)
+                .to_vec()
+        );
+        assert_eq!(
+            super::hotkey_command_args(InputTool::Xdotool, options, "ctrl+s"),
+            ["key", "--delay", "25", "ctrl+s"]
+                .map(str::to_owned)
+                .to_vec()
+        );
     }
 
     #[test]

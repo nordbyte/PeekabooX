@@ -239,6 +239,14 @@ message PasteTextRequest {
 
 message HotkeyRequest {
   repeated string keys = 1;
+  bool dry_run = 2;
+  optional string backend = 3;
+  optional uint64 delay_ms = 4;
+  optional uint64 key_delay_ms = 5;
+  optional uint32 repeat = 6;
+  optional uint64 interval_ms = 7;
+  bool release_before = 8;
+  bool release_after = 9;
 }
 
 enum MouseButton {

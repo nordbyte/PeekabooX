@@ -71,7 +71,17 @@ runtime.move_mouse(100, 200)
 runtime.move_mouse(window_title="Calculator", ratio_x=0.5, ratio_y=0.5, dry_run=True)
 runtime.drag(100, 200, 320, 240, duration_ms=350)
 runtime.drag(from_current=True, to_ratio=(0.8, 0.5), region=Rect(0, 0, 400, 240), dry_run=True)
-runtime.hotkey(["ctrl", "s"])
+runtime.hotkey(
+    "control+s",
+    dry_run=True,
+    backend="auto",
+    delay_ms=25,
+    key_delay_ms=30,
+    repeat=2,
+    interval_ms=40,
+    release_before=True,
+    release_after=True,
+)
 ```
 
 The Python runtime and MCP tool surface share granular capability profiles:
@@ -177,6 +187,9 @@ Text input steps preserve `typing_speed_chars_per_second`, `delay_ms`,
 `key_delay_ms`, `backend`, and `dry_run` through recording and replay. Paste
 steps preserve `preserve_clipboard`, `dry_run`, `clipboard_backend`,
 `hotkey_backend`, `delay_ms`, `restore_delay_ms`, and `restore_policy`.
+Hotkey steps preserve normalized key chords plus `dry_run`, `backend`,
+`delay_ms`, `key_delay_ms`, `repeat`, `interval_ms`, `release_before`, and
+`release_after`.
 
 When recording coordinate clicks, the runtime samples semantic desktop state if
 needed and stores a stable selector such as `role=push button,label=Submit`

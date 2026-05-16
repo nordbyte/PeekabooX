@@ -278,7 +278,17 @@ runtime.drag(
     restore=True,
     dry_run=True,
 )
-runtime.hotkey(["ctrl", "s"])
+runtime.hotkey(
+    "control+s",
+    dry_run=True,
+    backend="auto",
+    delay_ms=25,
+    key_delay_ms=30,
+    repeat=2,
+    interval_ms=40,
+    release_before=True,
+    release_after=True,
+)
 ```
 
 Use `client.find_elements(...)` when callers need backend, warning, cache, and
@@ -421,7 +431,10 @@ Workflow files use the same fields as `WorkflowStep`: `action`, `selector`,
 `vision_fallback`, and `verify`. `type_text` steps can also set
 `typing_speed_chars_per_second`, `delay_ms`, and `key_delay_ms`; `paste_text`
 steps can set `preserve_clipboard`, `dry_run`, `clipboard_backend`,
-`hotkey_backend`, `delay_ms`, `restore_delay_ms`, and `restore_policy`. JSON is parsed with the standard library;
+`hotkey_backend`, `delay_ms`, `restore_delay_ms`, and `restore_policy`;
+`hotkey` steps can set `backend`, `delay_ms`, `key_delay_ms`, `repeat`,
+`interval_ms`, `release_before`, and `release_after`. JSON is parsed with the
+standard library;
 YAML support covers the repository workflow shape without an extra runtime
 dependency. The recorder writes the same schema, so recorded workflows can be
 reviewed, edited, and replayed through `execute_workflow_file`.
@@ -739,6 +752,9 @@ Daemon-routed `find_elements` requests accept `vision_fallback: true`,
 Daemon-routed `click`, `type_text`, `paste_text`, pointer movement, drags, and
 hotkeys require `dry_run: true` where supported unless the daemon was started
 with `--profile operator`, `--allow-input`, or `PEEKABOOX_ALLOW_INPUT=1`.
+Daemon-routed `hotkey` requests accept `keys`, `dry_run`, `backend`,
+`delay_ms`, `key_delay_ms`, `repeat`, `interval_ms`, `release_before`, and
+`release_after`.
 Use `--sandbox basic` for `no_new_privileges` and non-dumpable daemon process
 state. Use `--sandbox strict` only on Linux hosts where unprivileged user
 namespaces are available; startup fails if namespace isolation cannot be

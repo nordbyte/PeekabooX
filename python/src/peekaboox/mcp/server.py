@@ -12,6 +12,7 @@ from typing import Any, TextIO
 
 from peekaboox.agent import AgentRuntime, PreflightError, WorkflowExecutionResult
 from peekaboox.agent.runtime import (
+    HOTKEY_BACKEND_CHOICES,
     TYPE_BACKEND_CHOICES,
     WINDOW_BACKEND_CHOICES,
     WINDOW_SORT_CHOICES,
@@ -119,7 +120,28 @@ WORKFLOW_STEP_SCHEMA: dict[str, Any] = {
         "title_regex": {"type": "string"},
         "steps": {"type": "integer", "minimum": 1},
         "bounds_policy": {"type": "string", "enum": list(MOVE_BOUNDS_POLICY_CHOICES)},
-        "backend": {"type": "string", "enum": list(MOVE_BACKEND_CHOICES)},
+        "backend": {
+            "type": "string",
+            "enum": sorted({*MOVE_BACKEND_CHOICES, *DRAG_BACKEND_CHOICES, *TYPE_BACKEND_CHOICES}),
+        },
+        "clipboard_backend": {
+            "type": "string",
+            "enum": ["auto", "wl-copy", "xclip", "xsel"],
+        },
+        "hotkey_backend": {"type": "string", "enum": list(HOTKEY_BACKEND_CHOICES)},
+        "typing_speed_chars_per_second": {"type": "integer", "minimum": 1},
+        "delay_ms": {"type": "integer", "minimum": 0},
+        "key_delay_ms": {"type": "integer", "minimum": 0},
+        "repeat": {"type": "integer", "minimum": 1},
+        "interval_ms": {"type": "integer", "minimum": 0},
+        "release_before": {"type": "boolean", "default": False},
+        "release_after": {"type": "boolean", "default": False},
+        "preserve_clipboard": {"type": "boolean", "default": False},
+        "restore_delay_ms": {"type": "integer", "minimum": 0},
+        "restore_policy": {
+            "type": "string",
+            "enum": ["strict", "best-effort", "off"],
+        },
         "restore": {"type": "boolean", "default": False},
         "dry_run": {"type": "boolean", "default": False},
         "vision_fallback": {"type": "boolean", "default": False},
@@ -1022,6 +1044,14 @@ class McpServer:
                             "items": {"type": "string"},
                             "minItems": 1,
                         },
+                        "dry_run": {"type": "boolean", "default": False},
+                        "backend": {"type": "string", "enum": list(HOTKEY_BACKEND_CHOICES)},
+                        "delay_ms": {"type": "integer", "minimum": 0},
+                        "key_delay_ms": {"type": "integer", "minimum": 0},
+                        "repeat": {"type": "integer", "minimum": 1},
+                        "interval_ms": {"type": "integer", "minimum": 0},
+                        "release_before": {"type": "boolean", "default": False},
+                        "release_after": {"type": "boolean", "default": False},
                     },
                     required=["keys"],
                 ),
@@ -2086,7 +2116,19 @@ class McpServer:
         keys = arguments.get("keys")
         if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
             raise ValueError("keys must be a list of strings")
-        return _to_mcp_value(self._require_runtime().hotkey(keys))
+        return _to_mcp_value(
+            self._require_runtime().hotkey(
+                keys,
+                dry_run=_optional_bool(arguments, "dry_run"),
+                backend=_optional_choice(arguments, "backend", HOTKEY_BACKEND_CHOICES),
+                delay_ms=_optional_nonnegative_int(arguments, "delay_ms"),
+                key_delay_ms=_optional_nonnegative_int(arguments, "key_delay_ms"),
+                repeat=_optional_positive_int(arguments, "repeat"),
+                interval_ms=_optional_nonnegative_int(arguments, "interval_ms"),
+                release_before=_optional_bool(arguments, "release_before"),
+                release_after=_optional_bool(arguments, "release_after"),
+            )
+        )
 
     def _find_element(self, arguments: dict[str, Any]) -> list[dict[str, Any]]:
         return _to_mcp_value(
