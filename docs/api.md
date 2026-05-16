@@ -446,7 +446,8 @@ when possible. If no element resolves, the step falls back to `x`/`y`.
 
 `peekaboox-mcp` exposes a local MCP-style registry with tool descriptors,
 JSON-schema input metadata, and a `call_tool(name, arguments)` dispatcher bound
-to `AgentRuntime`. It also includes a stdio JSON-RPC transport for MCP clients:
+to `AgentRuntime`. It includes stdio JSON-RPC for MCP clients plus HTTP and SSE
+transports for local bridge processes:
 
 ```bash
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --list-tools
@@ -454,14 +455,19 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --audit-log runtime-audit.jsonl
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --capability-profile observe
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --preflight-mode strict
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport http --port 47778
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport sse --port 47778
 ```
 
-The stdio transport handles `initialize`, `ping`, `tools/list`, `tools/call`,
+The stdio and HTTP transports handle `initialize`, `ping`, `tools/list`, `tools/call`,
 `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`,
 `prompts/get`, `completion/complete`, `logging/setLevel`, and
 `notifications/initialized`. Tool calls return `structuredContent` plus a
 serialized JSON text content block for compatibility. Image-producing tools
 such as `capture_screen` also return an MCP `image` content block.
+HTTP accepts JSON-RPC POST requests on `/mcp`; SSE exposes `/sse` with endpoint
+and tool-list events for clients that discover HTTP JSON-RPC through
+server-sent events.
 Tool execution requires the Python runtime dependencies and a reachable
 PeekabooX daemon at `PEEKABOOX_GRPC_TARGET` or the `--target` address; without
 those dependencies the server can still list tool descriptors for inspection.

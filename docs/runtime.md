@@ -240,13 +240,19 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --audit-log runtime-audit.jsonl
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --capability-profile observe
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --preflight-mode strict
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport http --host 127.0.0.1 --port 47778
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport sse --host 127.0.0.1 --port 47778
 ```
 
 Tool execution through MCP requires Python runtime dependencies and a running
 `peekabooxd` reachable at `PEEKABOOX_GRPC_TARGET` or `--target`. Without those
 dependencies, the server can still list tool descriptors for inspection.
 The server also exposes MCP resources, resource templates, prompts, completion,
-and logging level negotiation alongside the tool registry.
+and logging level negotiation alongside the tool registry. `--transport stdio`
+is the default for MCP clients; `--transport http` serves JSON-RPC POST requests
+on `/mcp`; `--transport sse` additionally exposes a lightweight `/sse` endpoint
+that advertises the JSON-RPC endpoint and tool list for clients that discover
+servers through server-sent events.
 Use `--preflight-mode off|warn|strict` and `--preflight-timeout <seconds>` to
 control Doctor-backed preflight gates without changing application code.
 When preflight blocks an MCP tool call, the tool result keeps `isError: true`

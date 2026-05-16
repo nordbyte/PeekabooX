@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use dbus::arg::{PropMap, RefArg, Variant};
 use dbus::blocking::Connection;
 use dbus::message::MatchRule;
+use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::{ColorType, DynamicImage, ImageEncoder, ImageReader};
 use peekaboox_core::{BackendKind, CaptureFrame, PeekabooXError, PixelFormat, Rect, Result};
@@ -1870,6 +1871,19 @@ pub fn encode_frame_png(frame: &CaptureFrame) -> Result<Vec<u8>> {
     Ok(output)
 }
 
+pub fn encode_frame_jpeg(frame: &CaptureFrame, quality: u8) -> Result<Vec<u8>> {
+    let rgba = frame_to_rgba_bytes(frame)?;
+    let mut rgb = Vec::with_capacity((frame.width as usize) * (frame.height as usize) * 3);
+    for pixel in rgba.chunks_exact(4) {
+        rgb.extend_from_slice(&pixel[..3]);
+    }
+    let mut output = Vec::new();
+    JpegEncoder::new_with_quality(&mut output, quality)
+        .write_image(&rgb, frame.width, frame.height, ColorType::Rgb8.into())
+        .map_err(|error| PeekabooXError::new(format!("failed to encode frame as JPEG: {error}")))?;
+    Ok(output)
+}
+
 pub fn write_frame_png(frame: &CaptureFrame, output: impl AsRef<Path>) -> Result<u64> {
     let output = absolute_output_path(output.as_ref())?;
     prepare_output_parent(&output)?;
@@ -1878,6 +1892,20 @@ pub fn write_frame_png(frame: &CaptureFrame, output: impl AsRef<Path>) -> Result
         PeekabooXError::new(format!("failed to write {}: {error}", output.display()))
     })?;
     Ok(png.len() as u64)
+}
+
+pub fn write_frame_jpeg(
+    frame: &CaptureFrame,
+    output: impl AsRef<Path>,
+    quality: u8,
+) -> Result<u64> {
+    let output = absolute_output_path(output.as_ref())?;
+    prepare_output_parent(&output)?;
+    let jpeg = encode_frame_jpeg(frame, quality)?;
+    std::fs::write(&output, &jpeg).map_err(|error| {
+        PeekabooXError::new(format!("failed to write {}: {error}", output.display()))
+    })?;
+    Ok(jpeg.len() as u64)
 }
 
 pub fn capture_region_to_file(

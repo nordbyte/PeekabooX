@@ -16,6 +16,7 @@ bash examples/cli/ocr-smoke.sh
 bash examples/cli/agent-preflight-smoke.sh
 bash examples/cli/paste_sources.sh
 bash examples/cli/hotkey_dry_run.sh
+bash examples/cli/parity_surface_smoke.sh
 bash examples/cli/plugins_system_info.sh
 bash examples/cli/capture_dmabuf_probe.sh
 PYTHONPATH=python/src python3 examples/python/runtime_smoke.py
@@ -83,6 +84,11 @@ hotkey backend, delay, restore delay, and restore-policy options.
 `examples/cli/hotkey_dry_run.sh` validates the `hotkey` CLI surface in dry-run
 mode with backend selection, timing, repeats, modifier release, JSON output,
 alias normalization, and the `--` separator for dash-prefixed key names.
+
+`examples/cli/parity_surface_smoke.sh` validates the broader Peekaboo parity
+surface without touching the live desktop: command metadata, shell completions,
+local config, permission reporting, dry-run agent sessions, app inventory, clean
+planning, and optional dry-run `press`/`scroll` when a keyboard backend exists.
 
 `examples/cli/plugins_system_info.sh` validates the Plugin SDK CLI surface. It
 discovers `examples/plugins/system-info` from both the plugin directory and the

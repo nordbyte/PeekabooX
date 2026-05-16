@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 mod doctor;
 
@@ -45,6 +46,14 @@ fn main() {
             Err(CliError::HelpRequested) => {}
             Err(CliError::Failure(error)) => {
                 eprintln!("capture failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("image") => match capture(args.collect(), &global.context) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("image failed: {error}");
                 std::process::exit(1);
             }
         },
@@ -104,6 +113,38 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some("window") => match window_command(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("window failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("app") => match app_command(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("app failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("launcher") | Some("dock") => match launcher_command(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("launcher failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("workspace") | Some("workspaces") => match workspace_command(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("workspace failed: {error}");
+                std::process::exit(1);
+            }
+        },
         Some("elements") | Some("find") => match elements(args.collect(), &global.context) {
             Ok(()) => {}
             Err(CliError::HelpRequested) => {}
@@ -112,6 +153,48 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some("see") | Some("observe") => match see(args.collect(), &global.context) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("see failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("set-value") => match set_value_command(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("set-value failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("perform-action") => match perform_action_command(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("perform-action failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("dialog") => match dialog_command(args.collect(), &global.context) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("dialog failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("menu") | Some("menubar") | Some("status-items") | Some("status-item") => {
+            match menu_command(args.collect(), &global.context) {
+                Ok(()) => {}
+                Err(CliError::HelpRequested) => {}
+                Err(CliError::Failure(error)) => {
+                    eprintln!("menu failed: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("ocr") => match ocr(args.collect(), &global.context) {
             Ok(()) => {}
             Err(CliError::HelpRequested) => {}
@@ -162,6 +245,14 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some("agent") => match agent_command(args.collect(), &global.context) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("agent failed: {error}");
+                std::process::exit(1);
+            }
+        },
         Some("click") => match click(args.collect(), &global.context) {
             Ok(()) => {}
             Err(CliError::HelpRequested) => {}
@@ -186,6 +277,14 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some("swipe") => match swipe(args.collect(), &global.context) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("swipe failed: {error}");
+                std::process::exit(1);
+            }
+        },
         Some("type") => match type_text(args.collect(), &global.context) {
             Ok(()) => {}
             Err(CliError::HelpRequested) => {}
@@ -207,6 +306,62 @@ fn main() {
             Err(CliError::HelpRequested) => {}
             Err(CliError::Failure(error)) => {
                 eprintln!("hotkey failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("press") => match press(args.collect(), &global.context) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("press failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("scroll") => match scroll(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("scroll failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("tools") => match tools_command(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("tools failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("completions") | Some("completion") => match completions_command(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("completions failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("config") => match config_command(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("config failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("permissions") | Some("permission") => match permissions_command(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("permissions failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Some("clean") => match clean_command(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("clean failed: {error}");
                 std::process::exit(1);
             }
         },
@@ -272,6 +427,7 @@ struct CaptureArgs {
     window_title: Option<String>,
     title_regex: Option<String>,
     format: CaptureOutputFormat,
+    jpeg_quality: u8,
     json: bool,
     stdout: bool,
     no_overwrite: bool,
@@ -287,6 +443,7 @@ enum CaptureCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CaptureOutputFormat {
     Png,
+    Jpeg,
     Xwd,
 }
 
@@ -294,6 +451,7 @@ impl CaptureOutputFormat {
     fn as_str(self) -> &'static str {
         match self {
             Self::Png => "png",
+            Self::Jpeg => "jpeg",
             Self::Xwd => "xwd",
         }
     }
@@ -301,6 +459,7 @@ impl CaptureOutputFormat {
     fn mime_type(self) -> &'static str {
         match self {
             Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
             Self::Xwd => "image/x-xwindowdump",
         }
     }
@@ -709,6 +868,7 @@ fn parse_capture_args(args: Vec<String>) -> Result<CaptureCommand, CliError> {
     let mut window_title = None;
     let mut title_regex = None;
     let mut format = CaptureOutputFormat::Png;
+    let mut jpeg_quality = 90_u8;
     let mut json = false;
     let mut stdout = false;
     let mut no_overwrite = false;
@@ -746,6 +906,10 @@ fn parse_capture_args(args: Vec<String>) -> Result<CaptureCommand, CliError> {
                 let value = parse_next_string(&args, &mut index, "--format")?;
                 format = parse_capture_output_format(&value)?;
             }
+            "--quality" | "--jpeg-quality" => {
+                let value = parse_next_string(&args, &mut index, "--quality")?;
+                jpeg_quality = parse_jpeg_quality(&value)?;
+            }
             "--json" => json = true,
             "--stdout" => stdout = true,
             "--no-overwrite" => no_overwrite = true,
@@ -771,9 +935,9 @@ fn parse_capture_args(args: Vec<String>) -> Result<CaptureCommand, CliError> {
             "capture --stdout cannot be combined with --no-overwrite".to_owned(),
         ));
     }
-    if stdout && format != CaptureOutputFormat::Png {
+    if stdout && format == CaptureOutputFormat::Xwd {
         return Err(CliError::Failure(
-            "capture --stdout currently supports PNG output only".to_owned(),
+            "capture --stdout does not support xwd output".to_owned(),
         ));
     }
     if include_semantic_tree && !json {
@@ -795,6 +959,7 @@ fn parse_capture_args(args: Vec<String>) -> Result<CaptureCommand, CliError> {
 
     let output = output.unwrap_or_else(|| match format {
         CaptureOutputFormat::Png => PathBuf::from("screenshot.png"),
+        CaptureOutputFormat::Jpeg => PathBuf::from("screenshot.jpg"),
         CaptureOutputFormat::Xwd => PathBuf::from("screenshot.xwd"),
     });
     if format == CaptureOutputFormat::Xwd
@@ -816,6 +981,7 @@ fn parse_capture_args(args: Vec<String>) -> Result<CaptureCommand, CliError> {
         window_title,
         title_regex,
         format,
+        jpeg_quality,
         json,
         stdout,
         no_overwrite,
@@ -1053,9 +1219,10 @@ fn parse_capture_backends_args(args: Vec<String>) -> Result<CaptureBackendsComma
 fn default_capture_backends_output_for_format(value: &str) -> Result<PathBuf, CliError> {
     match value {
         "png" => Ok(PathBuf::from("screenshot.png")),
+        "jpg" | "jpeg" => Ok(PathBuf::from("screenshot.jpg")),
         "xwd" => Ok(PathBuf::from("screenshot.xwd")),
         _ => Err(CliError::Failure(format!(
-            "--format must be png or xwd, got {value:?}"
+            "--format must be png, jpeg, or xwd, got {value:?}"
         ))),
     }
 }
@@ -5577,12 +5744,30 @@ fn capture_cli_execute(
     let source = capture_frame_source_label(frame_metadata.source).to_owned();
     let captured_at_unix_ms = unix_time_ms_u64();
     let (bytes_written, stdout_bytes, output_path_label) = if let Some(output_path) = output_path {
-        let bytes_written = peekaboox_capture::write_frame_png(&frame_metadata.frame, &output_path)
-            .map_err(|error| CliError::Failure(error.to_string()))?;
+        let bytes_written = match args.format {
+            CaptureOutputFormat::Png => {
+                peekaboox_capture::write_frame_png(&frame_metadata.frame, &output_path)
+                    .map_err(|error| CliError::Failure(error.to_string()))?
+            }
+            CaptureOutputFormat::Jpeg => peekaboox_capture::write_frame_jpeg(
+                &frame_metadata.frame,
+                &output_path,
+                args.jpeg_quality,
+            )
+            .map_err(|error| CliError::Failure(error.to_string()))?,
+            CaptureOutputFormat::Xwd => unreachable!("xwd handled before frame capture"),
+        };
         (bytes_written, None, output_path.display().to_string())
     } else {
-        let bytes = peekaboox_capture::encode_frame_png(&frame_metadata.frame)
-            .map_err(|error| CliError::Failure(error.to_string()))?;
+        let bytes = match args.format {
+            CaptureOutputFormat::Png => peekaboox_capture::encode_frame_png(&frame_metadata.frame)
+                .map_err(|error| CliError::Failure(error.to_string()))?,
+            CaptureOutputFormat::Jpeg => {
+                peekaboox_capture::encode_frame_jpeg(&frame_metadata.frame, args.jpeg_quality)
+                    .map_err(|error| CliError::Failure(error.to_string()))?
+            }
+            CaptureOutputFormat::Xwd => unreachable!("xwd stdout rejected by parser"),
+        };
         (bytes.len() as u64, Some(bytes), String::new())
     };
     let semantic_tree = if args.include_semantic_tree {
@@ -5718,11 +5903,22 @@ fn unix_time_ms_u64() -> u64 {
 fn parse_capture_output_format(value: &str) -> Result<CaptureOutputFormat, CliError> {
     match value.trim().to_ascii_lowercase().as_str() {
         "png" => Ok(CaptureOutputFormat::Png),
+        "jpg" | "jpeg" => Ok(CaptureOutputFormat::Jpeg),
         "xwd" => Ok(CaptureOutputFormat::Xwd),
         other => Err(CliError::Failure(format!(
-            "invalid capture format {other:?}; expected png or xwd"
+            "invalid capture format {other:?}; expected png, jpeg, or xwd"
         ))),
     }
+}
+
+fn parse_jpeg_quality(value: &str) -> Result<u8, CliError> {
+    let quality = parse_u8("--quality", value)?;
+    if !(1..=100).contains(&quality) {
+        return Err(CliError::Failure(format!(
+            "--quality must be between 1 and 100, got {value:?}"
+        )));
+    }
+    Ok(quality)
 }
 
 fn print_capture_result_dto(metadata: &CaptureResultDto) {
@@ -8012,6 +8208,1568 @@ fn parse_hotkey_args(args: Vec<String>) -> Result<HotkeyCommand, CliError> {
     }))
 }
 
+#[derive(Debug, Clone)]
+struct SeeArgs {
+    capture: CaptureArgs,
+    id: Option<String>,
+    output_dir: Option<PathBuf>,
+    annotate: bool,
+    include_elements: bool,
+    json: bool,
+}
+
+fn see(args: Vec<String>, _context: &CliContext) -> Result<(), CliError> {
+    let args = parse_see_args(args)?;
+    let snapshot = create_snapshot(&args)?;
+    if args.json {
+        print_json_pretty(&snapshot)?;
+    } else {
+        println!(
+            "snapshot {} image={} metadata={}",
+            snapshot["id"].as_str().unwrap_or("-"),
+            snapshot["image_path"].as_str().unwrap_or("-"),
+            snapshot["metadata_path"].as_str().unwrap_or("-")
+        );
+        if let Some(path) = snapshot["annotated_path"].as_str() {
+            println!("annotated={path}");
+        }
+    }
+    Ok(())
+}
+
+fn parse_see_args(args: Vec<String>) -> Result<SeeArgs, CliError> {
+    let mut capture_args = Vec::new();
+    let mut id = None;
+    let mut output_dir = None;
+    let mut annotate = false;
+    let mut include_elements = true;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--id" | "--snapshot-id" => id = Some(parse_next_string(&args, &mut index, "--id")?),
+            "--output-dir" | "--dir" => {
+                output_dir = Some(PathBuf::from(parse_next_string(
+                    &args,
+                    &mut index,
+                    "--output-dir",
+                )?));
+            }
+            "--annotate" | "--overlay" => annotate = true,
+            "--no-elements" | "--no-semantic-tree" => include_elements = false,
+            "--json" => {
+                json = true;
+                capture_args.push("--json".to_owned());
+            }
+            "--help" | "-h" => {
+                print_see_usage();
+                return Err(CliError::HelpRequested);
+            }
+            other => capture_args.push(other.to_owned()),
+        }
+        index += 1;
+    }
+
+    capture_args.push("--include-semantic-tree".to_owned());
+    let mut capture = match parse_capture_args(capture_args)? {
+        CaptureCommand::Run(args) => args,
+        CaptureCommand::Help => {
+            print_see_usage();
+            return Err(CliError::HelpRequested);
+        }
+    };
+    if !include_elements {
+        capture.include_semantic_tree = false;
+    }
+    capture.stdout = false;
+    capture.json = true;
+    Ok(SeeArgs {
+        capture,
+        id,
+        output_dir,
+        annotate,
+        include_elements,
+        json,
+    })
+}
+
+fn create_snapshot(args: &SeeArgs) -> Result<serde_json::Value, CliError> {
+    let snapshot_id = args
+        .id
+        .clone()
+        .unwrap_or_else(|| format!("snapshot-{}-{}", std::process::id(), unix_time_ms_u64()));
+    let dir = args
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| state_dir().join("snapshots").join(&snapshot_id));
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        CliError::Failure(format!("failed to create {}: {error}", dir.display()))
+    })?;
+    let image_path = dir.join(match args.capture.format {
+        CaptureOutputFormat::Png => "screen.png",
+        CaptureOutputFormat::Jpeg => "screen.jpg",
+        CaptureOutputFormat::Xwd => "screen.xwd",
+    });
+    let mut capture = args.capture.clone();
+    capture.output = image_path.clone();
+    capture.no_overwrite = false;
+    let target = capture_target_from_args(&capture)?;
+    let result = capture_cli_execute(&capture, target)?;
+    let annotated_path = if args.annotate && capture.format != CaptureOutputFormat::Xwd {
+        let overlay = dir.join("annotated.png");
+        let options = UiElementDetectionOptions::default();
+        let _ = peekaboox_vision::detect_ui_elements_from_image_file_with_outputs(
+            &image_path,
+            &options,
+            None,
+            Some(&overlay),
+        )
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+        Some(overlay)
+    } else {
+        None
+    };
+    let metadata_path = dir.join("snapshot.json");
+    let snapshot = serde_json::json!({
+        "id": snapshot_id,
+        "schema_version": 1,
+        "created_at_unix_ms": unix_time_ms_u64(),
+        "image_path": image_path.display().to_string(),
+        "annotated_path": annotated_path.as_ref().map(|path| path.display().to_string()),
+        "metadata_path": metadata_path.display().to_string(),
+        "include_elements": args.include_elements,
+        "capture": result.metadata,
+    });
+    write_json_pretty_file(&metadata_path, &snapshot)?;
+    Ok(snapshot)
+}
+
+fn agent_command(args: Vec<String>, _context: &CliContext) -> Result<(), CliError> {
+    let mut goal = None;
+    let mut positional = Vec::new();
+    let mut dry_run = false;
+    let mut list_sessions = false;
+    let mut resume = None;
+    let mut model = None;
+    let mut max_steps = 8_u32;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "run" => {}
+            "sessions" | "list-sessions" => list_sessions = true,
+            "--goal" | "-g" => goal = Some(parse_next_string(&args, &mut index, "--goal")?),
+            "--dry-run" => dry_run = true,
+            "--resume" | "--session" => {
+                resume = Some(parse_next_string(&args, &mut index, "--resume")?)
+            }
+            "--list-sessions" => list_sessions = true,
+            "--model" => model = Some(parse_next_string(&args, &mut index, "--model")?),
+            "--max-steps" => {
+                max_steps = parse_positive_u32(
+                    "--max-steps",
+                    &parse_next_string(&args, &mut index, "--max-steps")?,
+                )?
+            }
+            "--json" => json = true,
+            "--help" | "-h" => {
+                print_agent_usage();
+                return Err(CliError::HelpRequested);
+            }
+            value if value.starts_with('-') => {
+                return Err(CliError::Failure(format!(
+                    "unknown agent argument: {value}"
+                )));
+            }
+            value => positional.push(value.to_owned()),
+        }
+        index += 1;
+    }
+
+    if list_sessions {
+        return print_agent_sessions(json);
+    }
+    let goal = goal
+        .or_else(|| (!positional.is_empty()).then(|| positional.join(" ")))
+        .ok_or_else(|| {
+            CliError::Failure("agent requires --goal or positional goal text".to_owned())
+        })?;
+    let session_id =
+        resume.unwrap_or_else(|| format!("agent-{}-{}", std::process::id(), unix_time_ms_u64()));
+    let steps = plan_agent_steps(&goal, max_steps);
+    let session_path = state_dir()
+        .join("agent")
+        .join("sessions")
+        .join(format!("{session_id}.json"));
+    let status = if dry_run { "dry-run" } else { "completed" };
+    let mut snapshot = None;
+    if !dry_run {
+        let snapshot_args = SeeArgs {
+            capture: CaptureArgs {
+                output: PathBuf::from("screen.png"),
+                region: None,
+                window_id: None,
+                app: None,
+                window_title: None,
+                title_regex: None,
+                format: CaptureOutputFormat::Png,
+                jpeg_quality: 90,
+                json: true,
+                stdout: false,
+                no_overwrite: false,
+                include_semantic_tree: true,
+            },
+            id: Some(format!("{session_id}-observe")),
+            output_dir: None,
+            annotate: false,
+            include_elements: true,
+            json: true,
+        };
+        snapshot = Some(create_snapshot(&snapshot_args)?);
+    }
+    let session = serde_json::json!({
+        "id": session_id,
+        "goal": goal,
+        "status": status,
+        "model": model.unwrap_or_else(|| "local-planner".to_owned()),
+        "max_steps": max_steps,
+        "steps": steps,
+        "snapshot": snapshot,
+        "updated_at_unix_ms": unix_time_ms_u64(),
+    });
+    write_json_pretty_file(&session_path, &session)?;
+    if json {
+        print_json_pretty(&session)?;
+    } else {
+        println!(
+            "agent session {} status={} path={}",
+            session["id"].as_str().unwrap_or("-"),
+            status,
+            session_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn plan_agent_steps(goal: &str, max_steps: u32) -> Vec<serde_json::Value> {
+    let templates = [
+        ("observe", "capture a fresh snapshot and semantic tree"),
+        ("inspect", "identify relevant windows and UI elements"),
+        ("plan", "select the safest available action path"),
+        ("act", "execute one bounded desktop action when permitted"),
+        ("verify", "capture/inspect the result before continuing"),
+    ];
+    templates
+        .iter()
+        .take(max_steps as usize)
+        .enumerate()
+        .map(|(index, (name, detail))| {
+            serde_json::json!({
+                "index": index + 1,
+                "name": name,
+                "detail": detail,
+                "goal": goal,
+            })
+        })
+        .collect()
+}
+
+fn print_agent_sessions(json: bool) -> Result<(), CliError> {
+    let dir = state_dir().join("agent").join("sessions");
+    let sessions = read_json_files_in_dir(&dir)?;
+    if json {
+        return print_json_pretty(&serde_json::json!({ "sessions": sessions }));
+    }
+    if sessions.is_empty() {
+        println!("no agent sessions");
+        return Ok(());
+    }
+    for session in sessions {
+        println!(
+            "{} status={} goal={}",
+            session["id"].as_str().unwrap_or("-"),
+            session["status"].as_str().unwrap_or("-"),
+            session["goal"].as_str().unwrap_or("-")
+        );
+    }
+    Ok(())
+}
+
+fn set_value_command(args: Vec<String>) -> Result<(), CliError> {
+    let mut selector = None;
+    let mut value = None;
+    let mut dry_run = false;
+    let mut json = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--selector" | "-s" => {
+                selector = Some(parse_next_string(&args, &mut index, "--selector")?)
+            }
+            "--id" => {
+                selector = Some(format!(
+                    "id-exact={}",
+                    parse_next_string(&args, &mut index, "--id")?
+                ))
+            }
+            "--value" | "-v" => value = Some(parse_next_string(&args, &mut index, "--value")?),
+            "--dry-run" => dry_run = true,
+            "--json" => json = true,
+            "--help" | "-h" => {
+                print_set_value_usage();
+                return Err(CliError::HelpRequested);
+            }
+            value_arg if selector.is_none() => selector = Some(value_arg.to_owned()),
+            value_arg if value.is_none() => value = Some(value_arg.to_owned()),
+            unknown => {
+                return Err(CliError::Failure(format!(
+                    "unexpected set-value argument: {unknown}"
+                )));
+            }
+        }
+        index += 1;
+    }
+    let selector = selector.ok_or_else(|| CliError::Failure("missing --selector".to_owned()))?;
+    let value = value.ok_or_else(|| CliError::Failure("missing --value".to_owned()))?;
+    if dry_run {
+        let element = peekaboox_accessibility::find_elements_by_selector(&selector)
+            .map_err(|error| CliError::Failure(error.to_string()))?
+            .elements
+            .into_iter()
+            .next()
+            .ok_or_else(|| CliError::Failure(format!("no element matched {selector:?}")))?;
+        let payload = serde_json::json!({
+            "ok": true,
+            "dry_run": true,
+            "selector": selector,
+            "value": value,
+            "element": element_dto(element),
+        });
+        if json {
+            print_json_pretty(&payload)?;
+        } else {
+            println!(
+                "would set value on {}",
+                payload["element"]["id"].as_str().unwrap_or("-")
+            );
+        }
+        return Ok(());
+    }
+    let result = peekaboox_accessibility::set_value(&selector, &value)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    let payload = serde_json::json!({
+        "ok": result.ok,
+        "backend_name": result.backend_name,
+        "backend_kind": backend_kind_label(result.backend_kind),
+        "strategy": result.strategy,
+        "value": result.value,
+        "element": element_dto(result.element),
+    });
+    if json {
+        print_json_pretty(&payload)?;
+    } else {
+        println!(
+            "set value via {} using {}",
+            payload["backend_name"].as_str().unwrap_or("-"),
+            payload["strategy"].as_str().unwrap_or("-")
+        );
+    }
+    Ok(())
+}
+
+fn perform_action_command(args: Vec<String>) -> Result<(), CliError> {
+    let mut selector = None;
+    let mut action = None;
+    let mut index_value = None;
+    let mut dry_run = false;
+    let mut json = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--selector" | "-s" => {
+                selector = Some(parse_next_string(&args, &mut index, "--selector")?)
+            }
+            "--id" => {
+                selector = Some(format!(
+                    "id-exact={}",
+                    parse_next_string(&args, &mut index, "--id")?
+                ))
+            }
+            "--action" | "-a" => action = Some(parse_next_string(&args, &mut index, "--action")?),
+            "--index" => {
+                index_value = Some(parse_i32(
+                    "--index",
+                    &parse_next_string(&args, &mut index, "--index")?,
+                )?)
+            }
+            "--dry-run" => dry_run = true,
+            "--json" => json = true,
+            "--help" | "-h" => {
+                print_perform_action_usage();
+                return Err(CliError::HelpRequested);
+            }
+            value if selector.is_none() => selector = Some(value.to_owned()),
+            value if action.is_none() => action = Some(value.to_owned()),
+            unknown => {
+                return Err(CliError::Failure(format!(
+                    "unexpected perform-action argument: {unknown}"
+                )));
+            }
+        }
+        index += 1;
+    }
+    let selector = selector.ok_or_else(|| CliError::Failure("missing --selector".to_owned()))?;
+    if dry_run {
+        let element = peekaboox_accessibility::find_elements_by_selector(&selector)
+            .map_err(|error| CliError::Failure(error.to_string()))?
+            .elements
+            .into_iter()
+            .next()
+            .ok_or_else(|| CliError::Failure(format!("no element matched {selector:?}")))?;
+        let payload = serde_json::json!({
+            "ok": true,
+            "dry_run": true,
+            "selector": selector,
+            "action": action,
+            "index": index_value,
+            "element": element_dto(element),
+        });
+        if json {
+            print_json_pretty(&payload)?;
+        } else {
+            println!(
+                "would perform action on {}",
+                payload["element"]["id"].as_str().unwrap_or("-")
+            );
+        }
+        return Ok(());
+    }
+    let result = peekaboox_accessibility::perform_action(&selector, action.as_deref(), index_value)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    let payload = serde_json::json!({
+        "ok": result.ok,
+        "backend_name": result.backend_name,
+        "backend_kind": backend_kind_label(result.backend_kind),
+        "action": result.action,
+        "action_index": result.action_index,
+        "element": element_dto(result.element),
+    });
+    if json {
+        print_json_pretty(&payload)?;
+    } else {
+        println!(
+            "performed action {} via {}",
+            payload["action"].as_str().unwrap_or("-"),
+            payload["backend_name"].as_str().unwrap_or("-")
+        );
+    }
+    Ok(())
+}
+
+fn press(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
+    let mut rewritten = vec!["--release-before".to_owned(), "--release-after".to_owned()];
+    rewritten.extend(args);
+    hotkey(rewritten, context)
+}
+
+fn swipe(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
+    let mut rewritten = Vec::new();
+    let mut has_duration = false;
+    for arg in &args {
+        if arg == "--duration-ms" {
+            has_duration = true;
+        }
+    }
+    rewritten.extend(args);
+    if !has_duration {
+        rewritten.push("--duration-ms".to_owned());
+        rewritten.push("350".to_owned());
+    }
+    drag(rewritten, context)
+}
+
+fn scroll(args: Vec<String>) -> Result<(), CliError> {
+    let mut direction = peekaboox_input::ScrollDirection::Down;
+    let mut amount = 3_u32;
+    let mut position = None;
+    let mut dry_run = false;
+    let mut json = false;
+    let mut delay_ms = 20_u64;
+    let mut bounds_policy = peekaboox_input::MoveBoundsPolicy::Allow;
+    let mut backend = peekaboox_input::InputToolSelection::Auto;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--direction" | "-d" => {
+                direction =
+                    parse_scroll_direction(&parse_next_string(&args, &mut index, "--direction")?)?
+            }
+            "--amount" | "-n" => {
+                amount = parse_positive_u32(
+                    "--amount",
+                    &parse_next_string(&args, &mut index, "--amount")?,
+                )?
+            }
+            "--at" | "--position" | "--to" => {
+                position = Some(parse_point(
+                    "--at",
+                    &parse_next_string(&args, &mut index, "--at")?,
+                )?)
+            }
+            "--delay-ms" => {
+                delay_ms = parse_u64(
+                    "--delay-ms",
+                    &parse_next_string(&args, &mut index, "--delay-ms")?,
+                )?
+            }
+            "--bounds" => {
+                bounds_policy =
+                    parse_move_bounds_policy(&parse_next_string(&args, &mut index, "--bounds")?)?
+            }
+            "--backend" => {
+                backend = parse_hotkey_backend_selection(&parse_next_string(
+                    &args,
+                    &mut index,
+                    "--backend",
+                )?)?
+            }
+            "--dry-run" => dry_run = true,
+            "--json" => json = true,
+            "--help" | "-h" => {
+                print_scroll_usage();
+                return Err(CliError::HelpRequested);
+            }
+            "up" => direction = peekaboox_input::ScrollDirection::Up,
+            "down" => direction = peekaboox_input::ScrollDirection::Down,
+            "left" => direction = peekaboox_input::ScrollDirection::Left,
+            "right" => direction = peekaboox_input::ScrollDirection::Right,
+            value => {
+                return Err(CliError::Failure(format!(
+                    "unknown scroll argument: {value}"
+                )));
+            }
+        }
+        index += 1;
+    }
+    let action = peekaboox_input::InputAction::Scroll {
+        direction,
+        amount,
+        position,
+    };
+    let metadata = if dry_run {
+        let backend = peekaboox_input::CommandInputBackend
+            .detect_backend_for_with_selection(&action, backend)
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+        ActionResultDto {
+            backend_name: backend.name().to_owned(),
+            backend_kind: format!("{:?}", backend.backend_kind()).to_ascii_lowercase(),
+        }
+    } else {
+        input_metadata_dto(
+            peekaboox_input::scroll_with_options(
+                direction,
+                amount,
+                position,
+                peekaboox_input::ScrollOptions {
+                    backend,
+                    bounds_policy,
+                    delay_ms,
+                },
+            )
+            .map_err(|error| CliError::Failure(error.to_string()))?,
+        )
+    };
+    if json {
+        print_json_pretty(&serde_json::json!({
+            "ok": true,
+            "dry_run": dry_run,
+            "direction": direction.name(),
+            "amount": amount,
+            "position": position.map(|point| serde_json::json!({"x": point.x, "y": point.y})),
+            "backend_name": metadata.backend_name,
+            "backend_kind": metadata.backend_kind,
+        }))?;
+    } else if dry_run {
+        println!(
+            "would scroll {} {} via {}",
+            amount,
+            direction.name(),
+            metadata.backend_name
+        );
+    } else {
+        println!(
+            "scrolled {} {} via {}",
+            amount,
+            direction.name(),
+            metadata.backend_name
+        );
+    }
+    Ok(())
+}
+
+fn parse_scroll_direction(value: &str) -> Result<peekaboox_input::ScrollDirection, CliError> {
+    match value {
+        "up" => Ok(peekaboox_input::ScrollDirection::Up),
+        "down" => Ok(peekaboox_input::ScrollDirection::Down),
+        "left" => Ok(peekaboox_input::ScrollDirection::Left),
+        "right" => Ok(peekaboox_input::ScrollDirection::Right),
+        _ => Err(CliError::Failure(format!(
+            "--direction must be up, down, left, or right, got {value:?}"
+        ))),
+    }
+}
+
+fn app_command(args: Vec<String>) -> Result<(), CliError> {
+    let Some((command, rest)) = args.split_first() else {
+        print_app_usage();
+        return Err(CliError::HelpRequested);
+    };
+    match command.as_str() {
+        "list" => list_apps(rest),
+        "launch" | "open" => launch_app(rest),
+        "focus" => focus_app_command(rest),
+        "quit" | "kill" => quit_app(rest),
+        "--help" | "-h" | "help" => {
+            print_app_usage();
+            Err(CliError::HelpRequested)
+        }
+        other => Err(CliError::Failure(format!("unknown app command: {other}"))),
+    }
+}
+
+fn list_apps(args: &[String]) -> Result<(), CliError> {
+    let json = args.iter().any(|arg| arg == "--json");
+    let entries = desktop_entries()?;
+    if json {
+        return print_json_pretty(&serde_json::json!({ "apps": entries }));
+    }
+    for entry in entries {
+        println!(
+            "{} name={} path={}",
+            entry["id"].as_str().unwrap_or("-"),
+            entry["name"].as_str().unwrap_or("-"),
+            entry["path"].as_str().unwrap_or("-")
+        );
+    }
+    Ok(())
+}
+
+fn launch_app(args: &[String]) -> Result<(), CliError> {
+    let mut target = None;
+    let mut dry_run = false;
+    let mut json = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--id" | "--app" | "--desktop-id" => {
+                target = Some(require_slice_value(args, &mut index, "--id")?)
+            }
+            "--dry-run" => dry_run = true,
+            "--json" => json = true,
+            value if target.is_none() => target = Some(value.to_owned()),
+            value => {
+                return Err(CliError::Failure(format!(
+                    "unexpected app launch argument: {value}"
+                )));
+            }
+        }
+        index += 1;
+    }
+    let target = target.ok_or_else(|| CliError::Failure("missing app id or command".to_owned()))?;
+    let command = launch_app_command(&target);
+    if dry_run {
+        let payload =
+            serde_json::json!({"ok": true, "dry_run": true, "target": target, "command": command});
+        if json {
+            print_json_pretty(&payload)?;
+        } else {
+            println!("would launch {}", payload["target"].as_str().unwrap_or("-"));
+        }
+        return Ok(());
+    }
+    run_command_vec_cli(&command.0, &command.1)?;
+    if json {
+        print_json_pretty(
+            &serde_json::json!({"ok": true, "target": target, "program": command.0, "args": command.1}),
+        )?;
+    } else {
+        println!("launched {target}");
+    }
+    Ok(())
+}
+
+fn focus_app_command(args: &[String]) -> Result<(), CliError> {
+    let mut app = None;
+    let mut json = false;
+    for arg in args {
+        if arg == "--json" {
+            json = true;
+        } else if app.is_none() {
+            app = Some(arg.clone());
+        } else {
+            return Err(CliError::Failure(format!(
+                "unexpected app focus argument: {arg}"
+            )));
+        }
+    }
+    let app = app.ok_or_else(|| CliError::Failure("missing app name".to_owned()))?;
+    let result = peekaboox_desktop::focus_app(&app, &FocusOptions::default())
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    if json {
+        print_desktop_action_result_json(&result)?;
+    } else {
+        print_desktop_action_result(result);
+    }
+    Ok(())
+}
+
+fn quit_app(args: &[String]) -> Result<(), CliError> {
+    let app = args
+        .iter()
+        .find(|arg| !arg.starts_with('-'))
+        .ok_or_else(|| CliError::Failure("missing app process name".to_owned()))?;
+    run_command_vec_cli("pkill", &["-f".to_owned(), app.clone()])?;
+    println!("sent quit signal to {app}");
+    Ok(())
+}
+
+fn launcher_command(args: Vec<String>) -> Result<(), CliError> {
+    let Some((command, rest)) = args.split_first() else {
+        return list_apps(&[]);
+    };
+    match command.as_str() {
+        "list" => list_apps(rest),
+        "open" | "launch" => launch_app(rest),
+        "--help" | "-h" | "help" => {
+            print_launcher_usage();
+            Err(CliError::HelpRequested)
+        }
+        value => launch_app(args.as_slice()).or_else(|_| {
+            Err(CliError::Failure(format!(
+                "unknown launcher command: {value}"
+            )))
+        }),
+    }
+}
+
+fn window_command(args: Vec<String>) -> Result<(), CliError> {
+    let Some((command, rest)) = args.split_first() else {
+        return windows(
+            Vec::new(),
+            &CliContext {
+                use_daemon: false,
+                socket: default_socket_path(),
+            },
+        );
+    };
+    match command.as_str() {
+        "list" => windows(
+            rest.to_vec(),
+            &CliContext {
+                use_daemon: false,
+                socket: default_socket_path(),
+            },
+        ),
+        "focus" | "activate" => window_xdotool_action(rest, "windowactivate"),
+        "close" => window_xdotool_action(rest, "windowclose"),
+        "minimize" => window_xdotool_action(rest, "windowminimize"),
+        "move" => window_move_or_resize(rest, true),
+        "resize" => window_move_or_resize(rest, false),
+        "maximize" => window_wmctrl_state(rest, "add,maximized_vert,maximized_horz"),
+        "unmaximize" | "restore" => {
+            window_wmctrl_state(rest, "remove,maximized_vert,maximized_horz")
+        }
+        "fullscreen" => window_wmctrl_state(rest, "toggle,fullscreen"),
+        "--help" | "-h" | "help" => {
+            print_window_usage();
+            Err(CliError::HelpRequested)
+        }
+        other => Err(CliError::Failure(format!(
+            "unknown window command: {other}"
+        ))),
+    }
+}
+
+fn window_xdotool_action(args: &[String], action: &str) -> Result<(), CliError> {
+    let (id, dry_run, json) = resolve_window_action_args(args)?;
+    if dry_run {
+        print_window_action_json_or_text(json, true, action, &id)?;
+        return Ok(());
+    }
+    run_command_vec_cli("xdotool", &[action.to_owned(), id.clone()])?;
+    print_window_action_json_or_text(json, false, action, &id)
+}
+
+fn window_move_or_resize(args: &[String], move_window: bool) -> Result<(), CliError> {
+    let mut id_args = Vec::new();
+    let mut x = None;
+    let mut y = None;
+    let mut width = None;
+    let mut height = None;
+    let mut dry_run = false;
+    let mut json = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--x" => {
+                x = Some(parse_i32(
+                    "--x",
+                    &require_slice_value(args, &mut index, "--x")?,
+                )?)
+            }
+            "--y" => {
+                y = Some(parse_i32(
+                    "--y",
+                    &require_slice_value(args, &mut index, "--y")?,
+                )?)
+            }
+            "--width" | "-w" => {
+                width = Some(parse_positive_u32(
+                    "--width",
+                    &require_slice_value(args, &mut index, "--width")?,
+                )?)
+            }
+            "--height" | "-h" => {
+                height = Some(parse_positive_u32(
+                    "--height",
+                    &require_slice_value(args, &mut index, "--height")?,
+                )?)
+            }
+            "--dry-run" => dry_run = true,
+            "--json" => json = true,
+            value => id_args.push(value.to_owned()),
+        }
+        index += 1;
+    }
+    let (id, _, _) = resolve_window_action_args(&id_args)?;
+    let (program, command_args, label) = if move_window {
+        let x = x.ok_or_else(|| CliError::Failure("window move requires --x".to_owned()))?;
+        let y = y.ok_or_else(|| CliError::Failure("window move requires --y".to_owned()))?;
+        (
+            "xdotool",
+            vec![
+                "windowmove".to_owned(),
+                id.clone(),
+                x.to_string(),
+                y.to_string(),
+            ],
+            "windowmove",
+        )
+    } else {
+        let width =
+            width.ok_or_else(|| CliError::Failure("window resize requires --width".to_owned()))?;
+        let height = height
+            .ok_or_else(|| CliError::Failure("window resize requires --height".to_owned()))?;
+        (
+            "xdotool",
+            vec![
+                "windowsize".to_owned(),
+                id.clone(),
+                width.to_string(),
+                height.to_string(),
+            ],
+            "windowsize",
+        )
+    };
+    if !dry_run {
+        run_command_vec_cli(program, &command_args)?;
+    }
+    print_window_action_json_or_text(json, dry_run, label, &id)
+}
+
+fn window_wmctrl_state(args: &[String], state: &str) -> Result<(), CliError> {
+    let (id, dry_run, json) = resolve_window_action_args(args)?;
+    if !dry_run {
+        run_command_vec_cli(
+            "wmctrl",
+            &[
+                "-ir".to_owned(),
+                id.clone(),
+                "-b".to_owned(),
+                state.to_owned(),
+            ],
+        )?;
+    }
+    print_window_action_json_or_text(json, dry_run, state, &id)
+}
+
+fn resolve_window_action_args(args: &[String]) -> Result<(String, bool, bool), CliError> {
+    let mut id = None;
+    let mut app = None;
+    let mut title = None;
+    let mut dry_run = false;
+    let mut json = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--id" | "--window-id" => id = Some(require_slice_value(args, &mut index, "--id")?),
+            "--app" => app = Some(require_slice_value(args, &mut index, "--app")?),
+            "--title" | "--window-title" => {
+                title = Some(require_slice_value(args, &mut index, "--title")?)
+            }
+            "--dry-run" => dry_run = true,
+            "--json" => json = true,
+            value if id.is_none() => id = Some(value.to_owned()),
+            value => {
+                return Err(CliError::Failure(format!(
+                    "unexpected window argument: {value}"
+                )));
+            }
+        }
+        index += 1;
+    }
+    let id = match id {
+        Some(id) => id,
+        None => resolve_window_id(app, title)?,
+    };
+    Ok((id, dry_run, json))
+}
+
+fn resolve_window_id(app: Option<String>, title: Option<String>) -> Result<String, CliError> {
+    let metadata = peekaboox_windows::list_windows_with_query(peekaboox_windows::WindowQuery {
+        app,
+        title,
+        limit: Some(1),
+        sort: peekaboox_windows::WindowSort::Focused,
+        ..peekaboox_windows::WindowQuery::default()
+    })
+    .map_err(|error| CliError::Failure(error.to_string()))?;
+    metadata
+        .windows
+        .into_iter()
+        .next()
+        .map(|window| window.id)
+        .ok_or_else(|| CliError::Failure("no window matched filters".to_owned()))
+}
+
+fn print_window_action_json_or_text(
+    json: bool,
+    dry_run: bool,
+    action: &str,
+    id: &str,
+) -> Result<(), CliError> {
+    if json {
+        print_json_pretty(&serde_json::json!({
+            "ok": true,
+            "dry_run": dry_run,
+            "action": action,
+            "window_id": id,
+        }))
+    } else {
+        println!(
+            "{} window {} action={}",
+            if dry_run { "would update" } else { "updated" },
+            id,
+            action
+        );
+        Ok(())
+    }
+}
+
+fn dialog_command(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
+    let Some((command, rest)) = args.split_first() else {
+        return elements(
+            vec![
+                "--role-regex".to_owned(),
+                "dialog|file chooser|alert".to_owned(),
+            ],
+            context,
+        );
+    };
+    match command.as_str() {
+        "list" => elements(
+            [
+                "--role-regex".to_owned(),
+                "dialog|file chooser|alert".to_owned(),
+            ]
+            .into_iter()
+            .chain(rest.to_vec())
+            .collect(),
+            context,
+        ),
+        "click" => {
+            let label = rest
+                .first()
+                .ok_or_else(|| CliError::Failure("dialog click requires label".to_owned()))?;
+            click(
+                vec![
+                    "--selector".to_owned(),
+                    format!("role=push button,label={label}"),
+                ],
+                context,
+            )
+        }
+        "accept" | "ok" => click(
+            vec![
+                "--selector".to_owned(),
+                "role=push button,label=OK".to_owned(),
+                "--vision-fallback".to_owned(),
+            ],
+            context,
+        ),
+        "cancel" => click(
+            vec![
+                "--selector".to_owned(),
+                "role=push button,label=Cancel".to_owned(),
+                "--vision-fallback".to_owned(),
+            ],
+            context,
+        ),
+        "type" | "set-value" => {
+            let selector = rest
+                .first()
+                .ok_or_else(|| CliError::Failure("dialog type requires selector".to_owned()))?;
+            let text = rest
+                .get(1)
+                .ok_or_else(|| CliError::Failure("dialog type requires text".to_owned()))?;
+            set_value_command(vec![selector.clone(), text.clone()])
+        }
+        "--help" | "-h" | "help" => {
+            print_dialog_usage();
+            Err(CliError::HelpRequested)
+        }
+        other => Err(CliError::Failure(format!(
+            "unknown dialog command: {other}"
+        ))),
+    }
+}
+
+fn menu_command(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
+    let Some((command, rest)) = args.split_first() else {
+        return elements(
+            vec![
+                "--role-regex".to_owned(),
+                "menu|menu item|menu bar|status".to_owned(),
+            ],
+            context,
+        );
+    };
+    match command.as_str() {
+        "list" => elements(
+            [
+                "--role-regex".to_owned(),
+                "menu|menu item|menu bar|status".to_owned(),
+            ]
+            .into_iter()
+            .chain(rest.to_vec())
+            .collect(),
+            context,
+        ),
+        "click" | "open" => {
+            let label = rest
+                .first()
+                .ok_or_else(|| CliError::Failure("menu click requires label".to_owned()))?;
+            click(
+                vec![
+                    "--selector".to_owned(),
+                    format!("role-regex=menu|menu item|status,label={label}"),
+                    "--vision-fallback".to_owned(),
+                ],
+                context,
+            )
+        }
+        "--help" | "-h" | "help" => {
+            print_menu_usage();
+            Err(CliError::HelpRequested)
+        }
+        other => Err(CliError::Failure(format!("unknown menu command: {other}"))),
+    }
+}
+
+fn workspace_command(args: Vec<String>) -> Result<(), CliError> {
+    let Some((command, rest)) = args.split_first() else {
+        return workspace_list(false);
+    };
+    match command.as_str() {
+        "list" => workspace_list(rest.iter().any(|arg| arg == "--json")),
+        "switch" => {
+            let index = rest
+                .first()
+                .ok_or_else(|| CliError::Failure("workspace switch requires index".to_owned()))?;
+            run_command_vec_cli("wmctrl", &["-s".to_owned(), index.clone()])?;
+            println!("switched workspace {index}");
+            Ok(())
+        }
+        "move-window" => {
+            let id = rest.first().ok_or_else(|| {
+                CliError::Failure("workspace move-window requires window id".to_owned())
+            })?;
+            let workspace = rest.get(1).ok_or_else(|| {
+                CliError::Failure("workspace move-window requires workspace index".to_owned())
+            })?;
+            run_command_vec_cli(
+                "wmctrl",
+                &[
+                    "-ir".to_owned(),
+                    id.clone(),
+                    "-t".to_owned(),
+                    workspace.clone(),
+                ],
+            )?;
+            println!("moved window {id} to workspace {workspace}");
+            Ok(())
+        }
+        "--help" | "-h" | "help" => {
+            print_workspace_usage();
+            Err(CliError::HelpRequested)
+        }
+        other => Err(CliError::Failure(format!(
+            "unknown workspace command: {other}"
+        ))),
+    }
+}
+
+fn workspace_list(json: bool) -> Result<(), CliError> {
+    let output = run_command_capture_cli("wmctrl", &["-d".to_owned()])?;
+    let workspaces = output
+        .lines()
+        .map(|line| serde_json::json!({ "raw": line }))
+        .collect::<Vec<_>>();
+    if json {
+        print_json_pretty(&serde_json::json!({ "workspaces": workspaces }))
+    } else {
+        print!("{output}");
+        Ok(())
+    }
+}
+
+fn config_command(args: Vec<String>) -> Result<(), CliError> {
+    let path = config_path();
+    let Some((command, rest)) = args.split_first() else {
+        return config_show(&path);
+    };
+    match command.as_str() {
+        "path" => {
+            println!("{}", path.display());
+            Ok(())
+        }
+        "show" => config_show(&path),
+        "init" => {
+            let config = default_config();
+            write_json_pretty_file(&path, &config)?;
+            println!("created {}", path.display());
+            Ok(())
+        }
+        "get" => {
+            let key = rest
+                .first()
+                .ok_or_else(|| CliError::Failure("config get requires key".to_owned()))?;
+            let config = read_config_json(&path)?;
+            println!(
+                "{}",
+                config
+                    .pointer(&json_pointer_for_key(key))
+                    .unwrap_or(&serde_json::Value::Null)
+            );
+            Ok(())
+        }
+        "set" => {
+            let key = rest
+                .first()
+                .ok_or_else(|| CliError::Failure("config set requires key".to_owned()))?;
+            let value = rest
+                .get(1)
+                .ok_or_else(|| CliError::Failure("config set requires value".to_owned()))?;
+            let mut config = read_config_json(&path).unwrap_or_else(|_| default_config());
+            set_json_key(&mut config, key, parse_jsonish_value(value));
+            write_json_pretty_file(&path, &config)?;
+            println!("updated {}", path.display());
+            Ok(())
+        }
+        "--help" | "-h" | "help" => {
+            print_config_usage();
+            Err(CliError::HelpRequested)
+        }
+        other => Err(CliError::Failure(format!(
+            "unknown config command: {other}"
+        ))),
+    }
+}
+
+fn config_show(path: &Path) -> Result<(), CliError> {
+    let config = read_config_json(path).unwrap_or_else(|_| default_config());
+    print_json_pretty(&config)
+}
+
+fn permissions_command(args: Vec<String>) -> Result<(), CliError> {
+    let json = args.iter().any(|arg| arg == "--json");
+    let checks = serde_json::json!({
+        "uinput_writable": std::fs::OpenOptions::new().write(true).open("/dev/uinput").is_ok(),
+        "commands": {
+            "xdotool": command_exists_cli("xdotool"),
+            "ydotool": command_exists_cli("ydotool"),
+            "wtype": command_exists_cli("wtype"),
+            "wl-copy": command_exists_cli("wl-copy"),
+            "wmctrl": command_exists_cli("wmctrl"),
+            "tesseract": command_exists_cli("tesseract"),
+        },
+        "hints": [
+            "Install ydotool and grant /dev/uinput access for global Wayland input.",
+            "Install wmctrl/xdotool for X11 window and workspace management.",
+            "Run peekaboox doctor --json for full diagnostics."
+        ],
+    });
+    if json {
+        print_json_pretty(&checks)
+    } else {
+        println!("uinput_writable={}", checks["uinput_writable"]);
+        println!(
+            "xdotool={} ydotool={} wtype={} wmctrl={}",
+            checks["commands"]["xdotool"],
+            checks["commands"]["ydotool"],
+            checks["commands"]["wtype"],
+            checks["commands"]["wmctrl"]
+        );
+        Ok(())
+    }
+}
+
+fn tools_command(args: Vec<String>) -> Result<(), CliError> {
+    let json = args.iter().any(|arg| arg == "--json");
+    let commands = cli_command_registry();
+    if json {
+        print_json_pretty(&serde_json::json!({ "commands": commands }))
+    } else {
+        println!("{}", commands.join("\n"));
+        Ok(())
+    }
+}
+
+fn completions_command(args: Vec<String>) -> Result<(), CliError> {
+    let shell = args.first().map(String::as_str).unwrap_or("bash");
+    let commands = cli_command_registry().join(" ");
+    match shell {
+        "bash" => println!("complete -W \"{commands}\" peekaboox"),
+        "zsh" => println!("#compdef peekaboox\n_arguments '1:command:({commands})'"),
+        "fish" => {
+            for command in cli_command_registry() {
+                println!("complete -c peekaboox -f -a {command}");
+            }
+        }
+        "--help" | "-h" | "help" => {
+            print_completions_usage();
+            return Err(CliError::HelpRequested);
+        }
+        other => {
+            return Err(CliError::Failure(format!(
+                "unsupported completion shell: {other}; expected bash, zsh, or fish"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn clean_command(args: Vec<String>) -> Result<(), CliError> {
+    let mut all = false;
+    let mut dry_run = false;
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--all" => all = true,
+            "--dry-run" => dry_run = true,
+            "--json" => json = true,
+            "--help" | "-h" => {
+                print_clean_usage();
+                return Err(CliError::HelpRequested);
+            }
+            other => {
+                return Err(CliError::Failure(format!(
+                    "unknown clean argument: {other}"
+                )));
+            }
+        }
+    }
+    let targets = if all {
+        vec![
+            state_dir().join("snapshots"),
+            state_dir().join("agent").join("sessions"),
+        ]
+    } else {
+        vec![state_dir().join("snapshots")]
+    };
+    let mut removed = Vec::new();
+    for target in targets {
+        if !target.exists() {
+            continue;
+        }
+        removed.push(target.display().to_string());
+        if !dry_run {
+            std::fs::remove_dir_all(&target).map_err(|error| {
+                CliError::Failure(format!("failed to remove {}: {error}", target.display()))
+            })?;
+        }
+    }
+    if json {
+        print_json_pretty(&serde_json::json!({"dry_run": dry_run, "removed": removed}))
+    } else {
+        println!(
+            "{} {} paths",
+            if dry_run { "would remove" } else { "removed" },
+            removed.len()
+        );
+        Ok(())
+    }
+}
+
+fn desktop_entries() -> Result<Vec<serde_json::Value>, CliError> {
+    let mut dirs = vec![PathBuf::from("/usr/share/applications")];
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join(".local/share/applications"));
+    }
+    let mut entries = Vec::new();
+    for dir in dirs {
+        let Ok(read_dir) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("desktop") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            if content.lines().any(|line| line.trim() == "NoDisplay=true") {
+                continue;
+            }
+            let name = content
+                .lines()
+                .find_map(|line| line.strip_prefix("Name="))
+                .unwrap_or_else(|| {
+                    path.file_stem()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("-")
+                });
+            let id = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("-")
+                .to_owned();
+            entries.push(serde_json::json!({
+                "id": id,
+                "name": name,
+                "path": path.display().to_string(),
+            }));
+        }
+    }
+    entries.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+    Ok(entries)
+}
+
+fn launch_app_command(target: &str) -> (String, Vec<String>) {
+    if target.contains("://") || Path::new(target).exists() {
+        return ("xdg-open".to_owned(), vec![target.to_owned()]);
+    }
+    if command_exists_cli("gtk-launch") {
+        return ("gtk-launch".to_owned(), vec![target.to_owned()]);
+    }
+    let mut parts = target.split_whitespace();
+    let program = parts.next().unwrap_or(target).to_owned();
+    let args = parts.map(str::to_owned).collect::<Vec<_>>();
+    (program, args)
+}
+
+fn read_json_files_in_dir(dir: &Path) -> Result<Vec<serde_json::Value>, CliError> {
+    let mut values = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(values);
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+            values.push(value);
+        }
+    }
+    values.sort_by(|left, right| {
+        left["updated_at_unix_ms"]
+            .as_u64()
+            .cmp(&right["updated_at_unix_ms"].as_u64())
+            .reverse()
+    });
+    Ok(values)
+}
+
+fn state_dir() -> PathBuf {
+    if let Some(value) = std::env::var_os("XDG_STATE_HOME") {
+        return PathBuf::from(value).join("peekaboox");
+    }
+    home_dir().join(".local/state/peekaboox")
+}
+
+fn config_path() -> PathBuf {
+    if let Some(value) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(value).join("peekaboox/config.json");
+    }
+    home_dir().join(".config/peekaboox/config.json")
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn default_config() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "capture": {
+            "format": "png",
+            "jpeg_quality": 90
+        },
+        "input": {
+            "backend": "auto",
+            "bounds_policy": "allow"
+        },
+        "mcp": {
+            "transport": "stdio",
+            "host": "127.0.0.1",
+            "port": 47778
+        }
+    })
+}
+
+fn read_config_json(path: &Path) -> Result<serde_json::Value, CliError> {
+    let content = std::fs::read_to_string(path).map_err(|error| {
+        CliError::Failure(format!("failed to read {}: {error}", path.display()))
+    })?;
+    serde_json::from_str(&content).map_err(|error| {
+        CliError::Failure(format!(
+            "invalid config JSON in {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn json_pointer_for_key(key: &str) -> String {
+    format!("/{}", key.replace('.', "/"))
+}
+
+fn set_json_key(root: &mut serde_json::Value, key: &str, value: serde_json::Value) {
+    let parts = key
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return;
+    }
+    let mut current = root;
+    for part in &parts[..parts.len() - 1] {
+        if !current.is_object() {
+            *current = serde_json::json!({});
+        }
+        current = current
+            .as_object_mut()
+            .expect("object ensured")
+            .entry((*part).to_owned())
+            .or_insert_with(|| serde_json::json!({}));
+    }
+    if !current.is_object() {
+        *current = serde_json::json!({});
+    }
+    current
+        .as_object_mut()
+        .expect("object ensured")
+        .insert(parts[parts.len() - 1].to_owned(), value);
+}
+
+fn parse_jsonish_value(value: &str) -> serde_json::Value {
+    serde_json::from_str(value).unwrap_or_else(|_| serde_json::Value::String(value.to_owned()))
+}
+
+fn cli_command_registry() -> Vec<&'static str> {
+    vec![
+        "agent",
+        "app",
+        "capture",
+        "capture-backends",
+        "capture-delta",
+        "capture-dmabuf",
+        "clean",
+        "click",
+        "compare",
+        "completions",
+        "config",
+        "desktop",
+        "dialog",
+        "dock",
+        "elements",
+        "hotkey",
+        "image",
+        "launcher",
+        "menu",
+        "menubar",
+        "move",
+        "ocr",
+        "paste",
+        "perform-action",
+        "permissions",
+        "plugins",
+        "plugin-call",
+        "press",
+        "scroll",
+        "see",
+        "set-value",
+        "state",
+        "swipe",
+        "tools",
+        "vision-elements",
+        "window",
+        "windows",
+        "workspace",
+    ]
+}
+
+fn run_command_vec_cli(program: &str, args: &[String]) -> Result<(), CliError> {
+    let output = Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| CliError::Failure(format!("failed to run {program}: {error}")))?;
+    if !output.status.success() {
+        return Err(CliError::Failure(format!(
+            "{program} failed with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+fn run_command_capture_cli(program: &str, args: &[String]) -> Result<String, CliError> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| CliError::Failure(format!("failed to run {program}: {error}")))?;
+    if !output.status.success() {
+        return Err(CliError::Failure(format!(
+            "{program} failed with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn command_exists_cli(command: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|path| path.join(command).is_file()))
+}
+
+fn require_slice_value(args: &[String], index: &mut usize, name: &str) -> Result<String, CliError> {
+    *index += 1;
+    args.get(*index)
+        .cloned()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| CliError::Failure(format!("missing value for {name}")))
+}
+
 fn parse_i32(name: &str, value: &str) -> Result<i32, CliError> {
     value
         .parse::<i32>()
@@ -8502,9 +10260,11 @@ fn write_json_pretty_file(path: &Path, value: &impl serde::Serialize) -> Result<
 
 fn print_usage() {
     println!(
-        "Usage: peekaboox [--daemon] [--socket <path>] <capture|capture-delta|capture-backends|capture-dmabuf|plugins|plugin-call|windows|elements|ocr|compare|state|vision-elements|desktop|doctor|click|move|drag|type|paste|hotkey>"
+        "Usage: peekaboox [--daemon] [--socket <path>] <capture|see|agent|windows|window|elements|set-value|perform-action|ocr|compare|state|vision-elements|desktop|doctor|click|move|drag|swipe|type|paste|hotkey|press|scroll|app|launcher|workspace|dialog|menu|config|permissions|tools|completions|clean>"
     );
     println!("Try:   peekaboox capture --output screenshot.png");
+    println!("Try:   peekaboox see --annotate --json");
+    println!("Try:   peekaboox agent --goal \"Inspect the current desktop\" --dry-run");
     println!("Try:   peekaboox --daemon capture-delta --stream agent-loop");
     println!("Try:   peekaboox capture-backends");
     println!("Try:   peekaboox capture-dmabuf");
@@ -8526,13 +10286,15 @@ fn print_usage() {
     println!("Try:   peekaboox click --text \"Submit\"");
     println!("Try:   peekaboox move --x 100 --y 200");
     println!("Try:   peekaboox drag --from 100,200 --to 300,240 --duration-ms 350");
+    println!("Try:   peekaboox scroll down --amount 3 --dry-run");
     println!("Try:   peekaboox type \"Hello World\"");
     println!("Try:   peekaboox hotkey ctrl+s");
+    println!("Try:   peekaboox tools");
 }
 
 fn print_capture_usage() {
     println!(
-        "Usage: peekaboox capture [--output <path>|--stdout] [--format png|xwd] [--region x,y,width,height] [--window-id <id>|--app <name>|--window-title <text>|--title-regex <regex>] [--json] [--include-semantic-tree] [--no-overwrite]"
+        "Usage: peekaboox capture [--output <path>|--stdout] [--format png|jpeg|xwd] [--quality 1..100] [--region x,y,width,height] [--window-id <id>|--app <name>|--window-title <text>|--title-regex <regex>] [--json] [--include-semantic-tree] [--no-overwrite]"
     );
 }
 
@@ -8544,7 +10306,7 @@ fn print_capture_delta_usage() {
 
 fn print_capture_backends_usage() {
     println!(
-        "Usage: peekaboox [--daemon] capture-backends [--output <path>|--format png|xwd] [--region x,y,width,height] [--diagnose|--all] [--probe none|file|frame|region|dmabuf|all] [--json]"
+        "Usage: peekaboox [--daemon] capture-backends [--output <path>|--format png|jpeg|xwd] [--region x,y,width,height] [--diagnose|--all] [--probe none|file|frame|region|dmabuf|all] [--json]"
     );
 }
 
@@ -8664,6 +10426,90 @@ fn print_hotkey_usage() {
     );
 }
 
+fn print_see_usage() {
+    println!(
+        "Usage: peekaboox see [capture options] [--id <snapshot-id>] [--output-dir <dir>] [--annotate] [--no-elements] [--json]"
+    );
+}
+
+fn print_agent_usage() {
+    println!(
+        "Usage: peekaboox agent [run] --goal <goal> [--dry-run] [--resume <session-id>] [--model <name>] [--max-steps <n>] [--json]"
+    );
+    println!("       peekaboox agent list-sessions [--json]");
+}
+
+fn print_set_value_usage() {
+    println!(
+        "Usage: peekaboox set-value --selector <query>|--id <element-id> --value <text-or-number> [--dry-run] [--json]"
+    );
+}
+
+fn print_perform_action_usage() {
+    println!(
+        "Usage: peekaboox perform-action --selector <query>|--id <element-id> [--action <name>|--index <n>] [--dry-run] [--json]"
+    );
+}
+
+fn print_scroll_usage() {
+    println!(
+        "Usage: peekaboox scroll [up|down|left|right|--direction <dir>] [--amount <n>] [--at x,y] [--delay-ms <ms>] [--bounds allow|clamp|fail] [--backend auto|ydotool|xdotool] [--dry-run] [--json]"
+    );
+}
+
+fn print_app_usage() {
+    println!("Usage: peekaboox app list [--json]");
+    println!("       peekaboox app launch <desktop-id|command|uri> [--dry-run] [--json]");
+    println!("       peekaboox app focus <app>");
+    println!("       peekaboox app quit <process-name>");
+}
+
+fn print_launcher_usage() {
+    println!("Usage: peekaboox launcher list [--json]");
+    println!("       peekaboox launcher open <desktop-id|command|uri>");
+}
+
+fn print_window_usage() {
+    println!("Usage: peekaboox window list [windows filters]");
+    println!(
+        "       peekaboox window focus|close|minimize|maximize|unmaximize|fullscreen [--id <id>|--app <app>|--title <text>] [--dry-run] [--json]"
+    );
+    println!("       peekaboox window move --id <id> --x <px> --y <px>");
+    println!("       peekaboox window resize --id <id> --width <px> --height <px>");
+}
+
+fn print_dialog_usage() {
+    println!("Usage: peekaboox dialog list [elements filters]");
+    println!("       peekaboox dialog click <label>");
+    println!("       peekaboox dialog accept|cancel");
+    println!("       peekaboox dialog type <selector> <text>");
+}
+
+fn print_menu_usage() {
+    println!("Usage: peekaboox menu list [elements filters]");
+    println!("       peekaboox menu click <label>");
+}
+
+fn print_workspace_usage() {
+    println!("Usage: peekaboox workspace list [--json]");
+    println!("       peekaboox workspace switch <index>");
+    println!("       peekaboox workspace move-window <window-id> <index>");
+}
+
+fn print_config_usage() {
+    println!("Usage: peekaboox config show|init|path");
+    println!("       peekaboox config get <key>");
+    println!("       peekaboox config set <key> <json-or-string>");
+}
+
+fn print_completions_usage() {
+    println!("Usage: peekaboox completions <bash|zsh|fish>");
+}
+
+fn print_clean_usage() {
+    println!("Usage: peekaboox clean [--all] [--dry-run] [--json]");
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -8710,6 +10556,7 @@ mod tests {
                 window_title: None,
                 title_regex: None,
                 format: CaptureOutputFormat::Png,
+                jpeg_quality: 90,
                 json: false,
                 stdout: false,
                 no_overwrite: false,
@@ -8755,6 +10602,7 @@ mod tests {
                 window_title: None,
                 title_regex: None,
                 format: CaptureOutputFormat::Png,
+                jpeg_quality: 90,
                 json: false,
                 stdout: false,
                 no_overwrite: false,
@@ -8785,6 +10633,7 @@ mod tests {
                 window_title: None,
                 title_regex: None,
                 format: CaptureOutputFormat::Png,
+                jpeg_quality: 90,
                 json: false,
                 stdout: false,
                 no_overwrite: false,
@@ -8801,6 +10650,7 @@ mod tests {
                 window_title: None,
                 title_regex: None,
                 format: CaptureOutputFormat::Png,
+                jpeg_quality: 90,
                 json: false,
                 stdout: false,
                 no_overwrite: false,
@@ -8838,6 +10688,7 @@ mod tests {
                 window_title: Some("Calculator".to_owned()),
                 title_regex: Some("Calc.*".to_owned()),
                 format: CaptureOutputFormat::Png,
+                jpeg_quality: 90,
                 json: true,
                 stdout: false,
                 no_overwrite: true,
@@ -8861,6 +10712,7 @@ mod tests {
                 window_title: None,
                 title_regex: None,
                 format: CaptureOutputFormat::Png,
+                jpeg_quality: 90,
                 json: false,
                 stdout: true,
                 no_overwrite: false,
@@ -8877,6 +10729,36 @@ mod tests {
                 window_title: None,
                 title_regex: None,
                 format: CaptureOutputFormat::Xwd,
+                jpeg_quality: 90,
+                json: false,
+                stdout: false,
+                no_overwrite: false,
+                include_semantic_tree: false,
+            })
+        );
+    }
+
+    #[test]
+    fn capture_accepts_jpeg_format_and_quality() {
+        let command = parse_capture_args(vec![
+            "--format".to_owned(),
+            "jpeg".to_owned(),
+            "--quality".to_owned(),
+            "80".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            CaptureCommand::Run(CaptureArgs {
+                output: PathBuf::from("screenshot.jpg"),
+                region: None,
+                window_id: None,
+                app: None,
+                window_title: None,
+                title_regex: None,
+                format: CaptureOutputFormat::Jpeg,
+                jpeg_quality: 80,
                 json: false,
                 stdout: false,
                 no_overwrite: false,

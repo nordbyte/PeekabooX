@@ -301,6 +301,26 @@ pub struct ResolvedClickTarget {
     pub position: Point,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccessibilityActionResult {
+    pub backend_name: String,
+    pub backend_kind: BackendKind,
+    pub element: UiElement,
+    pub action: String,
+    pub action_index: Option<i32>,
+    pub ok: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccessibilitySetValueResult {
+    pub backend_name: String,
+    pub backend_kind: BackendKind,
+    pub element: UiElement,
+    pub value: String,
+    pub strategy: String,
+    pub ok: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct AtSpiAccessibilityBackend;
 
@@ -402,6 +422,81 @@ pub fn resolve_click_target_from_tree(
     elements: &[UiElement],
 ) -> Result<ResolvedClickTarget> {
     resolve_click_target_from_elements(selector, elements.to_vec())
+}
+
+pub fn perform_action(
+    selector: &str,
+    action_name: Option<&str>,
+    action_index: Option<i32>,
+) -> Result<AccessibilityActionResult> {
+    let target = resolve_first_element(selector)?;
+    let connection = atspi_connection()?;
+    let object_ref = atspi_ref_from_element_id(&target.id)?;
+    let interfaces = atspi_interfaces(&connection, &object_ref).unwrap_or_default();
+    if !interfaces_include_action(&interfaces) {
+        return Err(PeekabooXError::new(format!(
+            "AT-SPI element {} does not expose Action",
+            target.id
+        )));
+    }
+    let action_count = atspi_action_count(&connection, &object_ref).unwrap_or(16);
+    let (index, resolved_name) = resolve_atspi_action_index(
+        &connection,
+        &object_ref,
+        action_name,
+        action_index,
+        action_count,
+    )?;
+    let ok = atspi_do_action(&connection, &object_ref, index)?;
+    Ok(AccessibilityActionResult {
+        backend_name: "at-spi".to_owned(),
+        backend_kind: BackendKind::AtSpi,
+        element: target,
+        action: resolved_name,
+        action_index: Some(index),
+        ok,
+    })
+}
+
+pub fn set_value(selector: &str, value: &str) -> Result<AccessibilitySetValueResult> {
+    let target = resolve_first_element(selector)?;
+    let connection = atspi_connection()?;
+    let object_ref = atspi_ref_from_element_id(&target.id)?;
+    let interfaces = atspi_interfaces(&connection, &object_ref).unwrap_or_default();
+
+    if interfaces_include_editable_text(&interfaces) {
+        let ok = atspi_set_text_contents(&connection, &object_ref, value)?;
+        return Ok(AccessibilitySetValueResult {
+            backend_name: "at-spi".to_owned(),
+            backend_kind: BackendKind::AtSpi,
+            element: target,
+            value: value.to_owned(),
+            strategy: "editable-text".to_owned(),
+            ok,
+        });
+    }
+
+    if interfaces_include_value(&interfaces) {
+        let number = value.parse::<f64>().map_err(|error| {
+            PeekabooXError::new(format!(
+                "AT-SPI Value expects a numeric value, got {value:?}: {error}"
+            ))
+        })?;
+        let ok = atspi_set_current_value(&connection, &object_ref, number)?;
+        return Ok(AccessibilitySetValueResult {
+            backend_name: "at-spi".to_owned(),
+            backend_kind: BackendKind::AtSpi,
+            element: target,
+            value: value.to_owned(),
+            strategy: "value".to_owned(),
+            ok,
+        });
+    }
+
+    Err(PeekabooXError::new(format!(
+        "AT-SPI element {} exposes neither EditableText nor Value",
+        target.id
+    )))
 }
 
 type AtSpiRef = (String, Path<'static>);
@@ -649,6 +744,188 @@ fn atspi_state_set(connection: &Connection, object_ref: &AtSpiRef) -> Result<Vec
         .map_err(|error| PeekabooXError::new(format!("AT-SPI state lookup failed: {error}")))?;
 
     Ok(states)
+}
+
+fn atspi_interfaces(connection: &Connection, object_ref: &AtSpiRef) -> Result<Vec<String>> {
+    let proxy = connection.with_proxy(object_ref.0.as_str(), object_ref.1.clone(), ATSPI_TIMEOUT);
+    let (interfaces,): (Vec<String>,) = proxy
+        .method_call("org.a11y.atspi.Accessible", "GetInterfaces", ())
+        .map_err(|error| {
+            PeekabooXError::new(format!("AT-SPI interfaces lookup failed: {error}"))
+        })?;
+    Ok(interfaces)
+}
+
+fn atspi_action_count(connection: &Connection, object_ref: &AtSpiRef) -> Result<i32> {
+    let proxy = connection.with_proxy(object_ref.0.as_str(), object_ref.1.clone(), ATSPI_TIMEOUT);
+    let (value,): (Variant<Box<dyn RefArg>>,) = proxy
+        .method_call(
+            "org.freedesktop.DBus.Properties",
+            "Get",
+            ("org.a11y.atspi.Action", "NActions"),
+        )
+        .map_err(|error| {
+            PeekabooXError::new(format!("AT-SPI action count lookup failed: {error}"))
+        })?;
+    variant_to_i64(&value)
+        .and_then(|value| i32::try_from(value).ok())
+        .filter(|value| *value >= 0)
+        .ok_or_else(|| PeekabooXError::new("AT-SPI NActions property was not a non-negative int"))
+}
+
+fn resolve_atspi_action_index(
+    connection: &Connection,
+    object_ref: &AtSpiRef,
+    action_name: Option<&str>,
+    action_index: Option<i32>,
+    action_count: i32,
+) -> Result<(i32, String)> {
+    if let Some(index) = action_index {
+        if index < 0 {
+            return Err(PeekabooXError::new(
+                "AT-SPI action index must be non-negative",
+            ));
+        }
+        let name = atspi_action_name(connection, object_ref, index)
+            .unwrap_or_else(|_| format!("action-{index}"));
+        return Ok((index, name));
+    }
+    let desired = action_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("click");
+    let search_count = action_count.clamp(1, 64);
+    for index in 0..search_count {
+        let Ok(name) = atspi_action_name(connection, object_ref, index) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(desired) {
+            return Ok((index, name));
+        }
+    }
+    let available = (0..search_count)
+        .filter_map(|index| atspi_action_name(connection, object_ref, index).ok())
+        .collect::<Vec<_>>();
+    Err(PeekabooXError::new(format!(
+        "AT-SPI action {desired:?} was not found; available actions: {}",
+        if available.is_empty() {
+            "-".to_owned()
+        } else {
+            available.join(",")
+        }
+    )))
+}
+
+fn atspi_action_name(connection: &Connection, object_ref: &AtSpiRef, index: i32) -> Result<String> {
+    let proxy = connection.with_proxy(object_ref.0.as_str(), object_ref.1.clone(), ATSPI_TIMEOUT);
+    let (name,): (String,) = proxy
+        .method_call("org.a11y.atspi.Action", "GetName", (index,))
+        .map_err(|error| {
+            PeekabooXError::new(format!("AT-SPI action name lookup failed: {error}"))
+        })?;
+    Ok(name)
+}
+
+fn atspi_do_action(connection: &Connection, object_ref: &AtSpiRef, index: i32) -> Result<bool> {
+    let proxy = connection.with_proxy(object_ref.0.as_str(), object_ref.1.clone(), ATSPI_TIMEOUT);
+    let result: std::result::Result<(bool,), dbus::Error> =
+        proxy.method_call("org.a11y.atspi.Action", "DoAction", (index,));
+    match result {
+        Ok((ok,)) => Ok(ok),
+        Err(bool_error) => {
+            let result: std::result::Result<(), dbus::Error> =
+                proxy.method_call("org.a11y.atspi.Action", "DoAction", (index,));
+            result.map(|_| true).map_err(|void_error| {
+                PeekabooXError::new(format!(
+                    "AT-SPI DoAction failed: {bool_error}; void fallback failed: {void_error}"
+                ))
+            })
+        }
+    }
+}
+
+fn atspi_set_text_contents(
+    connection: &Connection,
+    object_ref: &AtSpiRef,
+    value: &str,
+) -> Result<bool> {
+    let proxy = connection.with_proxy(object_ref.0.as_str(), object_ref.1.clone(), ATSPI_TIMEOUT);
+    let result: std::result::Result<(bool,), dbus::Error> =
+        proxy.method_call("org.a11y.atspi.EditableText", "SetTextContents", (value,));
+    match result {
+        Ok((ok,)) => Ok(ok),
+        Err(bool_error) => {
+            let result: std::result::Result<(), dbus::Error> =
+                proxy.method_call("org.a11y.atspi.EditableText", "SetTextContents", (value,));
+            result.map(|_| true).map_err(|void_error| {
+                PeekabooXError::new(format!(
+                    "AT-SPI SetTextContents failed: {bool_error}; void fallback failed: {void_error}"
+                ))
+            })
+        }
+    }
+}
+
+fn atspi_set_current_value(
+    connection: &Connection,
+    object_ref: &AtSpiRef,
+    value: f64,
+) -> Result<bool> {
+    let proxy = connection.with_proxy(object_ref.0.as_str(), object_ref.1.clone(), ATSPI_TIMEOUT);
+    let result: std::result::Result<(bool,), dbus::Error> =
+        proxy.method_call("org.a11y.atspi.Value", "SetCurrentValue", (value,));
+    match result {
+        Ok((ok,)) => Ok(ok),
+        Err(bool_error) => {
+            let result: std::result::Result<(), dbus::Error> =
+                proxy.method_call("org.a11y.atspi.Value", "SetCurrentValue", (value,));
+            result.map(|_| true).map_err(|void_error| {
+                PeekabooXError::new(format!(
+                    "AT-SPI SetCurrentValue failed: {bool_error}; void fallback failed: {void_error}"
+                ))
+            })
+        }
+    }
+}
+
+fn variant_to_i64(value: &Variant<Box<dyn RefArg>>) -> Option<i64> {
+    value
+        .0
+        .as_i64()
+        .or_else(|| value.0.as_u64().and_then(|value| i64::try_from(value).ok()))
+}
+
+fn atspi_ref_from_element_id(id: &str) -> Result<AtSpiRef> {
+    let Some(path_start) = id.find('/') else {
+        return Err(PeekabooXError::new(format!(
+            "AT-SPI element id {id:?} does not contain an object path"
+        )));
+    };
+    let bus_name = id[..path_start].to_owned();
+    let object_path = id[path_start..].to_owned();
+    let path = Path::new(object_path).map_err(|error| {
+        PeekabooXError::new(format!("invalid AT-SPI object path in id {id:?}: {error}"))
+    })?;
+    Ok((bus_name, path))
+}
+
+fn resolve_first_element(selector: &str) -> Result<UiElement> {
+    let query = ElementQuery::parse(selector)?;
+    let mut matches = semantic_tree()?
+        .elements
+        .into_iter()
+        .filter(|element| query.matches(element))
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        click_target_score(&query, right)
+            .cmp(&click_target_score(&query, left))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    matches.into_iter().next().ok_or_else(|| {
+        PeekabooXError::new(format!(
+            "no accessibility element matched selector {selector:?}"
+        ))
+    })
 }
 
 fn atspi_state_names(states: &[u32]) -> Vec<String> {
@@ -998,6 +1275,24 @@ fn interfaces_include_component(interfaces: &[String]) -> bool {
     interfaces
         .iter()
         .any(|interface| interface == "org.a11y.atspi.Component" || interface == "Component")
+}
+
+fn interfaces_include_action(interfaces: &[String]) -> bool {
+    interfaces
+        .iter()
+        .any(|interface| interface == "org.a11y.atspi.Action" || interface == "Action")
+}
+
+fn interfaces_include_editable_text(interfaces: &[String]) -> bool {
+    interfaces
+        .iter()
+        .any(|interface| interface == "org.a11y.atspi.EditableText" || interface == "EditableText")
+}
+
+fn interfaces_include_value(interfaces: &[String]) -> bool {
+    interfaces
+        .iter()
+        .any(|interface| interface == "org.a11y.atspi.Value" || interface == "Value")
 }
 
 #[cfg(test)]

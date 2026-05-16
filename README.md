@@ -72,9 +72,12 @@ peekaboox capture --region 10,20,400,240 --output region.png
 peekaboox capture --window-id window-1 --output window.png
 peekaboox capture --app calculator --title-regex Calculator --json --output calculator.png
 peekaboox capture --stdout > screenshot.png
+peekaboox capture --format jpeg --quality 85 --output screenshot.jpg
+peekaboox see --annotate --json
 
 # Inspect windows and semantic UI elements.
 peekaboox windows --json
+peekaboox window focus --app calculator
 peekaboox windows --focused --limit 1 --sort focused --json
 peekaboox windows --app calculator --title-regex "Calculator" --diagnose --json
 peekaboox elements --selector "role=push button,label=Submit" --vision-fallback
@@ -91,6 +94,8 @@ peekaboox --daemon capture-delta --stream agent-loop --low-bandwidth
 # Run the MCP server from a checkout.
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --list-tools
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport http --port 47778
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport sse --port 47778
 
 # Run structured runtime/MCP diagnostics examples.
 PYTHONPATH=python/src python3 examples/python/doctor_runtime.py
@@ -105,24 +110,31 @@ dialogs, and Telegram Saved Messages automation.
 
 ## Shell completions
 
-PeekabooX currently exposes command metadata through built-in help:
+PeekabooX exposes command metadata through built-in help and shell completion
+generators:
 
 ```bash
 peekaboox
 peekaboox desktop
 peekaboox capture --help
+peekaboox tools
+peekaboox completions bash
+peekaboox completions zsh
+peekaboox completions fish
 ```
-
-Shell-native completion generation is not part of the current CLI surface.
 
 | Command | Key flags / subcommands | What it does |
 | --- | --- | --- |
-| [capture](docs/cli.md#capture) | `--output`, `--region`, `--window-id`, `--app`, `--title-regex`, `--json`, `--stdout` | Save a screenshot from the active desktop session |
+| [capture](docs/cli.md#capture) | `--output`, `--region`, `--window-id`, `--app`, `--title-regex`, `--format`, `--quality`, `--json`, `--stdout` | Save a screenshot from the active desktop session |
+| [see](docs/cli.md#snapshots-agent-and-system-commands) | `--annotate`, `--output-dir`, `--id`, `--json` | Persist a snapshot image plus semantic metadata |
 | [capture-delta](docs/cli.md#capture-delta) | `--stream`, `--low-bandwidth`, `--reset`, `--json` | Return full-frame or changed-rectangle capture deltas |
 | [capture-backends](docs/cli.md#capture-backends-and-dma-buf) | `--json`, `--diagnose`, `--probe`, `--output`, `--format` | Inspect and probe screenshot and zero-copy backends |
 | [capture-dmabuf](docs/cli.md#capture-backends-and-dma-buf) | `--import egl`, `--import egl-texture` | Probe optional PipeWire DMA-BUF import paths |
 | [windows](docs/cli.md#windows-and-elements) | `--app`, `--title-regex`, `--focused`, `--limit`, `--diagnose`, `--json` | List, filter, and diagnose visible desktop windows |
+| [window](docs/cli.md#snapshots-agent-and-system-commands) | `list`, `focus`, `move`, `resize`, `close`, `maximize` | Manage a resolved desktop window |
+| [app / launcher / workspace](docs/cli.md#snapshots-agent-and-system-commands) | `list`, `launch`, `focus`, `switch`, `move-window` | Open apps, inspect launchers, and drive workspaces |
 | [elements](docs/cli.md#windows-and-elements) | `--selector`, `--role`, `--state`, `--vision-fallback` | Query semantic UI elements |
+| [set-value / perform-action](docs/cli.md#windows-and-elements) | `--selector`, `--id`, `--value`, `--action` | Invoke direct AT-SPI value and action APIs |
 | [ocr](docs/cli.md#vision-tools) | `--image`, `--region`, `--window-id`, `--language`, `--psm`, `--json`, `--words` | Run Tesseract-backed OCR |
 | [compare](docs/cli.md#vision-tools) | `--threshold`, `--ignore-region`, `--diff-output`, `--report`, `--json` | Compare images or visual-regression gates |
 | [state](docs/cli.md#vision-tools) | `--image`, `--ignore-region`, `--stable-max-changed-pixels`, `--json` | Classify screen samples as stable, loading, or changing |
@@ -131,10 +143,12 @@ Shell-native completion generation is not part of the current CLI surface.
 | [doctor](docs/cli.md#doctor) | `--json`, `--strict` | Diagnose capture, input, OCR, Python, and profile support with category summaries |
 | [click](docs/cli.md#input-actions) | `--x`, `--y`, `--text`, `--selector`, `--dry-run` | Click coordinates or semantic targets |
 | [move](docs/cli.md#input-actions) | `--x`, `--y`, `--dry-run` | Move the pointer |
-| [drag](docs/cli.md#input-actions) | `--from`, `--to`, `--duration-ms`, `--dry-run` | Drag between coordinates |
+| [drag / swipe](docs/cli.md#input-actions) | `--from`, `--to`, `--duration-ms`, `--dry-run` | Drag or swipe between coordinates |
 | [type](docs/cli.md#input-actions) | `--paste`, `--preserve-clipboard`, `--dry-run` | Type or paste text |
 | [paste](docs/cli.md#input-actions) | `--clipboard-backend`, `--hotkey-backend`, `--preserve-clipboard`, `--restore-policy`, `--dry-run` | Clipboard-backed text insertion |
-| [hotkey](docs/cli.md#input-actions) | `--backend`, `--delay-ms`, `--key-delay-ms`, `--repeat`, `--json`, `--dry-run` | Send keyboard shortcuts |
+| [hotkey / press / scroll](docs/cli.md#input-actions) | `--backend`, `--repeat`, `--amount`, `--json`, `--dry-run` | Send keyboard shortcuts, key presses, or wheel events |
+| [agent](docs/cli.md#snapshots-agent-and-system-commands) | `--goal`, `--dry-run`, `--resume`, `list-sessions` | Run the local deterministic agent session wrapper |
+| [config / permissions / tools / completions / clean](docs/cli.md#snapshots-agent-and-system-commands) | `show`, `status`, `bash`, `--all` | Manage local config, diagnostics metadata, completion scripts, and cached state |
 | [plugins](docs/plugins.md#discovery) | `--path`, `--json` | Discover Plugin SDK packages |
 | [plugin-call](docs/plugins.md#discovery) | `plugin_id`, `tool`, `--json` | Execute a bounded plugin process tool |
 

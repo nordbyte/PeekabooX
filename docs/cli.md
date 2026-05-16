@@ -37,7 +37,9 @@ cargo run -q -p peekaboox-cli -- --daemon capture --window-id window-1 --output 
 cargo run -q -p peekaboox-cli -- capture --app calculator --title-regex Calculator --json --output calculator.png
 cargo run -q -p peekaboox-cli -- capture --window-id window-1 --region 10,10,220,160 --output window-region.png
 cargo run -q -p peekaboox-cli -- capture --stdout > screenshot.png
+cargo run -q -p peekaboox-cli -- capture --format jpeg --quality 85 --output screenshot.jpg
 cargo run -q -p peekaboox-cli -- capture --format xwd --output screenshot.xwd
+cargo run -q -p peekaboox-cli -- see --annotate --json
 ```
 
 The capture implementation detects the session and prefers
@@ -48,10 +50,14 @@ daemon-managed screenshot file, then falls back to file-only capture backends.
 `capture` can target a full screen, absolute region, exact `--window-id`, or
 window filters via `--app`, `--window-title`, and `--title-regex`. A `--region`
 combined with a window filter is interpreted relative to that window. Add
-`--json` for structured metadata (`width`, `height`, `mime_type`,
+`--format png|jpeg|xwd` controls file output; JPEG accepts `--quality 1..100`.
+`--json` adds structured metadata (`width`, `height`, `mime_type`,
 `capture_region`, `window_id`, `source`, and timestamp), `--include-semantic-tree`
 to embed current accessibility elements in that JSON response, `--stdout` to
 emit PNG bytes, and `--no-overwrite` to reject existing output files.
+`see`/`observe` persists a snapshot directory under
+`$XDG_STATE_HOME/peekaboox/snapshots` with the captured image, semantic capture
+metadata, and an optional vision overlay from `--annotate`.
 
 ## Capture Backends and DMA-BUF
 
@@ -122,6 +128,7 @@ cargo run -q -p peekaboox-cli -- move --window-title Calculator --ratio 0.5,0.5 
 cargo run -q -p peekaboox-cli -- move --current-position --json
 cargo run -q -p peekaboox-cli -- drag --from 100,200 --to 320,240 --dry-run
 cargo run -q -p peekaboox-cli -- drag --from-current --region 0,0,400,240 --to-ratio 0.8,0.5 --steps 10 --backend xdotool --bounds clamp --restore --dry-run --json
+cargo run -q -p peekaboox-cli -- swipe --from 100,400 --to 100,120 --dry-run
 cargo run -q -p peekaboox-cli -- type --dry-run "Hello World"
 cargo run -q -p peekaboox-cli -- type --backend wtype --typing-speed 20 --delay-ms 100 --dry-run --json --text "Hello World"
 cargo run -q -p peekaboox-cli -- type --file ./message.txt --key-delay-ms 15 --dry-run
@@ -131,6 +138,8 @@ cargo run -q -p peekaboox-cli -- paste --clipboard-backend wl-copy --hotkey-back
 cargo run -q -p peekaboox-cli -- type --paste --preserve-clipboard --dry-run "/tmp/PeekabooX Example.txt"
 cargo run -q -p peekaboox-cli -- hotkey --backend auto --delay-ms 25 --key-delay-ms 30 --repeat 2 --interval-ms 40 --release-before --release-after --dry-run --json control+s
 cargo run -q -p peekaboox-cli -- hotkey --dry-run -- --help
+cargo run -q -p peekaboox-cli -- press enter --dry-run --json
+cargo run -q -p peekaboox-cli -- scroll down --amount 5 --at 400,300 --dry-run --json
 ```
 
 Remove `--dry-run` to perform the action. `click` accepts absolute coordinates,
@@ -160,8 +169,12 @@ strict|best-effort|off`, `--dry-run`, `--json`, and the same `--text`,
 accept positional chords such as `ctrl+s`, split `+`-separated aliases such as
 `control`, `escape`, and `win`, and support `--backend auto|ydotool|xdotool`,
 `--delay-ms`, `--key-delay-ms`, `--repeat`, `--interval-ms`,
-`--release-before`, `--release-after`, `--json`, and `--dry-run`. Use `--`
-before literal key names that start with a dash.
+`--release-before`, `--release-after`, `--json`, and `--dry-run`. `press` is a
+key-press convenience wrapper around the same hotkey backend with modifier
+release guards. `scroll` sends wheel events through `ydotool` or `xdotool` and
+accepts `up|down|left|right`, `--amount`, optional `--at x,y`, bounds policy,
+and dry-run JSON output. `swipe` is a drag preset with a touch-like duration.
+Use `--` before literal key names that start with a dash.
 
 Semantic click targets use AT-SPI and resolve to the center of the matching UI
 element. Add `--vision-fallback` when a semantic lookup may need screenshot
@@ -225,6 +238,9 @@ cargo run -q -p peekaboox-cli -- windows --json
 cargo run -q -p peekaboox-cli -- windows --focused --limit 1 --sort focused --json
 cargo run -q -p peekaboox-cli -- windows --app calculator --title-regex "Calculator" --diagnose --json
 cargo run -q -p peekaboox-cli -- windows --backend xdotool --diagnose
+cargo run -q -p peekaboox-cli -- window focus --app calculator
+cargo run -q -p peekaboox-cli -- window move --id 12345 --x 20 --y 40 --dry-run
+cargo run -q -p peekaboox-cli -- window resize --id 12345 --width 900 --height 640 --dry-run
 ```
 
 Window enumeration tries GNOME Shell Introspect on GNOME, falls back to AT-SPI
@@ -235,6 +251,10 @@ backend|focused|title|app|area|id|state`, `--backend
 auto|gnome|at-spi|xdotool`, and `--diagnose`. JSON responses include
 `backend_name`, `backend_kind`, `warnings`, and per-backend diagnostic reports
 so scripts can see which backend was selected and why fallbacks were attempted.
+The singular `window` command adds action-oriented helpers for resolved window
+IDs or filters: `list`, `focus`, `close`, `minimize`, `move`, `resize`,
+`maximize`, `unmaximize`, and `fullscreen`. X11 actions use `xdotool` and
+workspace/state actions use `wmctrl` when available.
 
 List semantic elements from the CLI:
 
@@ -244,6 +264,8 @@ peekaboox elements --selector "role=push button" --vision-fallback
 peekaboox --daemon find --selector "role=push button,label=Submit,confidence>=0.9"
 peekaboox elements --window-title "Draft" --role-exact "push button" --text-regex "^Save"
 peekaboox elements --app text-editor --selector "not-state=disabled,min-width=40" --json
+peekaboox set-value --selector "role=text,label=Name" --value "Ada" --dry-run
+peekaboox perform-action --selector "role=push button,label=Save" --action click --dry-run
 ```
 
 `elements` accepts `--app`, `--window-title`, and `--window-id` to scope
@@ -260,6 +282,47 @@ When `--vision-fallback` is enabled, the detector can be tuned with
 `--vision-max-elements`, and `--vision-merge-distance`. JSON output includes
 each element's `center`, window/app hierarchy metadata when available, and
 daemon lookup metadata such as cache and fallback status.
+
+`set-value` and `perform-action` use direct AT-SPI interfaces when the matched
+element exposes `EditableText`, `Value`, or `Action`. They are useful for stable
+semantic automation when coordinate clicks or synthetic text input are less
+reliable. Use `--dry-run` first to confirm the matched element.
+
+## Snapshots, Agent, and System Commands
+
+The CLI includes utility surfaces for the remaining automation loop:
+
+```bash
+peekaboox see --id before-save --annotate --json
+peekaboox agent --goal "Inspect Calculator and report visible buttons" --dry-run --json
+peekaboox agent list-sessions --json
+peekaboox app list --json
+peekaboox app launch org.gnome.Calculator.desktop
+peekaboox launcher open org.gnome.TextEditor.desktop
+peekaboox workspace list
+peekaboox workspace switch 1
+peekaboox dialog list --json
+peekaboox dialog accept
+peekaboox menu list --json
+peekaboox menu click File
+peekaboox config init
+peekaboox config set input.backend '"xdotool"'
+peekaboox permissions --json
+peekaboox tools
+peekaboox completions bash
+peekaboox clean --dry-run --json
+```
+
+`agent` is a local deterministic session wrapper with persisted JSON session
+state under `$XDG_STATE_HOME/peekaboox/agent/sessions`. Non-dry-run sessions
+capture an initial `see` snapshot; model-backed execution can build on the same
+session file later. `app`, `launcher`, `workspace`, `dialog`, and `menu` provide
+Linux equivalents for application launch/focus, launcher entries, virtual
+desktops, dialogs, menu bars, and status/menu items using desktop files,
+AT-SPI, `xdotool`, and `wmctrl` where available. `config`, `permissions`,
+`tools`, `completions`, and `clean` expose local configuration, capability
+checks, machine-readable command metadata, shell completion snippets, and
+snapshot/session cache cleanup.
 
 ## Vision Tools
 

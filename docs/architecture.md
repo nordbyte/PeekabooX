@@ -26,7 +26,8 @@ The Python side owns agent orchestration:
   recording, and self-healing workflow execution with retries, verification,
   and structured recovery metadata, including reusable JSON/YAML workflow files
 - MCP integration through a transport-neutral tool registry and dispatcher bound
-  to `AgentRuntime`, with stdio JSON-RPC transport for MCP clients
+  to `AgentRuntime`, with stdio JSON-RPC plus local HTTP and SSE transports for
+  MCP clients and bridge processes
 - runtime security policy for Python and MCP callers, including granular
   capability checks, Doctor-backed preflight gates, reusable allowlist profiles,
   optional dangerous-action confirmations, and in-memory plus JSONL audit events

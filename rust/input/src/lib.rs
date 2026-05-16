@@ -35,6 +35,11 @@ pub enum InputAction {
         preserve_clipboard: bool,
     },
     Hotkey(Vec<String>),
+    Scroll {
+        direction: ScrollDirection,
+        amount: u32,
+        position: Option<Point>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +47,25 @@ pub enum MouseButton {
     Left,
     Middle,
     Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl ScrollDirection {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
 }
 
 pub trait InputBackend {
@@ -365,6 +389,23 @@ impl Default for DragMouseOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollOptions {
+    pub backend: InputToolSelection,
+    pub bounds_policy: MoveBoundsPolicy,
+    pub delay_ms: u64,
+}
+
+impl Default for ScrollOptions {
+    fn default() -> Self {
+        Self {
+            backend: InputToolSelection::Auto,
+            bounds_policy: MoveBoundsPolicy::Allow,
+            delay_ms: 20,
+        }
+    }
+}
+
 impl InputTool {
     pub fn name(self) -> &'static str {
         match self {
@@ -399,6 +440,7 @@ impl InputTool {
                 | (Self::Ydotool, InputAction::Click { .. })
                 | (Self::Ydotool, InputAction::TypeText(_))
                 | (Self::Ydotool, InputAction::Hotkey(_))
+                | (Self::Ydotool, InputAction::Scroll { .. })
                 | (Self::Wtype, InputAction::TypeText(_))
                 | (Self::WlClipboard, InputAction::TypeText(_))
                 | (Self::XclipClipboard, InputAction::TypeText(_))
@@ -408,6 +450,7 @@ impl InputTool {
                 | (Self::Xdotool, InputAction::Drag { .. })
                 | (Self::Xdotool, InputAction::TypeText(_))
                 | (Self::Xdotool, InputAction::Hotkey(_))
+                | (Self::Xdotool, InputAction::Scroll { .. })
                 | (Self::WlClipboard, InputAction::PasteText { .. })
                 | (Self::XclipClipboard, InputAction::PasteText { .. })
                 | (Self::XselClipboard, InputAction::PasteText { .. })
@@ -769,6 +812,60 @@ impl CommandInputBackend {
             errors.join("; ")
         )))
     }
+
+    pub fn scroll_with_options(
+        &self,
+        direction: ScrollDirection,
+        amount: u32,
+        position: Option<Point>,
+        options: ScrollOptions,
+    ) -> Result<InputExecutionMetadata> {
+        if amount == 0 {
+            return Err(PeekabooXError::new(
+                "scroll amount must be greater than zero",
+            ));
+        }
+        let position = position
+            .map(|position| apply_move_bounds_policy(position, options.bounds_policy))
+            .transpose()?;
+        let action = InputAction::Scroll {
+            direction,
+            amount,
+            position,
+        };
+        let environment = InputEnvironment::detect();
+        let candidates = candidate_backends_with_selection(&environment, &action, options.backend);
+
+        if candidates.is_empty() {
+            return Err(missing_backend_error_for_selection(
+                &environment,
+                &action,
+                options.backend,
+            ));
+        }
+
+        let mut errors = Vec::new();
+        for backend in candidates {
+            match run_scroll_tool(backend.tool, direction, amount, position, options) {
+                Ok(()) => {
+                    return Ok(InputExecutionMetadata {
+                        backend_name: backend.name().to_owned(),
+                        backend_kind: backend.backend_kind(),
+                        action,
+                    });
+                }
+                Err(error) => {
+                    let _ = release_modifiers();
+                    errors.push(format!("{}: {}", backend.name(), error.message()));
+                }
+            }
+        }
+
+        Err(PeekabooXError::new(format!(
+            "all scroll backends failed: {}",
+            errors.join("; ")
+        )))
+    }
 }
 
 impl InputBackend for CommandInputBackend {
@@ -882,6 +979,23 @@ pub fn hotkey_with_options(
     options: HotkeyOptions,
 ) -> Result<InputExecutionMetadata> {
     CommandInputBackend.hotkey_with_options(keys, options)
+}
+
+pub fn scroll(
+    direction: ScrollDirection,
+    amount: u32,
+    position: Option<Point>,
+) -> Result<InputExecutionMetadata> {
+    scroll_with_options(direction, amount, position, ScrollOptions::default())
+}
+
+pub fn scroll_with_options(
+    direction: ScrollDirection,
+    amount: u32,
+    position: Option<Point>,
+    options: ScrollOptions,
+) -> Result<InputExecutionMetadata> {
+    CommandInputBackend.scroll_with_options(direction, amount, position, options)
 }
 
 pub fn emergency_stop() -> Result<()> {
@@ -1092,6 +1206,28 @@ fn run_input_tool(tool: InputTool, action: &InputAction) -> Result<()> {
             run_hotkey_tool(tool, keys, HotkeyOptions::default())
         }
         (
+            InputTool::Ydotool,
+            InputAction::Scroll {
+                direction,
+                amount,
+                position,
+            },
+        )
+        | (
+            InputTool::Xdotool,
+            InputAction::Scroll {
+                direction,
+                amount,
+                position,
+            },
+        ) => run_scroll_tool(
+            tool,
+            *direction,
+            *amount,
+            *position,
+            ScrollOptions::default(),
+        ),
+        (
             InputTool::WlClipboard,
             InputAction::PasteText {
                 text,
@@ -1263,6 +1399,55 @@ fn run_drag_tool(
         InputTool::Xdotool => xdotool_drag(from, to, button, options),
         _ => Err(PeekabooXError::new(format!(
             "{} does not support pointer drags",
+            tool.name()
+        ))),
+    }
+}
+
+fn run_scroll_tool(
+    tool: InputTool,
+    direction: ScrollDirection,
+    amount: u32,
+    position: Option<Point>,
+    options: ScrollOptions,
+) -> Result<()> {
+    if amount == 0 {
+        return Err(PeekabooXError::new(
+            "scroll amount must be greater than zero",
+        ));
+    }
+    if let Some(position) = position {
+        run_move_mouse_tool(tool, position)?;
+    }
+    let button = scroll_button(tool, direction)?;
+    for index in 0..amount {
+        match tool {
+            InputTool::Ydotool => run_command("ydotool", ["click", "--delay", "0", button])?,
+            InputTool::Xdotool => run_command("xdotool", ["click", button])?,
+            _ => {
+                return Err(PeekabooXError::new(format!(
+                    "{} does not support scrolling",
+                    tool.name()
+                )));
+            }
+        }
+        if index + 1 < amount {
+            sleep_ms(options.delay_ms);
+        }
+    }
+    Ok(())
+}
+
+fn scroll_button(tool: InputTool, direction: ScrollDirection) -> Result<&'static str> {
+    match tool {
+        InputTool::Ydotool | InputTool::Xdotool => Ok(match direction {
+            ScrollDirection::Up => "4",
+            ScrollDirection::Down => "5",
+            ScrollDirection::Left => "6",
+            ScrollDirection::Right => "7",
+        }),
+        _ => Err(PeekabooXError::new(format!(
+            "{} does not support wheel buttons",
             tool.name()
         ))),
     }

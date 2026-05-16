@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.server
 import json
 import os
 import sys
@@ -348,6 +349,83 @@ class McpServer:
                 continue
             output_stream.write(json.dumps(response, separators=(",", ":")) + "\n")
             output_stream.flush()
+
+    def serve_http(self, host: str = "127.0.0.1", port: int = 47778, *, sse: bool = False) -> None:
+        """Serve JSON-RPC over HTTP POST, with an optional MCP-style SSE endpoint."""
+
+        mcp_server = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            server_version = f"{SERVER_NAME}/{SERVER_VERSION}"
+
+            def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
+                if self.path in ("/", "/health", "/mcp"):
+                    self._write_json(
+                        {
+                            "name": SERVER_NAME,
+                            "version": SERVER_VERSION,
+                            "transport": "sse" if sse else "http",
+                            "jsonrpc_endpoint": "/mcp",
+                            "sse_endpoint": "/sse",
+                        }
+                    )
+                    return
+                if self.path.startswith("/sse"):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Connection", "keep-alive")
+                    self.end_headers()
+                    self.wfile.write(b"event: endpoint\n")
+                    self.wfile.write(b"data: /mcp\n\n")
+                    self.wfile.write(b"event: tools\n")
+                    self.wfile.write(
+                        b"data: "
+                        + json.dumps({"tools": mcp_server.list_tools()}, separators=(",", ":")).encode()
+                        + b"\n\n"
+                    )
+                    self.wfile.flush()
+                    return
+                self.send_error(404, "not found")
+
+            def do_POST(self) -> None:  # noqa: N802 - stdlib callback name
+                if self.path not in ("/", "/mcp"):
+                    self.send_error(404, "not found")
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    self.send_error(411, "invalid content length")
+                    return
+                payload = self.rfile.read(length).decode("utf-8")
+                try:
+                    message = json.loads(payload)
+                except json.JSONDecodeError as error:
+                    response: dict[str, Any] | list[dict[str, Any]] | None = _jsonrpc_error(
+                        None, PARSE_ERROR, f"invalid JSON: {error.msg}"
+                    )
+                else:
+                    response = mcp_server.handle_jsonrpc(message)
+                if response is None:
+                    self.send_response(202)
+                    self.end_headers()
+                    return
+                self._write_json(response)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                if mcp_server.log_level == "debug":
+                    super().log_message(format, *args)
+
+            def _write_json(self, payload: Any) -> None:
+                body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        httpd = http.server.ThreadingHTTPServer((host, port), Handler)
+        httpd.serve_forever()
 
     def _handle_notification(self, method: str) -> None:
         if method == "notifications/initialized":
@@ -3235,7 +3313,7 @@ def create_server(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="PeekabooX MCP stdio server")
+    parser = argparse.ArgumentParser(description="PeekabooX MCP server")
     parser.add_argument(
         "--target",
         default=os.environ.get("PEEKABOOX_GRPC_TARGET", "127.0.0.1:47777"),
@@ -3245,6 +3323,23 @@ def main() -> None:
         "--list-tools",
         action="store_true",
         help="print registered MCP tools and exit",
+    )
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "http", "sse"),
+        default=os.environ.get("PEEKABOOX_MCP_TRANSPORT", "stdio"),
+        help="MCP transport to serve",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("PEEKABOOX_MCP_HOST", "127.0.0.1"),
+        help="HTTP/SSE bind host",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PEEKABOOX_MCP_PORT", "47778")),
+        help="HTTP/SSE bind port",
     )
     parser.add_argument(
         "--audit-log",
@@ -3303,7 +3398,10 @@ def main() -> None:
     if args.list_tools:
         print("peekaboox-mcp tools:", ", ".join(tool["name"] for tool in server.list_tools()))
         return
-    server.serve_stdio()
+    if args.transport == "stdio":
+        server.serve_stdio()
+        return
+    server.serve_http(args.host, args.port, sse=args.transport == "sse")
 
 
 if __name__ == "__main__":
