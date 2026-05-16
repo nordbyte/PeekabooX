@@ -12,6 +12,9 @@ import peekaboox.agent.runtime as agent_runtime_module
 from peekaboox.agent import AgentRuntime, VerificationResult
 from peekaboox.client import (
     ActionResult,
+    CaptureBackend,
+    CaptureBackendProbeResult,
+    CaptureBackendsResult,
     CaptureDeltaResult,
     CaptureMetadata,
     CaptureScreenResult,
@@ -30,6 +33,7 @@ from peekaboox.client import (
     WindowBackendReport,
     WindowInfo,
     WindowListResult,
+    ZeroCopyBackend,
 )
 from peekaboox.memory import MemoryStore, SQLiteMemoryStore, SemanticDesktopGraph
 from peekaboox.mcp import McpServer
@@ -128,6 +132,65 @@ class FakeClient:
                 backend="fake",
                 captured_at_unix_ms=124,
             ),
+        )
+
+    def capture_backends(
+        self,
+        output: str = "screenshot.png",
+        region: Rect | None = None,
+        diagnose: bool = False,
+        probe: str = "none",
+    ) -> CaptureBackendsResult:
+        return CaptureBackendsResult(
+            session_type="wayland",
+            desktop="GNOME",
+            pipewire_session_available=True,
+            pipewire_backend_feature_enabled=True,
+            egl_backend_feature_enabled=False,
+            output_path=str(output),
+            region=region,
+            image_backends=(
+                CaptureBackend(
+                    name="portal",
+                    backend_kind="wayland",
+                    command=None,
+                    available=True,
+                    supports_output=True,
+                    supports_file_capture=True,
+                    supports_stdout_capture=True,
+                    supports_stdout_region_capture=True,
+                    selected=True,
+                    reason=None,
+                ),
+            ),
+            zero_copy_backends=(
+                ZeroCopyBackend(
+                    name="pipewire",
+                    backend_kind="wayland",
+                    transport="dmabuf",
+                    availability="available",
+                    selected=True,
+                    pipewire_backend_feature_enabled=True,
+                    egl_backend_feature_enabled=False,
+                    reason=None,
+                ),
+            ),
+            probes=(
+                CaptureBackendProbeResult(
+                    probe=probe,
+                    ok=True,
+                    backend_name="portal",
+                    backend_kind="wayland",
+                    detail="captured 320x180",
+                    output_path=str(output) if probe == "file" else None,
+                    bytes_written=1234 if probe == "file" else None,
+                    width=region.width if region else 320,
+                    height=region.height if region else 180,
+                ),
+            )
+            if probe != "none"
+            else (),
+            warnings=() if diagnose else ("diagnostics disabled",),
         )
 
     def probe_dmabuf(self, import_target: str = "compute") -> DmaBufProbeResult:
@@ -617,6 +680,7 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertIn("capture_screen", server.tools)
         self.assertIn("capture_delta", server.tools)
+        self.assertIn("capture_backends", server.tools)
         self.assertIn("probe_dmabuf", server.tools)
         self.assertIn("get_desktop_state", server.tools)
         self.assertIn("find_element", server.tools)
@@ -680,6 +744,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(fake_client.hotkeys[-1], ("ctrl", "s"))
         self.assertEqual(runtime.ocr_region(Rect(x=1, y=2, width=3, height=4)).text, "Submit")
         self.assertEqual(runtime.capture_delta(stream_id="agent-loop").stream_id, "agent-loop")
+        self.assertEqual(runtime.capture_backends(probe="file").probes[0].probe, "file")
         self.assertTrue(runtime.compare_images(b"a", b"b").matches)
         self.assertEqual(runtime.detect_ui_state([b"a", b"b"]).state, "stable")
         self.assertEqual(runtime.detect_ui_elements(b"image").elements[0].role, "visual-region")
@@ -1866,6 +1931,7 @@ class RuntimeTests(unittest.TestCase):
 
         names = {descriptor["name"] for descriptor in descriptors}
         self.assertIn("capture_screen", names)
+        self.assertIn("capture_backends", names)
         self.assertIn("find_element", names)
         self.assertIn("list_plugins", names)
         self.assertTrue(all("inputSchema" in descriptor for descriptor in descriptors))
@@ -1884,6 +1950,15 @@ class RuntimeTests(unittest.TestCase):
                 "region": {"x": 1, "y": 2, "width": 3, "height": 4},
                 "per_channel_threshold": 2,
                 "low_bandwidth": True,
+            },
+        )
+        backends = server.call_tool(
+            "capture_backends",
+            {
+                "output": "target/test-capture.png",
+                "region": {"x": 1, "y": 2, "width": 3, "height": 4},
+                "diagnose": True,
+                "probe": "file",
             },
         )
         dmabuf = server.call_tool("probe_dmabuf", {"import_target": "compute"})
@@ -1946,6 +2021,9 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(delta["stream_id"], "agent-loop")
         self.assertEqual(delta["patch_base64"], "cGF0Y2g=")
         self.assertEqual(delta["changed_bounds"]["width"], 3)
+        self.assertEqual(backends["image_backends"][0]["name"], "portal")
+        self.assertEqual(backends["probes"][0]["probe"], "file")
+        self.assertEqual(backends["region"]["width"], 3)
         self.assertEqual(dmabuf["backend_name"], "fake-dmabuf")
         self.assertEqual(elements[0]["bounds"]["x"], 10)
         self.assertEqual(fake_client.last_find_selector, "role=push button,label=Submit")
@@ -2356,6 +2434,7 @@ class RuntimeTests(unittest.TestCase):
         names = {tool["name"] for tool in tool_descriptors}
         self.assertIn("capture_screen", names)
         self.assertIn("capture_delta", names)
+        self.assertIn("capture_backends", names)
         capture_screen = next(tool for tool in tool_descriptors if tool["name"] == "capture_screen")
         self.assertIn("inputSchema", capture_screen)
         self.assertIsNone(notification)
@@ -2675,6 +2754,83 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.capture_region, Rect(x=1, y=2, width=3, height=4))
         self.assertEqual(result.changed_bounds.width, 30)
         self.assertEqual(result.patch, b"patch")
+
+    @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
+    def test_python_client_maps_generated_capture_backends_response(self) -> None:
+        from peekaboox.v1 import peekaboox_pb2
+
+        class Stub:
+            def __init__(self) -> None:
+                self.request = None
+
+            def CaptureBackends(self, request, timeout):
+                self.request = request
+                return peekaboox_pb2.CaptureBackendsResponse(
+                    session_type="wayland",
+                    desktop="GNOME",
+                    pipewire_session_available=True,
+                    pipewire_backend_feature_enabled=True,
+                    egl_backend_feature_enabled=False,
+                    output_path=request.output,
+                    region=peekaboox_pb2.Rect(x=1, y=2, width=3, height=4),
+                    image_backends=[
+                        peekaboox_pb2.CaptureBackend(
+                            name="portal",
+                            backend_kind="wayland",
+                            available=True,
+                            supports_output=True,
+                            supports_file_capture=True,
+                            supports_stdout_capture=True,
+                            supports_stdout_region_capture=True,
+                            selected=True,
+                        )
+                    ],
+                    zero_copy_backends=[
+                        peekaboox_pb2.ZeroCopyBackend(
+                            name="pipewire",
+                            backend_kind="wayland",
+                            transport="dmabuf",
+                            availability="available",
+                            selected=True,
+                            pipewire_backend_feature_enabled=True,
+                            egl_backend_feature_enabled=False,
+                        )
+                    ],
+                    probes=[
+                        peekaboox_pb2.CaptureBackendProbeResult(
+                            probe="region",
+                            ok=True,
+                            backend_name="portal",
+                            backend_kind="wayland",
+                            detail="captured 3x4",
+                            width=3,
+                            height=4,
+                        )
+                    ],
+                )
+
+        stub = Stub()
+        client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
+
+        result = client.capture_backends(
+            output="target/capture.png",
+            region=Rect(x=1, y=2, width=3, height=4),
+            diagnose=True,
+            probe="region",
+        )
+
+        self.assertIsInstance(stub.request, peekaboox_pb2.CaptureBackendsRequest)
+        self.assertEqual(stub.request.output, "target/capture.png")
+        self.assertEqual(stub.request.region.width, 3)
+        self.assertTrue(stub.request.diagnose)
+        self.assertEqual(stub.request.probe, peekaboox_pb2.CAPTURE_BACKEND_PROBE_REGION)
+        self.assertEqual(result.session_type, "wayland")
+        self.assertEqual(result.desktop, "GNOME")
+        self.assertEqual(result.region, Rect(x=1, y=2, width=3, height=4))
+        self.assertEqual(result.image_backends[0].name, "portal")
+        self.assertTrue(result.zero_copy_backends[0].selected)
+        self.assertEqual(result.probes[0].probe, "region")
+        self.assertEqual(result.probes[0].width, 3)
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_python_client_builds_generated_capture_screen_window_target(self) -> None:

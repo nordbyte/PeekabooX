@@ -2116,6 +2116,22 @@ impl PeekabooX for GrpcPeekabooXService {
         result.map(Response::new)
     }
 
+    async fn capture_backends(
+        &self,
+        request: Request<proto::CaptureBackendsRequest>,
+    ) -> Result<Response<proto::CaptureBackendsResponse>, Status> {
+        let request = request.into_inner();
+        let details = json!({
+            "output": request.output.as_str(),
+            "has_region": request.region.is_some(),
+            "diagnose": request.diagnose,
+            "probe": request.probe,
+        });
+        let result = grpc_capture_backends(request);
+        audit_grpc_result(&self.audit, "grpc.capture_backends", &result, details);
+        result.map(Response::new)
+    }
+
     async fn click(
         &self,
         request: Request<proto::ClickRequest>,
@@ -2677,6 +2693,24 @@ fn grpc_capture_delta(
     .map_err(Status::internal)?;
 
     Ok(proto_capture_delta_response(&data))
+}
+
+fn grpc_capture_backends(
+    request: proto::CaptureBackendsRequest,
+) -> Result<proto::CaptureBackendsResponse, Status> {
+    let output = if request.output.is_empty() {
+        PathBuf::from("screenshot.png")
+    } else {
+        PathBuf::from(request.output)
+    };
+    let probe = capture_backend_probe_from_proto(request.probe)?;
+    let result = capture_backends_result(
+        &output,
+        request.region.map(rect_from_proto),
+        request.diagnose,
+        probe,
+    );
+    Ok(proto_capture_backends_response(result))
 }
 
 #[cfg(feature = "pipewire-backend")]
@@ -4466,6 +4500,80 @@ fn capture_delta_dto(data: &CaptureDeltaData) -> CaptureDeltaResultDto {
     }
 }
 
+fn proto_capture_backends_response(
+    result: CaptureBackendsResultDto,
+) -> proto::CaptureBackendsResponse {
+    proto::CaptureBackendsResponse {
+        session_type: result.session_type,
+        desktop: result.desktop,
+        pipewire_session_available: result.pipewire_session_available,
+        pipewire_backend_feature_enabled: result.pipewire_backend_feature_enabled,
+        egl_backend_feature_enabled: result.egl_backend_feature_enabled,
+        output_path: result.output_path,
+        region: result.region.map(rect_dto_to_proto),
+        image_backends: result
+            .image_backends
+            .into_iter()
+            .map(proto_capture_backend)
+            .collect(),
+        zero_copy_backends: result
+            .zero_copy_backends
+            .into_iter()
+            .map(proto_zero_copy_backend)
+            .collect(),
+        probes: result
+            .probes
+            .into_iter()
+            .map(proto_capture_backend_probe_result)
+            .collect(),
+        warnings: result.warnings,
+    }
+}
+
+fn proto_capture_backend(backend: CaptureBackendDto) -> proto::CaptureBackend {
+    proto::CaptureBackend {
+        name: backend.name,
+        backend_kind: backend.backend_kind,
+        command: backend.command,
+        available: backend.available,
+        supports_output: backend.supports_output,
+        supports_file_capture: backend.supports_file_capture,
+        supports_stdout_capture: backend.supports_stdout_capture,
+        supports_stdout_region_capture: backend.supports_stdout_region_capture,
+        selected: backend.selected,
+        reason: backend.reason,
+    }
+}
+
+fn proto_zero_copy_backend(backend: ZeroCopyBackendDto) -> proto::ZeroCopyBackend {
+    proto::ZeroCopyBackend {
+        name: backend.name,
+        backend_kind: backend.backend_kind,
+        transport: backend.transport,
+        availability: backend.availability,
+        selected: backend.selected,
+        pipewire_backend_feature_enabled: backend.pipewire_backend_feature_enabled,
+        egl_backend_feature_enabled: backend.egl_backend_feature_enabled,
+        reason: backend.reason,
+    }
+}
+
+fn proto_capture_backend_probe_result(
+    probe: CaptureBackendProbeResultDto,
+) -> proto::CaptureBackendProbeResult {
+    proto::CaptureBackendProbeResult {
+        probe: probe.probe,
+        ok: probe.ok,
+        backend_name: probe.backend_name,
+        backend_kind: probe.backend_kind,
+        detail: probe.detail,
+        output_path: probe.output_path,
+        bytes_written: probe.bytes_written,
+        width: probe.width,
+        height: probe.height,
+    }
+}
+
 fn plugin_list_dto(result: peekaboox_plugins::PluginDiscoveryResult) -> PluginListResultDto {
     PluginListResultDto {
         sdk_version: peekaboox_plugins::PLUGIN_SDK_VERSION.to_owned(),
@@ -4644,6 +4752,20 @@ fn proto_desktop_assertion(
     }
 }
 
+fn capture_backend_probe_from_proto(value: i32) -> Result<CaptureBackendProbeDto, Status> {
+    match value {
+        0 | 1 => Ok(CaptureBackendProbeDto::None),
+        2 => Ok(CaptureBackendProbeDto::File),
+        3 => Ok(CaptureBackendProbeDto::Frame),
+        4 => Ok(CaptureBackendProbeDto::Region),
+        5 => Ok(CaptureBackendProbeDto::DmaBuf),
+        6 => Ok(CaptureBackendProbeDto::All),
+        other => Err(Status::invalid_argument(format!(
+            "unknown capture backend probe: {other}"
+        ))),
+    }
+}
+
 fn proto_dmabuf_import_target(value: i32) -> Result<DmaBufImportTargetDto, Status> {
     match value {
         0 | 1 => Ok(DmaBufImportTargetDto::Compute),
@@ -4780,6 +4902,15 @@ fn ui_state_name(kind: UiStateKind) -> &'static str {
 }
 
 fn proto_rect(rect: Rect) -> proto::Rect {
+    proto::Rect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    }
+}
+
+fn rect_dto_to_proto(rect: RectDto) -> proto::Rect {
     proto::Rect {
         x: rect.x,
         y: rect.y,
@@ -5545,15 +5676,16 @@ mod tests {
         dispatch_request, element_lookup_with_optional_vision_fallback, emergency_hotkey_details,
         emergency_hotkey_enabled_from_env, ensure_input_allowed, input_allowed_from_env,
         linux_input_event_size, ocr_result_dto, parse_args, parse_linux_input_event,
-        proto_capture_delta_response, proto_detect_ui_elements_response, proto_ocr_response,
-        proto_ui_state_response, proto_visual_diff_response, sandbox_profile_from_env,
-        server_config_for_profile, ui_element_list_dto, ui_state_dto, vision_fallback_from_env,
-        visual_diff_dto,
+        proto_capture_backends_response, proto_capture_delta_response,
+        proto_detect_ui_elements_response, proto_ocr_response, proto_ui_state_response,
+        proto_visual_diff_response, sandbox_profile_from_env, server_config_for_profile,
+        ui_element_list_dto, ui_state_dto, vision_fallback_from_env, visual_diff_dto,
     };
     use peekaboox_accessibility::AccessibilityTreeMetadata;
     use peekaboox_core::{BackendKind, PixelFormat, Rect, UiElement, WindowInfo, WindowState};
     use peekaboox_ipc::{
-        API_VERSION, ApiRequest, ApiResult,
+        API_VERSION, ApiRequest, ApiResult, CaptureBackendDto, CaptureBackendProbeResultDto,
+        CaptureBackendsResultDto, RectDto, ZeroCopyBackendDto,
         proto::{
             self,
             peekaboo_x_client::PeekabooXClient,
@@ -5872,6 +6004,67 @@ mod tests {
         assert_eq!(dto.changed_bounds.unwrap().width, 2);
         assert_eq!(dto.patch_base64, "YWJj");
         assert_eq!(dto.backend_kind, "portal");
+    }
+
+    #[test]
+    fn capture_backends_maps_to_proto_response() {
+        let response = proto_capture_backends_response(CaptureBackendsResultDto {
+            session_type: "wayland".to_owned(),
+            desktop: Some("GNOME".to_owned()),
+            pipewire_session_available: true,
+            pipewire_backend_feature_enabled: true,
+            egl_backend_feature_enabled: false,
+            output_path: "screen.png".to_owned(),
+            region: Some(RectDto {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4,
+            }),
+            image_backends: vec![CaptureBackendDto {
+                name: "portal".to_owned(),
+                backend_kind: "wayland".to_owned(),
+                command: None,
+                available: true,
+                supports_output: true,
+                supports_file_capture: true,
+                supports_stdout_capture: true,
+                supports_stdout_region_capture: true,
+                selected: true,
+                reason: None,
+            }],
+            zero_copy_backends: vec![ZeroCopyBackendDto {
+                name: "pipewire".to_owned(),
+                backend_kind: "wayland".to_owned(),
+                transport: "dmabuf".to_owned(),
+                availability: "available".to_owned(),
+                selected: true,
+                pipewire_backend_feature_enabled: true,
+                egl_backend_feature_enabled: false,
+                reason: None,
+            }],
+            probes: vec![CaptureBackendProbeResultDto {
+                probe: "region".to_owned(),
+                ok: true,
+                backend_name: Some("portal".to_owned()),
+                backend_kind: Some("wayland".to_owned()),
+                detail: "captured 3x4".to_owned(),
+                output_path: None,
+                bytes_written: None,
+                width: Some(3),
+                height: Some(4),
+            }],
+            warnings: vec!["diagnostic".to_owned()],
+        });
+
+        assert_eq!(response.session_type, "wayland");
+        assert_eq!(response.desktop.as_deref(), Some("GNOME"));
+        assert_eq!(response.region.as_ref().unwrap().width, 3);
+        assert_eq!(response.image_backends[0].name, "portal");
+        assert!(response.zero_copy_backends[0].selected);
+        assert_eq!(response.probes[0].probe, "region");
+        assert_eq!(response.probes[0].width, Some(3));
+        assert_eq!(response.warnings[0], "diagnostic");
     }
 
     #[test]

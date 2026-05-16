@@ -31,6 +31,8 @@ accessibility, and input backends:
 ```bash
 bash examples/desktop/live_smoke.sh
 bash examples/desktop/capture_backends_diagnostics.sh
+python3 examples/python/capture_backends_runtime.py
+bash examples/mcp/jsonrpc_capture_backends.sh
 bash examples/desktop/capture_delta_stream.sh
 python3 examples/python/capture_delta_runtime.py
 bash examples/mcp/jsonrpc_capture_delta.sh
@@ -54,6 +56,16 @@ optional DMA-BUF capture paths, and checks the daemon-routed command surface
 through a temporary observe-only `peekabooxd` socket. It writes per-run JSON
 reports and probe output under `target/examples/capture-backends`. Override
 `PEEKABOOX_CAPTURE_BACKENDS_REGION` to change the region probe.
+
+`examples/python/capture_backends_runtime.py` and
+`examples/mcp/jsonrpc_capture_backends.sh` run matching capture-backends
+discovery and file/frame/region probe checks through `AgentRuntime.connect(...)`
+and MCP JSON-RPC `tools/call` respectively. Both start a temporary observe-only
+daemon with gRPC and write JSON responses under
+`target/examples/python-capture-backends` or
+`target/examples/mcp-capture-backends`. Set `PEEKABOOX_PYTHON_BIN` when your
+system Python does not already have the packaged `grpcio` and `protobuf`
+dependencies.
 
 `examples/desktop/capture_delta_stream.sh` starts a temporary observe-only
 daemon and validates `peekaboox --daemon capture-delta --json` across reset

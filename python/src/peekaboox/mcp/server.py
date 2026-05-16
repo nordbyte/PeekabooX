@@ -264,6 +264,23 @@ class McpServer:
                 self._capture_delta,
             ),
             self._tool(
+                "capture_backends",
+                "Inspect and optionally probe screenshot and zero-copy capture backends.",
+                _schema(
+                    {
+                        "output": {"type": "string", "default": "screenshot.png"},
+                        "region": RECT_SCHEMA,
+                        "diagnose": {"type": "boolean", "default": False},
+                        "probe": {
+                            "type": "string",
+                            "enum": ["none", "file", "frame", "region", "dmabuf", "all"],
+                            "default": "none",
+                        },
+                    }
+                ),
+                self._capture_backends,
+            ),
+            self._tool(
                 "probe_dmabuf",
                 "Probe the optional DMA-BUF capture/import path.",
                 _schema(
@@ -936,6 +953,21 @@ class McpServer:
         payload = _to_mcp_value(result)
         payload["patch_base64"] = payload.pop("patch")
         return payload
+
+    def _capture_backends(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return _to_mcp_value(
+            self._require_runtime().capture_backends(
+                output=_optional_string(arguments, "output") or "screenshot.png",
+                region=_optional_rect(arguments, "region"),
+                diagnose=_optional_bool(arguments, "diagnose"),
+                probe=_optional_choice(
+                    arguments,
+                    "probe",
+                    ("none", "file", "frame", "region", "dmabuf", "all"),
+                )
+                or "none",
+            )
+        )
 
     def _probe_dmabuf(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return _to_mcp_value(

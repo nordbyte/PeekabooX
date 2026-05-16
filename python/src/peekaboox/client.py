@@ -113,6 +113,60 @@ class CaptureDeltaResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CaptureBackend:
+    name: str
+    backend_kind: str
+    command: str | None
+    available: bool
+    supports_output: bool
+    supports_file_capture: bool
+    supports_stdout_capture: bool
+    supports_stdout_region_capture: bool
+    selected: bool
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ZeroCopyBackend:
+    name: str
+    backend_kind: str
+    transport: str
+    availability: str
+    selected: bool
+    pipewire_backend_feature_enabled: bool
+    egl_backend_feature_enabled: bool
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureBackendProbeResult:
+    probe: str
+    ok: bool
+    backend_name: str | None
+    backend_kind: str | None
+    detail: str
+    output_path: str | None
+    bytes_written: int | None
+    width: int | None
+    height: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureBackendsResult:
+    session_type: str
+    desktop: str | None
+    pipewire_session_available: bool
+    pipewire_backend_feature_enabled: bool
+    egl_backend_feature_enabled: bool
+    output_path: str
+    region: Rect | None
+    image_backends: tuple[CaptureBackend, ...]
+    zero_copy_backends: tuple[ZeroCopyBackend, ...]
+    probes: tuple[CaptureBackendProbeResult, ...]
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class OcrBlock:
     text: str
     element: UiElement
@@ -348,6 +402,26 @@ class PeekabooXClient:
             request_kwargs["low_bandwidth"] = low_bandwidth
         response = self._call("CaptureDelta", self.messages.CaptureDeltaRequest(**request_kwargs))
         return _capture_delta_from_proto(response)
+
+    def capture_backends(
+        self,
+        output: str | PathLike[str] = "screenshot.png",
+        region: Rect | None = None,
+        diagnose: bool = False,
+        probe: str = "none",
+    ) -> CaptureBackendsResult:
+        request_kwargs: dict[str, Any] = {
+            "output": str(output),
+            "diagnose": diagnose,
+            "probe": _capture_backend_probe_value(self.messages, probe),
+        }
+        if region is not None:
+            request_kwargs["region"] = _rect_to_proto(self.messages, region)
+        response = self._call(
+            "CaptureBackends",
+            self.messages.CaptureBackendsRequest(**request_kwargs),
+        )
+        return _capture_backends_from_proto(response)
 
     def ocr_screen(
         self,
@@ -1212,6 +1286,69 @@ def _capture_delta_from_proto(response: Any) -> CaptureDeltaResult:
     )
 
 
+def _capture_backends_from_proto(response: Any) -> CaptureBackendsResult:
+    region = _message_field(response, "region")
+    return CaptureBackendsResult(
+        session_type=response.session_type,
+        desktop=_optional_scalar(response, "desktop"),
+        pipewire_session_available=response.pipewire_session_available,
+        pipewire_backend_feature_enabled=response.pipewire_backend_feature_enabled,
+        egl_backend_feature_enabled=response.egl_backend_feature_enabled,
+        output_path=response.output_path,
+        region=_rect_from_proto(region) if region is not None else None,
+        image_backends=tuple(
+            _capture_backend_from_proto(backend) for backend in response.image_backends
+        ),
+        zero_copy_backends=tuple(
+            _zero_copy_backend_from_proto(backend) for backend in response.zero_copy_backends
+        ),
+        probes=tuple(_capture_backend_probe_from_proto(probe) for probe in response.probes),
+        warnings=tuple(response.warnings),
+    )
+
+
+def _capture_backend_from_proto(backend: Any) -> CaptureBackend:
+    return CaptureBackend(
+        name=backend.name,
+        backend_kind=backend.backend_kind,
+        command=_optional_scalar(backend, "command"),
+        available=backend.available,
+        supports_output=backend.supports_output,
+        supports_file_capture=backend.supports_file_capture,
+        supports_stdout_capture=backend.supports_stdout_capture,
+        supports_stdout_region_capture=backend.supports_stdout_region_capture,
+        selected=backend.selected,
+        reason=_optional_scalar(backend, "reason"),
+    )
+
+
+def _zero_copy_backend_from_proto(backend: Any) -> ZeroCopyBackend:
+    return ZeroCopyBackend(
+        name=backend.name,
+        backend_kind=backend.backend_kind,
+        transport=backend.transport,
+        availability=backend.availability,
+        selected=backend.selected,
+        pipewire_backend_feature_enabled=backend.pipewire_backend_feature_enabled,
+        egl_backend_feature_enabled=backend.egl_backend_feature_enabled,
+        reason=_optional_scalar(backend, "reason"),
+    )
+
+
+def _capture_backend_probe_from_proto(probe: Any) -> CaptureBackendProbeResult:
+    return CaptureBackendProbeResult(
+        probe=probe.probe,
+        ok=probe.ok,
+        backend_name=_optional_scalar(probe, "backend_name"),
+        backend_kind=_optional_scalar(probe, "backend_kind"),
+        detail=probe.detail,
+        output_path=_optional_scalar(probe, "output_path"),
+        bytes_written=_optional_int(probe, "bytes_written"),
+        width=_optional_int(probe, "width"),
+        height=_optional_int(probe, "height"),
+    )
+
+
 def _pixel_format_name(value: int) -> str:
     return {
         1: "rgb8",
@@ -1461,6 +1598,36 @@ def _dmabuf_import_target_to_proto(messages: Any, import_target: str) -> int:
         "DMA_BUF_IMPORT_TARGET_COMPUTE": 1,
         "DMA_BUF_IMPORT_TARGET_EGL": 2,
         "DMA_BUF_IMPORT_TARGET_EGL_TEXTURE": 3,
+    }[name]
+
+
+def _capture_backend_probe_value(messages: Any, probe: str) -> int:
+    normalized = probe.strip().casefold().replace("-", "_")
+    names = {
+        "none": "CAPTURE_BACKEND_PROBE_NONE",
+        "file": "CAPTURE_BACKEND_PROBE_FILE",
+        "frame": "CAPTURE_BACKEND_PROBE_FRAME",
+        "region": "CAPTURE_BACKEND_PROBE_REGION",
+        "dmabuf": "CAPTURE_BACKEND_PROBE_DMA_BUF",
+        "dma_buf": "CAPTURE_BACKEND_PROBE_DMA_BUF",
+        "all": "CAPTURE_BACKEND_PROBE_ALL",
+    }
+    try:
+        name = names[normalized]
+    except KeyError as error:
+        raise ValueError("probe must be none, file, frame, region, dmabuf, or all") from error
+    if hasattr(messages, name):
+        return int(getattr(messages, name))
+    enum = getattr(messages, "CaptureBackendProbe", None)
+    if enum is not None and hasattr(enum, "Value"):
+        return int(enum.Value(name))
+    return {
+        "CAPTURE_BACKEND_PROBE_NONE": 1,
+        "CAPTURE_BACKEND_PROBE_FILE": 2,
+        "CAPTURE_BACKEND_PROBE_FRAME": 3,
+        "CAPTURE_BACKEND_PROBE_REGION": 4,
+        "CAPTURE_BACKEND_PROBE_DMA_BUF": 5,
+        "CAPTURE_BACKEND_PROBE_ALL": 6,
     }[name]
 
 

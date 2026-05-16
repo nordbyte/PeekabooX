@@ -6,6 +6,7 @@ Core RPCs:
 
 - `CaptureScreen`
 - `CaptureDelta`
+- `CaptureBackends`
 - `MoveMouse`
 - `Click`
 - `Drag`
@@ -105,6 +106,8 @@ Current gRPC method coverage:
 - `CaptureDelta` for persistent low-bandwidth full-screen, region, or
   `window_id` deltas with raw changed-rectangle patch bytes, plus explicit
   full-frame mode
+- `CaptureBackends` for screenshot backend discovery plus optional file, frame,
+  region, or DMA-BUF probe diagnostics
 - `MoveMouse` for absolute pointer movement
 - `Click` for coordinate clicks and AT-SPI `semantic_selector` clicks, with
   optional `vision_fallback`
@@ -205,6 +208,7 @@ delta = runtime.capture_delta(
     per_channel_threshold=2,
     low_bandwidth=True,
 )
+backends = runtime.capture_backends(output="screen.png", diagnose=True, probe="frame")
 window_capture = runtime.capture_screen(window_id="window-1")
 diff = runtime.compare_image_files("before.png", "after.png", max_changed_ratio=0.01)
 ui_state = runtime.detect_ui_state_from_image_files(["frame1.png", "frame2.png", "frame3.png"])
@@ -394,6 +398,7 @@ The current tool surface includes:
 
 - `capture_screen`
 - `capture_delta`
+- `capture_backends`
 - `probe_dmabuf`
 - `click`
 - `type_text`
@@ -438,7 +443,9 @@ daemon CLI and Python runtime client.
 `capture_screen` accepts optional `region` or `window_id`; `capture_delta`
 accepts `stream_id`, `reset`, optional `region` or `window_id`,
 `per_channel_threshold`, and `low_bandwidth` for persistent low-bandwidth
-capture streams.
+capture streams. `capture_backends` accepts `output`, optional `region`,
+`diagnose`, and `probe` values `none`, `file`, `frame`, `region`, `dmabuf`, or
+`all`.
 The desktop helper tools accept supported app profile names such as `telegram`,
 `paint`, `drawing`, `pinta`, `kolourpaint`, and `text-editor`, plus named
 targets such as Telegram's `search-input`/`message-input`, Paint's `canvas`, or
@@ -538,6 +545,7 @@ Supported request methods:
 - `ping`
 - `capture`
 - `capture_delta`
+- `capture_backends`
 - `desktop_focus`
 - `desktop_locate`
 - `desktop_click`

@@ -5,6 +5,7 @@ package peekaboox.v1;
 service PeekabooX {
   rpc CaptureScreen(CaptureScreenRequest) returns (CaptureScreenResponse);
   rpc CaptureDelta(CaptureDeltaRequest) returns (CaptureDeltaResponse);
+  rpc CaptureBackends(CaptureBackendsRequest) returns (CaptureBackendsResponse);
   rpc MoveMouse(MoveMouseRequest) returns (ActionResponse);
   rpc Click(ClickRequest) returns (ActionResponse);
   rpc Drag(DragRequest) returns (ActionResponse);
@@ -87,6 +88,73 @@ enum PixelFormat {
   PIXEL_FORMAT_RGB8 = 1;
   PIXEL_FORMAT_RGBA8 = 2;
   PIXEL_FORMAT_BGRA8 = 3;
+}
+
+enum CaptureBackendProbe {
+  CAPTURE_BACKEND_PROBE_UNSPECIFIED = 0;
+  CAPTURE_BACKEND_PROBE_NONE = 1;
+  CAPTURE_BACKEND_PROBE_FILE = 2;
+  CAPTURE_BACKEND_PROBE_FRAME = 3;
+  CAPTURE_BACKEND_PROBE_REGION = 4;
+  CAPTURE_BACKEND_PROBE_DMA_BUF = 5;
+  CAPTURE_BACKEND_PROBE_ALL = 6;
+}
+
+message CaptureBackendsRequest {
+  string output = 1;
+  optional Rect region = 2;
+  bool diagnose = 3;
+  CaptureBackendProbe probe = 4;
+}
+
+message CaptureBackendsResponse {
+  string session_type = 1;
+  optional string desktop = 2;
+  bool pipewire_session_available = 3;
+  bool pipewire_backend_feature_enabled = 4;
+  bool egl_backend_feature_enabled = 5;
+  string output_path = 6;
+  optional Rect region = 7;
+  repeated CaptureBackend image_backends = 8;
+  repeated ZeroCopyBackend zero_copy_backends = 9;
+  repeated CaptureBackendProbeResult probes = 10;
+  repeated string warnings = 11;
+}
+
+message CaptureBackend {
+  string name = 1;
+  string backend_kind = 2;
+  optional string command = 3;
+  bool available = 4;
+  bool supports_output = 5;
+  bool supports_file_capture = 6;
+  bool supports_stdout_capture = 7;
+  bool supports_stdout_region_capture = 8;
+  bool selected = 9;
+  optional string reason = 10;
+}
+
+message ZeroCopyBackend {
+  string name = 1;
+  string backend_kind = 2;
+  string transport = 3;
+  string availability = 4;
+  bool selected = 5;
+  bool pipewire_backend_feature_enabled = 6;
+  bool egl_backend_feature_enabled = 7;
+  optional string reason = 8;
+}
+
+message CaptureBackendProbeResult {
+  string probe = 1;
+  bool ok = 2;
+  optional string backend_name = 3;
+  optional string backend_kind = 4;
+  string detail = 5;
+  optional string output_path = 6;
+  optional uint64 bytes_written = 7;
+  optional uint32 width = 8;
+  optional uint32 height = 9;
 }
 
 message ClickRequest {

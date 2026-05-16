@@ -8,6 +8,7 @@ from typing import Any, Sequence
 
 from peekaboox.client import (
     ActionResult,
+    CaptureBackendsResult,
     CaptureDeltaResult,
     CaptureScreenResult,
     DetectUiElementsResult,
@@ -608,6 +609,23 @@ class AgentRuntime:
             window_id=window_id,
             per_channel_threshold=per_channel_threshold,
             low_bandwidth=low_bandwidth,
+        )
+        self._record_step(WorkflowStep(action="observe"))
+        return result
+
+    def capture_backends(
+        self,
+        output: str | Path = "screenshot.png",
+        region: Rect | None = None,
+        diagnose: bool = False,
+        probe: str = "none",
+    ) -> CaptureBackendsResult:
+        self._require_capability(Capability.OBSERVE, "capture_backends")
+        result = self._require_client().capture_backends(
+            output=output,
+            region=region,
+            diagnose=diagnose,
+            probe=probe,
         )
         self._record_step(WorkflowStep(action="observe"))
         return result

@@ -91,11 +91,11 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server --list-tools
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server
 ```
 
-Live desktop examples are in [examples/desktop](examples/desktop). They cover
-desktop smoke checks, scoped accessibility element inspection, real Calculator
-window inventory, daemon/Agent/MCP window live smoke checks, real Calculator
-element lookup with semantic click dry-runs, visible-window OCR, paint drawing
-and saving, Text Editor save dialogs, and Telegram Saved Messages automation.
+Live examples are documented in [examples/README.md](examples/README.md). They
+cover desktop smoke checks, capture-backend and capture-delta diagnostics across
+CLI/Python/MCP, scoped accessibility element inspection, real Calculator window
+inventory, visible-window OCR, paint drawing and saving, Text Editor save
+dialogs, and Telegram Saved Messages automation.
 
 ## Shell completions
 
