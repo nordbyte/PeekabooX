@@ -34,6 +34,7 @@ PYTHONPATH=python/src bash examples/mcp/jsonrpc_prompts.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_recovery_matrix.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_tool_parity.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_image_content.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_desktop_focus_diagnostics.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_paste_text.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_hotkey.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_plugins.sh
@@ -125,7 +126,11 @@ without parsing prose error text.
 `jsonrpc_image_content.sh` cover the wider MCP surface: resources/templates,
 prompts, completion, logging, structured recovery for security/preflight
 failures, CLI-compatible tool aliases, tool annotations/output schemas, and MCP
-image content blocks. `jsonrpc_paste_text.sh` verifies the MCP `paste_text`
+image content blocks. `jsonrpc_desktop_focus_diagnostics.sh` verifies the MCP
+`desktop_focus` input/output schemas for `focus_diagnostics` and can call a
+live daemon with `PEEKABOOX_MCP_DESKTOP_FOCUS_LIVE=1` to print the structured
+diagnostic count and verification detail. `jsonrpc_paste_text.sh` verifies the
+MCP `paste_text`
 schema for clipboard/hotkey backend selection, timing, dry-run, and restore
 policy fields, with an optional live dry-run call when
 `PEEKABOOX_MCP_PASTE_LIVE=1`. `jsonrpc_hotkey.sh` verifies the MCP `hotkey`
