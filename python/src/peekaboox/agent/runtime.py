@@ -1937,7 +1937,18 @@ class AgentRuntime:
         )
         return result
 
-    def paste_text(self, text: str, preserve_clipboard: bool = False) -> ActionResult:
+    def paste_text(
+        self,
+        text: str,
+        preserve_clipboard: bool = False,
+        *,
+        dry_run: bool = False,
+        clipboard_backend: str | None = None,
+        hotkey_backend: str | None = None,
+        delay_ms: int | None = None,
+        restore_delay_ms: int | None = None,
+        restore_policy: str | None = None,
+    ) -> ActionResult:
         self._require_capability(Capability.TYPE_TEXT, "paste_text", text_length=len(text))
         self._require_preflight("paste_text", "input")
         self._require_confirmation(
@@ -1945,13 +1956,34 @@ class AgentRuntime:
             "paste_text",
             text_length=len(text),
             preserve_clipboard=preserve_clipboard,
+            dry_run=dry_run,
+            clipboard_backend=clipboard_backend,
+            hotkey_backend=hotkey_backend,
+            delay_ms=delay_ms,
+            restore_delay_ms=restore_delay_ms,
+            restore_policy=restore_policy,
         )
-        result = self._require_client().paste_text(text, preserve_clipboard=preserve_clipboard)
+        result = self._require_client().paste_text(
+            text,
+            preserve_clipboard=preserve_clipboard,
+            dry_run=dry_run,
+            clipboard_backend=clipboard_backend,
+            hotkey_backend=hotkey_backend,
+            delay_ms=delay_ms,
+            restore_delay_ms=restore_delay_ms,
+            restore_policy=restore_policy,
+        )
         self._record_step(
             WorkflowStep(
                 action="paste_text",
                 value=text,
                 preserve_clipboard=preserve_clipboard,
+                dry_run=dry_run,
+                clipboard_backend=clipboard_backend,
+                hotkey_backend=hotkey_backend,
+                delay_ms=delay_ms,
+                restore_delay_ms=restore_delay_ms,
+                restore_policy=restore_policy,
             )
         )
         return result
@@ -2167,6 +2199,12 @@ class AgentRuntime:
             return self.paste_text(
                 step.value,
                 preserve_clipboard=step.preserve_clipboard,
+                dry_run=step.dry_run,
+                clipboard_backend=step.clipboard_backend,
+                hotkey_backend=step.hotkey_backend,
+                delay_ms=step.delay_ms,
+                restore_delay_ms=step.restore_delay_ms,
+                restore_policy=step.restore_policy,
             )
         if action == "hotkey":
             if step.value is None:

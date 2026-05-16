@@ -992,6 +992,21 @@ class McpServer:
                     {
                         "text": {"type": "string"},
                         "preserve_clipboard": {"type": "boolean", "default": False},
+                        "dry_run": {"type": "boolean", "default": False},
+                        "clipboard_backend": {
+                            "type": "string",
+                            "enum": ["auto", "wl-copy", "xclip", "xsel"],
+                        },
+                        "hotkey_backend": {
+                            "type": "string",
+                            "enum": ["auto", "ydotool", "xdotool"],
+                        },
+                        "delay_ms": {"type": "integer", "minimum": 0},
+                        "restore_delay_ms": {"type": "integer", "minimum": 0},
+                        "restore_policy": {
+                            "type": "string",
+                            "enum": ["strict", "best-effort", "off"],
+                        },
                     },
                     required=["text"],
                 ),
@@ -2052,6 +2067,18 @@ class McpServer:
             self._require_runtime().paste_text(
                 _required_str(arguments, "text"),
                 preserve_clipboard=bool(arguments.get("preserve_clipboard", False)),
+                dry_run=_optional_bool(arguments, "dry_run"),
+                clipboard_backend=_optional_choice(
+                    arguments, "clipboard_backend", ("auto", "wl-copy", "xclip", "xsel")
+                ),
+                hotkey_backend=_optional_choice(
+                    arguments, "hotkey_backend", ("auto", "ydotool", "xdotool")
+                ),
+                delay_ms=_optional_nonnegative_int(arguments, "delay_ms"),
+                restore_delay_ms=_optional_nonnegative_int(arguments, "restore_delay_ms"),
+                restore_policy=_optional_choice(
+                    arguments, "restore_policy", ("strict", "best-effort", "off")
+                ),
             )
         )
 

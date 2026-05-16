@@ -1759,19 +1759,28 @@ fn dispatch_request(
             text,
             preserve_clipboard,
             dry_run,
+            clipboard_backend,
+            hotkey_backend,
+            delay_ms,
+            restore_delay_ms,
+            restore_policy,
         } => {
-            let action = peekaboox_input::InputAction::PasteText {
-                text: text.clone(),
+            let options = paste_options_from_fields(
                 preserve_clipboard,
-            };
+                Some(clipboard_backend.as_str()),
+                Some(hotkey_backend.as_str()),
+                delay_ms,
+                restore_delay_ms,
+                Some(restore_policy.as_str()),
+            )?;
             let metadata = if dry_run {
                 let backend = peekaboox_input::CommandInputBackend
-                    .detect_backend_for(&action)
+                    .detect_paste_backend_for_options(options)
                     .map_err(|error| error.to_string())?;
-                detected_input_backend_dto(backend)
+                detected_paste_backend_dto(backend)
             } else {
                 ensure_input_allowed(config)?;
-                let metadata = peekaboox_input::paste_text_with_options(text, preserve_clipboard)
+                let metadata = peekaboox_input::paste_text_with_options(text, options)
                     .map_err(|error| error.to_string())?;
                 input_metadata_dto(metadata)
             };
@@ -2441,7 +2450,13 @@ impl PeekabooX for GrpcPeekabooXService {
         let request = request.into_inner();
         let details = json!({
             "text_length": request.text.chars().count(),
-            "preserve_clipboard": request.preserve_clipboard
+            "preserve_clipboard": request.preserve_clipboard,
+            "dry_run": request.dry_run,
+            "clipboard_backend": request.clipboard_backend.as_deref(),
+            "hotkey_backend": request.hotkey_backend.as_deref(),
+            "delay_ms": request.delay_ms,
+            "restore_delay_ms": request.restore_delay_ms,
+            "restore_policy": request.restore_policy.as_deref()
         });
 
         let result = grpc_paste_text(request, &self.config);
@@ -4530,16 +4545,44 @@ fn grpc_paste_text(
     request: proto::PasteTextRequest,
     config: &ServerConfig,
 ) -> Result<proto::ActionResponse, Status> {
-    ensure_input_allowed(config).map_err(Status::permission_denied)?;
-    let metadata =
-        peekaboox_input::paste_text_with_options(request.text, request.preserve_clipboard)
-            .map_err(|error| Status::internal(error.to_string()))?;
+    let options = paste_options_from_fields(
+        request.preserve_clipboard,
+        request.clipboard_backend.as_deref(),
+        request.hotkey_backend.as_deref(),
+        request.delay_ms,
+        request.restore_delay_ms,
+        request.restore_policy.as_deref(),
+    )
+    .map_err(Status::invalid_argument)?;
+    let action = peekaboox_input::InputAction::PasteText {
+        text: request.text.clone(),
+        preserve_clipboard: request.preserve_clipboard,
+    };
+    let metadata = if request.dry_run {
+        let backend = peekaboox_input::CommandInputBackend
+            .detect_paste_backend_for_options(options)
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        peekaboox_input::InputExecutionMetadata {
+            backend_name: backend.name(),
+            backend_kind: backend.backend_kind(),
+            action,
+        }
+    } else {
+        ensure_input_allowed(config).map_err(Status::permission_denied)?;
+        peekaboox_input::paste_text_with_options(request.text, options)
+            .map_err(|error| Status::internal(error.to_string()))?
+    };
     let backend_kind = backend_kind_name(metadata.backend_kind);
     let backend_name = metadata.backend_name;
+    let action = if request.dry_run {
+        "would paste text"
+    } else {
+        "pasted text"
+    };
 
     Ok(proto::ActionResponse {
         ok: true,
-        message: format!("pasted text using {backend_name}/{backend_kind}"),
+        message: format!("{action} using {backend_name}/{backend_kind}"),
         backend_name: Some(backend_name),
         backend_kind: Some(backend_kind),
     })
@@ -6383,6 +6426,13 @@ fn detected_input_backend_dto(backend: peekaboox_input::DetectedInputBackend) ->
     }
 }
 
+fn detected_paste_backend_dto(backend: peekaboox_input::DetectedPasteBackend) -> ActionResultDto {
+    ActionResultDto {
+        backend_name: backend.name(),
+        backend_kind: backend_kind_name(backend.backend_kind()),
+    }
+}
+
 fn desktop_action_dto(result: peekaboox_desktop::DesktopActionResult) -> DesktopActionResultDto {
     DesktopActionResultDto {
         app: result.app,
@@ -6557,6 +6607,24 @@ fn type_options_from_fields(
     })
 }
 
+fn paste_options_from_fields(
+    preserve_clipboard: bool,
+    clipboard_backend: Option<&str>,
+    hotkey_backend: Option<&str>,
+    delay_ms: Option<u64>,
+    restore_delay_ms: Option<u64>,
+    restore_policy: Option<&str>,
+) -> Result<peekaboox_input::PasteTextOptions, String> {
+    Ok(peekaboox_input::PasteTextOptions {
+        preserve_clipboard,
+        clipboard_backend: parse_clipboard_backend_selection(clipboard_backend.unwrap_or("auto"))?,
+        hotkey_backend: parse_paste_hotkey_backend_selection(hotkey_backend.unwrap_or("auto"))?,
+        delay_ms: delay_ms.unwrap_or(80),
+        restore_delay_ms: restore_delay_ms.unwrap_or(120),
+        restore_policy: parse_clipboard_restore_policy(restore_policy.unwrap_or("strict"))?,
+    })
+}
+
 fn drag_options_from_fields(
     duration_ms: Option<u64>,
     steps: Option<u32>,
@@ -6610,6 +6678,46 @@ fn parse_type_backend_selection(
         "xdotool" => Ok(peekaboox_input::InputToolSelection::Xdotool),
         value => Err(format!(
             "backend must be auto, wtype, ydotool, or xdotool for type, got {value:?}"
+        )),
+    }
+}
+
+fn parse_clipboard_backend_selection(
+    value: &str,
+) -> Result<peekaboox_input::ClipboardBackendSelection, String> {
+    match value.trim() {
+        "" | "auto" => Ok(peekaboox_input::ClipboardBackendSelection::Auto),
+        "wl-copy" | "wlcopy" => Ok(peekaboox_input::ClipboardBackendSelection::WlCopy),
+        "xclip" => Ok(peekaboox_input::ClipboardBackendSelection::Xclip),
+        "xsel" => Ok(peekaboox_input::ClipboardBackendSelection::Xsel),
+        value => Err(format!(
+            "clipboard_backend must be auto, wl-copy, xclip, or xsel, got {value:?}"
+        )),
+    }
+}
+
+fn parse_paste_hotkey_backend_selection(
+    value: &str,
+) -> Result<peekaboox_input::PasteHotkeyBackendSelection, String> {
+    match value.trim() {
+        "" | "auto" => Ok(peekaboox_input::PasteHotkeyBackendSelection::Auto),
+        "ydotool" => Ok(peekaboox_input::PasteHotkeyBackendSelection::Ydotool),
+        "xdotool" => Ok(peekaboox_input::PasteHotkeyBackendSelection::Xdotool),
+        value => Err(format!(
+            "hotkey_backend must be auto, ydotool, or xdotool, got {value:?}"
+        )),
+    }
+}
+
+fn parse_clipboard_restore_policy(
+    value: &str,
+) -> Result<peekaboox_input::ClipboardRestorePolicy, String> {
+    match value.trim() {
+        "" | "strict" => Ok(peekaboox_input::ClipboardRestorePolicy::Strict),
+        "best-effort" | "best_effort" => Ok(peekaboox_input::ClipboardRestorePolicy::BestEffort),
+        "off" => Ok(peekaboox_input::ClipboardRestorePolicy::Off),
+        value => Err(format!(
+            "restore_policy must be strict, best-effort, or off, got {value:?}"
         )),
     }
 }
@@ -6969,11 +7077,21 @@ fn audit_details(request: &ApiRequest) -> serde_json::Value {
             text,
             preserve_clipboard,
             dry_run,
+            clipboard_backend,
+            hotkey_backend,
+            delay_ms,
+            restore_delay_ms,
+            restore_policy,
         } => {
             json!({
                 "text_length": text.chars().count(),
                 "preserve_clipboard": preserve_clipboard,
-                "dry_run": dry_run
+                "dry_run": dry_run,
+                "clipboard_backend": clipboard_backend,
+                "hotkey_backend": hotkey_backend,
+                "delay_ms": delay_ms,
+                "restore_delay_ms": restore_delay_ms,
+                "restore_policy": restore_policy
             })
         }
         ApiRequest::Hotkey { keys, dry_run } => {

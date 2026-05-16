@@ -1117,11 +1117,58 @@ class PeekabooXClient:
         request = self.messages.TypeTextRequest(**request_kwargs)
         return _action_result_from_proto(self._call("TypeText", request))
 
-    def paste_text(self, text: str, preserve_clipboard: bool = False) -> ActionResult:
-        request = self.messages.PasteTextRequest(
-            text=text,
-            preserve_clipboard=preserve_clipboard,
-        )
+    def paste_text(
+        self,
+        text: str,
+        preserve_clipboard: bool = False,
+        *,
+        dry_run: bool = False,
+        clipboard_backend: str | None = None,
+        hotkey_backend: str | None = None,
+        delay_ms: int | None = None,
+        restore_delay_ms: int | None = None,
+        restore_policy: str | None = None,
+    ) -> ActionResult:
+        if clipboard_backend is not None and clipboard_backend not in {
+            "auto",
+            "wl-copy",
+            "xclip",
+            "xsel",
+        }:
+            raise ValueError("clipboard_backend must be auto, wl-copy, xclip, or xsel")
+        if hotkey_backend is not None and hotkey_backend not in {
+            "auto",
+            "ydotool",
+            "xdotool",
+        }:
+            raise ValueError("hotkey_backend must be auto, ydotool, or xdotool")
+        if delay_ms is not None and delay_ms < 0:
+            raise ValueError("delay_ms must be non-negative")
+        if restore_delay_ms is not None and restore_delay_ms < 0:
+            raise ValueError("restore_delay_ms must be non-negative")
+        if restore_policy is not None and restore_policy not in {
+            "strict",
+            "best-effort",
+            "off",
+        }:
+            raise ValueError("restore_policy must be strict, best-effort, or off")
+
+        request_kwargs: dict[str, Any] = {
+            "text": text,
+            "preserve_clipboard": preserve_clipboard,
+            "dry_run": dry_run,
+        }
+        if clipboard_backend is not None:
+            request_kwargs["clipboard_backend"] = clipboard_backend
+        if hotkey_backend is not None:
+            request_kwargs["hotkey_backend"] = hotkey_backend
+        if delay_ms is not None:
+            request_kwargs["delay_ms"] = delay_ms
+        if restore_delay_ms is not None:
+            request_kwargs["restore_delay_ms"] = restore_delay_ms
+        if restore_policy is not None:
+            request_kwargs["restore_policy"] = restore_policy
+        request = self.messages.PasteTextRequest(**request_kwargs)
         return _action_result_from_proto(self._call("PasteText", request))
 
     def hotkey(self, keys: Sequence[str] | str) -> ActionResult:

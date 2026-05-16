@@ -229,6 +229,12 @@ message TypeTextRequest {
 message PasteTextRequest {
   string text = 1;
   bool preserve_clipboard = 2;
+  bool dry_run = 3;
+  optional string clipboard_backend = 4;
+  optional string hotkey_backend = 5;
+  optional uint64 delay_ms = 6;
+  optional uint64 restore_delay_ms = 7;
+  optional string restore_policy = 8;
 }
 
 message HotkeyRequest {

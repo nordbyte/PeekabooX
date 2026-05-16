@@ -21,6 +21,12 @@ steps:
   - action: paste_text
     value: PeekabooX workflow paste
     preserve_clipboard: true
+    dry_run: true
+    clipboard_backend: auto
+    hotkey_backend: auto
+    delay_ms: 80
+    restore_delay_ms: 120
+    restore_policy: best-effort
     verify: false
   - action: hotkey
     value: ctrl+s

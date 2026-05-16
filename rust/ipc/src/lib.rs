@@ -28,6 +28,10 @@ fn default_input_backend() -> String {
     "auto".to_owned()
 }
 
+fn default_clipboard_restore_policy() -> String {
+    "strict".to_owned()
+}
+
 pub mod proto {
     tonic::include_proto!("peekaboox.v1");
 }
@@ -214,6 +218,16 @@ pub enum ApiRequest {
         preserve_clipboard: bool,
         #[serde(default)]
         dry_run: bool,
+        #[serde(default = "default_input_backend")]
+        clipboard_backend: String,
+        #[serde(default = "default_input_backend")]
+        hotkey_backend: String,
+        #[serde(default)]
+        delay_ms: Option<u64>,
+        #[serde(default)]
+        restore_delay_ms: Option<u64>,
+        #[serde(default = "default_clipboard_restore_policy")]
+        restore_policy: String,
     },
     Hotkey {
         keys: Vec<String>,
@@ -1196,11 +1210,19 @@ mod tests {
             text: "hello".to_owned(),
             preserve_clipboard: true,
             dry_run: true,
+            clipboard_backend: "xclip".to_owned(),
+            hotkey_backend: "xdotool".to_owned(),
+            delay_ms: Some(25),
+            restore_delay_ms: Some(50),
+            restore_policy: "best-effort".to_owned(),
         });
         let payload = serde_json::to_string(&request).unwrap();
 
         assert!(payload.contains(r#""method":"paste_text""#));
         assert!(payload.contains(r#""preserve_clipboard":true"#));
+        assert!(payload.contains(r#""clipboard_backend":"xclip""#));
+        assert!(payload.contains(r#""hotkey_backend":"xdotool""#));
+        assert!(payload.contains(r#""restore_policy":"best-effort""#));
         assert_eq!(decode_request(&payload).unwrap(), request);
     }
 

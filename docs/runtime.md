@@ -175,7 +175,8 @@ arguments. Scoped or vision-tuned lookups bypass stale graph cache hits and go
 to the daemon so the requested window and detector options are honored.
 Text input steps preserve `typing_speed_chars_per_second`, `delay_ms`,
 `key_delay_ms`, `backend`, and `dry_run` through recording and replay. Paste
-steps preserve `preserve_clipboard`.
+steps preserve `preserve_clipboard`, `dry_run`, `clipboard_backend`,
+`hotkey_backend`, `delay_ms`, `restore_delay_ms`, and `restore_policy`.
 
 When recording coordinate clicks, the runtime samples semantic desktop state if
 needed and stores a stable selector such as `role=push button,label=Submit`

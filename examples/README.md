@@ -14,8 +14,10 @@ bash examples/cli/compare_visual_regression.sh
 bash examples/cli/ui_state_sequence.sh
 bash examples/cli/ocr-smoke.sh
 bash examples/cli/agent-preflight-smoke.sh
+bash examples/cli/paste_sources.sh
 PYTHONPATH=python/src python3 examples/python/runtime_smoke.py
 PYTHONPATH=python/src python3 examples/python/doctor_runtime.py
+PYTHONPATH=python/src python3 examples/python/paste_runtime.py
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_list_tools.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_doctor.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_preflight.sh
@@ -25,6 +27,7 @@ PYTHONPATH=python/src bash examples/mcp/jsonrpc_prompts.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_recovery_matrix.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_tool_parity.sh
 PYTHONPATH=python/src bash examples/mcp/jsonrpc_image_content.sh
+PYTHONPATH=python/src bash examples/mcp/jsonrpc_paste_text.sh
 cargo run -q -p peekaboox-cli -- doctor --json
 ```
 
@@ -57,12 +60,19 @@ word-level output. It skips cleanly when `tesseract` is not installed.
 validates the JSON result shape. Set `PEEKABOOX_STRICT=1` to make blocked
 Doctor categories fail the example instead of being reported.
 
+`examples/cli/paste_sources.sh` validates the `paste` CLI surface in dry-run
+mode with direct text, file, and stdin sources plus clipboard backend,
+hotkey backend, delay, restore delay, and restore-policy options.
+
 `examples/python/doctor_runtime.py` and `examples/mcp/jsonrpc_doctor.sh` run the
 same structured environment diagnostics through `AgentRuntime.doctor(...)` and
 MCP JSON-RPC `tools/call`. They validate per-check categories, severities, and
 category rollups, then write JSON under
 `target/examples/python-doctor` or `target/examples/mcp-doctor`. Set
 `PEEKABOOX_BIN` to test an installed binary instead of the local Cargo fallback.
+`examples/python/paste_runtime.py` checks the Python runtime and workflow
+surface for `paste_text` without mutating the desktop by using a recording
+client and `dry_run=True`.
 `examples/mcp/jsonrpc_preflight.sh` uses those Doctor categories through the MCP
 `preflight` tool before a capture-style operation.
 `examples/mcp/jsonrpc_preflight_error_client.sh` injects a deterministic Doctor
@@ -74,7 +84,10 @@ without parsing prose error text.
 `jsonrpc_image_content.sh` cover the wider MCP surface: resources/templates,
 prompts, completion, logging, structured recovery for security/preflight
 failures, CLI-compatible tool aliases, tool annotations/output schemas, and MCP
-image content blocks.
+image content blocks. `jsonrpc_paste_text.sh` verifies the MCP `paste_text`
+schema for clipboard/hotkey backend selection, timing, dry-run, and restore
+policy fields, with an optional live dry-run call when
+`PEEKABOOX_MCP_PASTE_LIVE=1`.
 
 ## Live desktop examples
 
@@ -100,6 +113,7 @@ bash examples/desktop/ocr_visible_window.sh
 bash examples/desktop/move_pointer_path.sh
 bash examples/desktop/click_calculator_keypad.sh
 bash examples/desktop/type_text_editor_input.sh
+bash examples/desktop/paste_text_editor_input.sh
 bash examples/desktop/paint_draw_and_save.sh
 bash examples/desktop/text_editor_save_dialog.sh
 bash examples/desktop/telegram_saved_messages.sh
@@ -255,6 +269,15 @@ so keyboard layout mapping cannot corrupt path separators. It refuses to
 overwrite existing files. Override
 `PEEKABOOX_TEXT_EDITOR_TEXT`, `PEEKABOOX_TEXT_EDITOR_OUTPUT`, or
 `PEEKABOOX_TEXT_EDITOR_FOCUS_WAIT_MS` for custom runs.
+
+`examples/desktop/paste_text_editor_input.sh` is the dedicated live `paste`
+example. It performs dry-run checks for direct text, file, and stdin sources,
+then, when `PEEKABOOX_PASTE_LIVE=1`, opens GNOME Text Editor on a unique draft
+file, sets a clipboard sentinel, pastes file-backed text with
+`--preserve-clipboard`, saves the draft, verifies the file content, and checks
+that the textual clipboard was restored. Override
+`PEEKABOOX_PASTE_CLIPBOARD_BACKEND`, `PEEKABOOX_PASTE_HOTKEY_BACKEND`,
+`PEEKABOOX_PASTE_RESTORE_POLICY`, or `PEEKABOOX_PASTE_TEXT` for custom runs.
 
 `examples/desktop/telegram_saved_messages.sh` opens or focuses Telegram Desktop
 through the reusable `peekaboox desktop focus` helper, locates Telegram's

@@ -110,12 +110,16 @@ def workflow_step_from_dict(value: Any, index: int = 0) -> WorkflowStep:
         steps=_optional_int(value, "steps"),
         bounds_policy=_optional_string(value, "bounds_policy"),
         backend=_optional_string(value, "backend"),
+        clipboard_backend=_optional_string(value, "clipboard_backend"),
+        hotkey_backend=_optional_string(value, "hotkey_backend"),
         typing_speed_chars_per_second=_optional_int(
             value, "typing_speed_chars_per_second"
         ),
         delay_ms=_optional_int(value, "delay_ms"),
         key_delay_ms=_optional_int(value, "key_delay_ms"),
         preserve_clipboard=_optional_bool(value, "preserve_clipboard", default=False),
+        restore_delay_ms=_optional_int(value, "restore_delay_ms"),
+        restore_policy=_optional_string(value, "restore_policy"),
         restore=_optional_bool(value, "restore", default=False),
         dry_run=_optional_bool(value, "dry_run", default=False),
         vision_fallback=_optional_bool(value, "vision_fallback", default=False),
@@ -179,6 +183,10 @@ def workflow_step_to_dict(step: WorkflowStep) -> dict[str, object]:
         value["bounds_policy"] = step.bounds_policy
     if step.backend is not None:
         value["backend"] = step.backend
+    if step.clipboard_backend is not None:
+        value["clipboard_backend"] = step.clipboard_backend
+    if step.hotkey_backend is not None:
+        value["hotkey_backend"] = step.hotkey_backend
     if step.typing_speed_chars_per_second is not None:
         value["typing_speed_chars_per_second"] = step.typing_speed_chars_per_second
     if step.delay_ms is not None:
@@ -187,6 +195,10 @@ def workflow_step_to_dict(step: WorkflowStep) -> dict[str, object]:
         value["key_delay_ms"] = step.key_delay_ms
     if step.preserve_clipboard:
         value["preserve_clipboard"] = step.preserve_clipboard
+    if step.restore_delay_ms is not None:
+        value["restore_delay_ms"] = step.restore_delay_ms
+    if step.restore_policy is not None:
+        value["restore_policy"] = step.restore_policy
     if step.restore:
         value["restore"] = step.restore
     if step.dry_run:

@@ -115,8 +115,9 @@ Current gRPC method coverage:
 - `Drag` for absolute, current-position, region/window ratio, dry-run, smooth,
   bounded, backend-selected, and cursor-restoring pointer drags
 - `TypeText`
-- `PasteText` for clipboard-backed text insertion with optional textual
-  clipboard restoration
+- `PasteText` for clipboard-backed text insertion with dry-run detection,
+  clipboard backend selection, paste hotkey backend selection, paste timing,
+  and optional textual clipboard restoration
 - `Hotkey` for keyboard shortcuts such as `ctrl+s`
 - `FindElement` through AT-SPI selector queries, with optional `vision_fallback`
 - `ListWindows`
@@ -419,7 +420,8 @@ Workflow files use the same fields as `WorkflowStep`: `action`, `selector`,
 `value`, pointer coordinates, scoped window fields, `backend`, `dry_run`,
 `vision_fallback`, and `verify`. `type_text` steps can also set
 `typing_speed_chars_per_second`, `delay_ms`, and `key_delay_ms`; `paste_text`
-steps can set `preserve_clipboard`. JSON is parsed with the standard library;
+steps can set `preserve_clipboard`, `dry_run`, `clipboard_backend`,
+`hotkey_backend`, `delay_ms`, `restore_delay_ms`, and `restore_policy`. JSON is parsed with the standard library;
 YAML support covers the repository workflow shape without an extra runtime
 dependency. The recorder writes the same schema, so recorded workflows can be
 reviewed, edited, and replayed through `execute_workflow_file`.

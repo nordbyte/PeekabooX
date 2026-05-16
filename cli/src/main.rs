@@ -7228,6 +7228,23 @@ struct TypeArgs {
     delay_ms: Option<u64>,
     key_delay_ms: Option<u64>,
     backend: peekaboox_input::InputToolSelection,
+    clipboard_backend: peekaboox_input::ClipboardBackendSelection,
+    hotkey_backend: peekaboox_input::PasteHotkeyBackendSelection,
+    restore_delay_ms: Option<u64>,
+    restore_policy: peekaboox_input::ClipboardRestorePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PasteArgs {
+    source: TypeTextSource,
+    dry_run: bool,
+    preserve_clipboard: bool,
+    json: bool,
+    clipboard_backend: peekaboox_input::ClipboardBackendSelection,
+    hotkey_backend: peekaboox_input::PasteHotkeyBackendSelection,
+    delay_ms: Option<u64>,
+    restore_delay_ms: Option<u64>,
+    restore_policy: peekaboox_input::ClipboardRestorePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7244,6 +7261,12 @@ enum TypeCommand {
     Help,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PasteCommand {
+    Run(PasteArgs),
+    Help,
+}
+
 fn type_text(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
     let TypeCommand::Run(args) = parse_type_args(args)? else {
         print_type_usage();
@@ -7254,13 +7277,12 @@ fn type_text(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
 }
 
 fn paste_text(args: Vec<String>, context: &CliContext) -> Result<(), CliError> {
-    let TypeCommand::Run(mut args) = parse_type_args(args)? else {
+    let PasteCommand::Run(args) = parse_paste_args(args)? else {
         print_paste_usage();
         return Err(CliError::HelpRequested);
     };
-    args.paste = true;
 
-    run_text_input(args, context)
+    run_paste_input(args, context)
 }
 
 fn run_text_input(args: TypeArgs, context: &CliContext) -> Result<(), CliError> {
@@ -7287,6 +7309,11 @@ fn run_text_input(args: TypeArgs, context: &CliContext) -> Result<(), CliError> 
                     text: text.clone(),
                     preserve_clipboard: args.preserve_clipboard,
                     dry_run: args.dry_run,
+                    clipboard_backend: args.clipboard_backend.name().to_owned(),
+                    hotkey_backend: args.hotkey_backend.name().to_owned(),
+                    delay_ms: args.delay_ms,
+                    restore_delay_ms: args.restore_delay_ms,
+                    restore_policy: args.restore_policy.name().to_owned(),
                 }
             } else {
                 ApiRequest::TypeText {
@@ -7314,27 +7341,28 @@ fn run_text_input(args: TypeArgs, context: &CliContext) -> Result<(), CliError> 
 
     if args.dry_run {
         let backend = if args.paste {
-            peekaboox_input::CommandInputBackend
-                .detect_backend_for(&action)
-                .map_err(|error| CliError::Failure(error.to_string()))?
-        } else {
-            peekaboox_input::CommandInputBackend
-                .detect_backend_for_with_selection(&action, args.backend)
-                .map_err(|error| CliError::Failure(error.to_string()))?
-        };
-        print_type_result(
-            &args,
-            &text,
+            let paste_backend = peekaboox_input::CommandInputBackend
+                .detect_paste_backend_for_options(paste_options_from_type_args(&args))
+                .map_err(|error| CliError::Failure(error.to_string()))?;
             ActionResultDto {
-                backend_name: backend.name().to_owned(),
-                backend_kind: format!("{:?}", backend.backend_kind()).to_ascii_lowercase(),
-            },
-        );
+                backend_name: paste_backend.name(),
+                backend_kind: format!("{:?}", paste_backend.backend_kind()).to_ascii_lowercase(),
+            }
+        } else {
+            let input_backend = peekaboox_input::CommandInputBackend
+                .detect_backend_for_with_selection(&action, args.backend)
+                .map_err(|error| CliError::Failure(error.to_string()))?;
+            ActionResultDto {
+                backend_name: input_backend.name().to_owned(),
+                backend_kind: format!("{:?}", input_backend.backend_kind()).to_ascii_lowercase(),
+            }
+        };
+        print_type_result(&args, &text, backend);
         return Ok(());
     }
 
     let metadata = if args.paste {
-        peekaboox_input::paste_text_with_options(text.clone(), args.preserve_clipboard)
+        peekaboox_input::paste_text_with_options(text.clone(), paste_options_from_type_args(&args))
     } else {
         peekaboox_input::type_text_with_options(text.clone(), type_options_from_args(&args))
     }
@@ -7351,6 +7379,64 @@ fn run_text_input(args: TypeArgs, context: &CliContext) -> Result<(), CliError> 
     Ok(())
 }
 
+fn run_paste_input(args: PasteArgs, context: &CliContext) -> Result<(), CliError> {
+    let text = read_type_text_source(&args.source)?;
+    if text.is_empty() {
+        return Err(CliError::Failure("missing text to paste".to_owned()));
+    }
+
+    let options = paste_options_from_paste_args(&args);
+    if context.use_daemon {
+        let result = daemon_request(
+            context,
+            ApiRequest::PasteText {
+                text: text.clone(),
+                preserve_clipboard: args.preserve_clipboard,
+                dry_run: args.dry_run,
+                clipboard_backend: args.clipboard_backend.name().to_owned(),
+                hotkey_backend: args.hotkey_backend.name().to_owned(),
+                delay_ms: args.delay_ms,
+                restore_delay_ms: args.restore_delay_ms,
+                restore_policy: args.restore_policy.name().to_owned(),
+            },
+        )?;
+        let ApiResult::PasteText(metadata) = result else {
+            return Err(CliError::Failure(
+                "daemon returned unexpected paste response".to_owned(),
+            ));
+        };
+        print_paste_result(&args, &text, metadata);
+        return Ok(());
+    }
+
+    if args.dry_run {
+        let backend = peekaboox_input::CommandInputBackend
+            .detect_paste_backend_for_options(options)
+            .map_err(|error| CliError::Failure(error.to_string()))?;
+        print_paste_result(
+            &args,
+            &text,
+            ActionResultDto {
+                backend_name: backend.name(),
+                backend_kind: format!("{:?}", backend.backend_kind()).to_ascii_lowercase(),
+            },
+        );
+        return Ok(());
+    }
+
+    let metadata = peekaboox_input::paste_text_with_options(text.clone(), options)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    print_paste_result(
+        &args,
+        &text,
+        ActionResultDto {
+            backend_name: metadata.backend_name,
+            backend_kind: format!("{:?}", metadata.backend_kind).to_ascii_lowercase(),
+        },
+    );
+    Ok(())
+}
+
 fn type_options_from_args(args: &TypeArgs) -> peekaboox_input::TypeTextOptions {
     peekaboox_input::TypeTextOptions {
         typing_speed_chars_per_second: args.typing_speed_chars_per_second,
@@ -7360,15 +7446,36 @@ fn type_options_from_args(args: &TypeArgs) -> peekaboox_input::TypeTextOptions {
     }
 }
 
+fn paste_options_from_type_args(args: &TypeArgs) -> peekaboox_input::PasteTextOptions {
+    peekaboox_input::PasteTextOptions {
+        preserve_clipboard: args.preserve_clipboard,
+        clipboard_backend: args.clipboard_backend,
+        hotkey_backend: args.hotkey_backend,
+        delay_ms: args.delay_ms.unwrap_or(80),
+        restore_delay_ms: args.restore_delay_ms.unwrap_or(120),
+        restore_policy: args.restore_policy,
+    }
+}
+
+fn paste_options_from_paste_args(args: &PasteArgs) -> peekaboox_input::PasteTextOptions {
+    peekaboox_input::PasteTextOptions {
+        preserve_clipboard: args.preserve_clipboard,
+        clipboard_backend: args.clipboard_backend,
+        hotkey_backend: args.hotkey_backend,
+        delay_ms: args.delay_ms.unwrap_or(80),
+        restore_delay_ms: args.restore_delay_ms.unwrap_or(120),
+        restore_policy: args.restore_policy,
+    }
+}
+
 fn validate_text_input_args(args: &TypeArgs) -> Result<(), CliError> {
     if args.paste {
         if args.typing_speed_chars_per_second.is_some()
-            || args.delay_ms.is_some()
             || args.key_delay_ms.is_some()
             || args.backend != peekaboox_input::InputToolSelection::Auto
         {
             return Err(CliError::Failure(
-                "paste does not support type timing or type backend options".to_owned(),
+                "paste does not support type speed, key-delay, or type backend options".to_owned(),
             ));
         }
         return Ok(());
@@ -7377,6 +7484,16 @@ fn validate_text_input_args(args: &TypeArgs) -> Result<(), CliError> {
     if args.preserve_clipboard {
         return Err(CliError::Failure(
             "--preserve-clipboard requires --paste or the paste command".to_owned(),
+        ));
+    }
+    if args.clipboard_backend != peekaboox_input::ClipboardBackendSelection::Auto
+        || args.hotkey_backend != peekaboox_input::PasteHotkeyBackendSelection::Auto
+        || args.restore_delay_ms.is_some()
+        || args.restore_policy != peekaboox_input::ClipboardRestorePolicy::Strict
+    {
+        return Err(CliError::Failure(
+            "paste backend and clipboard restore options require --paste or the paste command"
+                .to_owned(),
         ));
     }
     if args.typing_speed_chars_per_second.is_some() && args.key_delay_ms.is_some() {
@@ -7414,10 +7531,14 @@ fn print_type_result(args: &TypeArgs, text: &str, metadata: ActionResultDto) {
             "backend_name": metadata.backend_name,
             "backend_kind": metadata.backend_kind,
             "requested_backend": if args.paste { None } else { Some(args.backend.name()) },
+            "requested_clipboard_backend": if args.paste { Some(args.clipboard_backend.name()) } else { None },
+            "requested_hotkey_backend": if args.paste { Some(args.hotkey_backend.name()) } else { None },
             "typing_speed_chars_per_second": args.typing_speed_chars_per_second,
             "delay_ms": args.delay_ms,
             "key_delay_ms": args.key_delay_ms,
             "preserve_clipboard": args.preserve_clipboard,
+            "restore_delay_ms": if args.paste { args.restore_delay_ms } else { None },
+            "restore_policy": if args.paste { Some(args.restore_policy.name()) } else { None },
         }));
         return;
     }
@@ -7430,6 +7551,32 @@ fn print_type_result(args: &TypeArgs, text: &str, metadata: ActionResultDto) {
     }
 }
 
+fn print_paste_result(args: &PasteArgs, text: &str, metadata: ActionResultDto) {
+    if args.json {
+        let _ = print_json_pretty(&serde_json::json!({
+            "ok": true,
+            "dry_run": args.dry_run,
+            "action": "paste_text",
+            "text_length": text.chars().count(),
+            "backend_name": metadata.backend_name,
+            "backend_kind": metadata.backend_kind,
+            "requested_clipboard_backend": args.clipboard_backend.name(),
+            "requested_hotkey_backend": args.hotkey_backend.name(),
+            "delay_ms": args.delay_ms,
+            "preserve_clipboard": args.preserve_clipboard,
+            "restore_delay_ms": args.restore_delay_ms,
+            "restore_policy": args.restore_policy.name(),
+        }));
+        return;
+    }
+
+    if args.dry_run {
+        println!("would paste via {}", metadata.backend_name);
+    } else {
+        println!("pasted text via {}", metadata.backend_name);
+    }
+}
+
 fn parse_type_args(args: Vec<String>) -> Result<TypeCommand, CliError> {
     let mut dry_run = false;
     let mut paste = false;
@@ -7439,6 +7586,10 @@ fn parse_type_args(args: Vec<String>) -> Result<TypeCommand, CliError> {
     let mut delay_ms = None;
     let mut key_delay_ms = None;
     let mut backend = peekaboox_input::InputToolSelection::Auto;
+    let mut clipboard_backend = peekaboox_input::ClipboardBackendSelection::Auto;
+    let mut hotkey_backend = peekaboox_input::PasteHotkeyBackendSelection::Auto;
+    let mut restore_delay_ms = None;
+    let mut restore_policy = peekaboox_input::ClipboardRestorePolicy::Strict;
     let mut source = None;
     let mut text_parts = Vec::new();
     let mut index = 0;
@@ -7478,6 +7629,22 @@ fn parse_type_args(args: Vec<String>) -> Result<TypeCommand, CliError> {
                 let value = parse_next_string(&args, &mut index, "--backend")?;
                 backend = parse_type_backend_selection(&value)?;
             }
+            "--clipboard-backend" => {
+                let value = parse_next_string(&args, &mut index, "--clipboard-backend")?;
+                clipboard_backend = parse_clipboard_backend_selection(&value)?;
+            }
+            "--hotkey-backend" => {
+                let value = parse_next_string(&args, &mut index, "--hotkey-backend")?;
+                hotkey_backend = parse_paste_hotkey_backend_selection(&value)?;
+            }
+            "--restore-delay-ms" => {
+                let value = parse_next_string(&args, &mut index, "--restore-delay-ms")?;
+                restore_delay_ms = Some(parse_u64("--restore-delay-ms", &value)?);
+            }
+            "--restore-policy" => {
+                let value = parse_next_string(&args, &mut index, "--restore-policy")?;
+                restore_policy = parse_clipboard_restore_policy(&value)?;
+            }
             "--help" | "-h" => return Ok(TypeCommand::Help),
             "--" => {
                 text_parts.extend(args.iter().skip(index + 1).cloned());
@@ -7516,6 +7683,10 @@ fn parse_type_args(args: Vec<String>) -> Result<TypeCommand, CliError> {
         delay_ms,
         key_delay_ms,
         backend,
+        clipboard_backend,
+        hotkey_backend,
+        restore_delay_ms,
+        restore_policy,
     }))
 }
 
@@ -7531,6 +7702,98 @@ fn set_type_source(
     }
     *source = Some(value);
     Ok(())
+}
+
+fn parse_paste_args(args: Vec<String>) -> Result<PasteCommand, CliError> {
+    let mut dry_run = false;
+    let mut preserve_clipboard = false;
+    let mut json = false;
+    let mut clipboard_backend = peekaboox_input::ClipboardBackendSelection::Auto;
+    let mut hotkey_backend = peekaboox_input::PasteHotkeyBackendSelection::Auto;
+    let mut delay_ms = None;
+    let mut restore_delay_ms = None;
+    let mut restore_policy = peekaboox_input::ClipboardRestorePolicy::Strict;
+    let mut source = None;
+    let mut text_parts = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dry-run" => dry_run = true,
+            "--preserve-clipboard" => preserve_clipboard = true,
+            "--json" => json = true,
+            "--text" | "-t" => {
+                let value = parse_next_string(&args, &mut index, "--text")?;
+                set_type_source(&mut source, TypeTextSource::Text(value), "--text")?;
+            }
+            "--stdin" => set_type_source(&mut source, TypeTextSource::Stdin, "--stdin")?,
+            "--file" => {
+                let value = parse_next_string(&args, &mut index, "--file")?;
+                set_type_source(
+                    &mut source,
+                    TypeTextSource::File(PathBuf::from(value)),
+                    "--file",
+                )?;
+            }
+            "--clipboard-backend" => {
+                let value = parse_next_string(&args, &mut index, "--clipboard-backend")?;
+                clipboard_backend = parse_clipboard_backend_selection(&value)?;
+            }
+            "--hotkey-backend" => {
+                let value = parse_next_string(&args, &mut index, "--hotkey-backend")?;
+                hotkey_backend = parse_paste_hotkey_backend_selection(&value)?;
+            }
+            "--delay-ms" => {
+                let value = parse_next_string(&args, &mut index, "--delay-ms")?;
+                delay_ms = Some(parse_u64("--delay-ms", &value)?);
+            }
+            "--restore-delay-ms" => {
+                let value = parse_next_string(&args, &mut index, "--restore-delay-ms")?;
+                restore_delay_ms = Some(parse_u64("--restore-delay-ms", &value)?);
+            }
+            "--restore-policy" => {
+                let value = parse_next_string(&args, &mut index, "--restore-policy")?;
+                restore_policy = parse_clipboard_restore_policy(&value)?;
+            }
+            "--help" | "-h" => return Ok(PasteCommand::Help),
+            "--" => {
+                text_parts.extend(args.iter().skip(index + 1).cloned());
+                break;
+            }
+            value if value.starts_with('-') => {
+                return Err(CliError::Failure(format!(
+                    "unknown paste argument: {value}; use -- before text that starts with '-'"
+                )));
+            }
+            value => text_parts.push(value.to_owned()),
+        }
+
+        index += 1;
+    }
+
+    if !text_parts.is_empty() {
+        set_type_source(
+            &mut source,
+            TypeTextSource::Arguments(text_parts),
+            "positional text",
+        )?;
+    }
+
+    let Some(source) = source else {
+        return Err(CliError::Failure("missing text to paste".to_owned()));
+    };
+
+    Ok(PasteCommand::Run(PasteArgs {
+        source,
+        dry_run,
+        preserve_clipboard,
+        json,
+        clipboard_backend,
+        hotkey_backend,
+        delay_ms,
+        restore_delay_ms,
+        restore_policy,
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7885,6 +8148,46 @@ fn parse_type_backend_selection(
     }
 }
 
+fn parse_clipboard_backend_selection(
+    value: &str,
+) -> Result<peekaboox_input::ClipboardBackendSelection, CliError> {
+    match value {
+        "auto" => Ok(peekaboox_input::ClipboardBackendSelection::Auto),
+        "wl-copy" | "wlcopy" => Ok(peekaboox_input::ClipboardBackendSelection::WlCopy),
+        "xclip" => Ok(peekaboox_input::ClipboardBackendSelection::Xclip),
+        "xsel" => Ok(peekaboox_input::ClipboardBackendSelection::Xsel),
+        _ => Err(CliError::Failure(format!(
+            "--clipboard-backend must be auto, wl-copy, xclip, or xsel, got {value:?}"
+        ))),
+    }
+}
+
+fn parse_paste_hotkey_backend_selection(
+    value: &str,
+) -> Result<peekaboox_input::PasteHotkeyBackendSelection, CliError> {
+    match value {
+        "auto" => Ok(peekaboox_input::PasteHotkeyBackendSelection::Auto),
+        "ydotool" => Ok(peekaboox_input::PasteHotkeyBackendSelection::Ydotool),
+        "xdotool" => Ok(peekaboox_input::PasteHotkeyBackendSelection::Xdotool),
+        _ => Err(CliError::Failure(format!(
+            "--hotkey-backend must be auto, ydotool, or xdotool, got {value:?}"
+        ))),
+    }
+}
+
+fn parse_clipboard_restore_policy(
+    value: &str,
+) -> Result<peekaboox_input::ClipboardRestorePolicy, CliError> {
+    match value {
+        "strict" => Ok(peekaboox_input::ClipboardRestorePolicy::Strict),
+        "best-effort" | "best_effort" => Ok(peekaboox_input::ClipboardRestorePolicy::BestEffort),
+        "off" => Ok(peekaboox_input::ClipboardRestorePolicy::Off),
+        _ => Err(CliError::Failure(format!(
+            "--restore-policy must be strict, best-effort, or off, got {value:?}"
+        ))),
+    }
+}
+
 fn parse_drag_backend_selection(
     value: &str,
 ) -> Result<peekaboox_input::InputToolSelection, CliError> {
@@ -8230,13 +8533,13 @@ fn print_drag_usage() {
 
 fn print_type_usage() {
     println!(
-        "Usage: peekaboox type [--dry-run] [--json] [--backend auto|wtype|ydotool|xdotool] [--typing-speed <cps>|--key-delay-ms <ms>] [--delay-ms <ms>] [--paste] [--preserve-clipboard] [--text <text>|--stdin|--file <path>|-- <text>|<text>...]"
+        "Usage: peekaboox type [--dry-run] [--json] [--backend auto|wtype|ydotool|xdotool] [--typing-speed <cps>|--key-delay-ms <ms>] [--delay-ms <ms>] [--paste] [--preserve-clipboard] [--clipboard-backend auto|wl-copy|xclip|xsel] [--hotkey-backend auto|ydotool|xdotool] [--restore-delay-ms <ms>] [--restore-policy strict|best-effort|off] [--text <text>|--stdin|--file <path>|-- <text>|<text>...]"
     );
 }
 
 fn print_paste_usage() {
     println!(
-        "Usage: peekaboox paste [--dry-run] [--json] [--preserve-clipboard] [--text <text>|--stdin|--file <path>|-- <text>|<text>...]"
+        "Usage: peekaboox paste [--dry-run] [--json] [--preserve-clipboard] [--clipboard-backend auto|wl-copy|xclip|xsel] [--hotkey-backend auto|ydotool|xdotool] [--delay-ms <ms>] [--restore-delay-ms <ms>] [--restore-policy strict|best-effort|off] [--text <text>|--stdin|--file <path>|-- <text>|<text>...]"
     );
 }
 
@@ -8248,7 +8551,10 @@ fn print_hotkey_usage() {
 mod tests {
     use std::path::PathBuf;
 
-    use peekaboox_input::{InputToolSelection, MouseButton, MoveBoundsPolicy};
+    use peekaboox_input::{
+        ClipboardBackendSelection, ClipboardRestorePolicy, InputToolSelection, MouseButton,
+        MoveBoundsPolicy, PasteHotkeyBackendSelection,
+    };
     use peekaboox_ipc::CaptureBackendProbeDto;
 
     use super::{
@@ -8259,13 +8565,13 @@ mod tests {
         DesktopDragArgs, DesktopFocusArgs, DesktopLocateArgs, DesktopProfilesArgs,
         DesktopTypeIntoArgs, DragArgs, DragCommand, DragEndpoint, ElementsArgs, ElementsCommand,
         GlobalArgs, HotkeyArgs, HotkeyCommand, MoveArgs, MoveCommand, MoveTarget, OcrArgs,
-        OcrCommand, PluginsArgs, PluginsCommand, TypeArgs, TypeCommand, TypeTextSource,
-        UiStateArgs, UiStateCommand, VisionElementsArgs, VisionElementsCommand, WindowsArgs,
-        WindowsCommand, parse_capture_args, parse_capture_backends_args, parse_capture_delta_args,
-        parse_capture_dmabuf_args, parse_click_args, parse_compare_args, parse_desktop_args,
-        parse_drag_args, parse_elements_args, parse_global_args, parse_hotkey_args,
-        parse_move_args, parse_ocr_args, parse_plugins_args, parse_type_args, parse_ui_state_args,
-        parse_vision_elements_args, parse_windows_args,
+        OcrCommand, PasteArgs, PasteCommand, PluginsArgs, PluginsCommand, TypeArgs, TypeCommand,
+        TypeTextSource, UiStateArgs, UiStateCommand, VisionElementsArgs, VisionElementsCommand,
+        WindowsArgs, WindowsCommand, parse_capture_args, parse_capture_backends_args,
+        parse_capture_delta_args, parse_capture_dmabuf_args, parse_click_args, parse_compare_args,
+        parse_desktop_args, parse_drag_args, parse_elements_args, parse_global_args,
+        parse_hotkey_args, parse_move_args, parse_ocr_args, parse_paste_args, parse_plugins_args,
+        parse_type_args, parse_ui_state_args, parse_vision_elements_args, parse_windows_args,
     };
     use peekaboox_core::{Point, Rect};
     use peekaboox_desktop::DesktopAssertion;
@@ -10066,6 +10372,10 @@ mod tests {
                 delay_ms: None,
                 key_delay_ms: None,
                 backend: InputToolSelection::Auto,
+                clipboard_backend: ClipboardBackendSelection::Auto,
+                hotkey_backend: PasteHotkeyBackendSelection::Auto,
+                restore_delay_ms: None,
+                restore_policy: ClipboardRestorePolicy::Strict,
             })
         );
     }
@@ -10086,6 +10396,10 @@ mod tests {
                 delay_ms: None,
                 key_delay_ms: None,
                 backend: InputToolSelection::Auto,
+                clipboard_backend: ClipboardBackendSelection::Auto,
+                hotkey_backend: PasteHotkeyBackendSelection::Auto,
+                restore_delay_ms: None,
+                restore_policy: ClipboardRestorePolicy::Strict,
             })
         );
     }
@@ -10106,6 +10420,10 @@ mod tests {
                 delay_ms: None,
                 key_delay_ms: None,
                 backend: InputToolSelection::Auto,
+                clipboard_backend: ClipboardBackendSelection::Auto,
+                hotkey_backend: PasteHotkeyBackendSelection::Auto,
+                restore_delay_ms: None,
+                restore_policy: ClipboardRestorePolicy::Strict,
             })
         );
     }
@@ -10131,6 +10449,10 @@ mod tests {
                 delay_ms: None,
                 key_delay_ms: None,
                 backend: InputToolSelection::Auto,
+                clipboard_backend: ClipboardBackendSelection::Auto,
+                hotkey_backend: PasteHotkeyBackendSelection::Auto,
+                restore_delay_ms: None,
+                restore_policy: ClipboardRestorePolicy::Strict,
             })
         );
     }
@@ -10162,6 +10484,10 @@ mod tests {
                 delay_ms: Some(10),
                 key_delay_ms: None,
                 backend: InputToolSelection::Wtype,
+                clipboard_backend: ClipboardBackendSelection::Auto,
+                hotkey_backend: PasteHotkeyBackendSelection::Auto,
+                restore_delay_ms: None,
+                restore_policy: ClipboardRestorePolicy::Strict,
             })
         );
     }
@@ -10195,6 +10521,66 @@ mod tests {
         assert!(matches!(
             dash_command,
             TypeCommand::Run(TypeArgs {
+                source: TypeTextSource::Arguments(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn paste_accepts_backend_timing_restore_and_sources() {
+        let command = parse_paste_args(vec![
+            "--dry-run".to_owned(),
+            "--json".to_owned(),
+            "--preserve-clipboard".to_owned(),
+            "--clipboard-backend".to_owned(),
+            "xclip".to_owned(),
+            "--hotkey-backend".to_owned(),
+            "xdotool".to_owned(),
+            "--delay-ms".to_owned(),
+            "30".to_owned(),
+            "--restore-delay-ms".to_owned(),
+            "70".to_owned(),
+            "--restore-policy".to_owned(),
+            "best-effort".to_owned(),
+            "--text".to_owned(),
+            "hello".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            PasteCommand::Run(PasteArgs {
+                source: TypeTextSource::Text("hello".to_owned()),
+                dry_run: true,
+                preserve_clipboard: true,
+                json: true,
+                clipboard_backend: ClipboardBackendSelection::Xclip,
+                hotkey_backend: PasteHotkeyBackendSelection::Xdotool,
+                delay_ms: Some(30),
+                restore_delay_ms: Some(70),
+                restore_policy: ClipboardRestorePolicy::BestEffort,
+            })
+        );
+
+        let stdin_command = parse_paste_args(vec!["--stdin".to_owned()]).unwrap();
+        let dash_command = parse_paste_args(vec![
+            "--".to_owned(),
+            "--literal".to_owned(),
+            "text".to_owned(),
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            stdin_command,
+            PasteCommand::Run(PasteArgs {
+                source: TypeTextSource::Stdin,
+                ..
+            })
+        ));
+        assert!(matches!(
+            dash_command,
+            PasteCommand::Run(PasteArgs {
                 source: TypeTextSource::Arguments(_),
                 ..
             })

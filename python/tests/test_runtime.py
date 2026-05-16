@@ -85,6 +85,7 @@ class FakeClient:
         self.pasted_text: str | None = None
         self.preserve_clipboard: bool | None = None
         self.last_type_options: dict[str, object] = {}
+        self.last_paste_options: dict[str, object] = {}
         self.last_find_selector: str | None = None
         self.desktop_calls: list[tuple[str, dict[str, object]]] = []
         self.last_window_query: dict[str, object] | None = None
@@ -597,9 +598,28 @@ class FakeClient:
         }
         return ActionResult(ok=True, message=f"typed {len(text)} chars")
 
-    def paste_text(self, text: str, preserve_clipboard: bool = False) -> ActionResult:
+    def paste_text(
+        self,
+        text: str,
+        preserve_clipboard: bool = False,
+        *,
+        dry_run: bool = False,
+        clipboard_backend: str | None = None,
+        hotkey_backend: str | None = None,
+        delay_ms: int | None = None,
+        restore_delay_ms: int | None = None,
+        restore_policy: str | None = None,
+    ) -> ActionResult:
         self.pasted_text = text
         self.preserve_clipboard = preserve_clipboard
+        self.last_paste_options = {
+            "dry_run": dry_run,
+            "clipboard_backend": clipboard_backend,
+            "hotkey_backend": hotkey_backend,
+            "delay_ms": delay_ms,
+            "restore_delay_ms": restore_delay_ms,
+            "restore_policy": restore_policy,
+        }
         return ActionResult(ok=True, message=f"pasted {len(text)} chars")
 
     def hotkey(self, keys: list[str] | tuple[str, ...] | str) -> ActionResult:
@@ -2479,7 +2499,17 @@ class RuntimeTests(unittest.TestCase):
             )
         )
         recorder.record_step(
-            WorkflowStep(action="paste_text", value="pasted", preserve_clipboard=True)
+            WorkflowStep(
+                action="paste_text",
+                value="pasted",
+                preserve_clipboard=True,
+                dry_run=True,
+                clipboard_backend="xclip",
+                hotkey_backend="xdotool",
+                delay_ms=30,
+                restore_delay_ms=70,
+                restore_policy="best-effort",
+            )
         )
 
         json_workflow = load_workflow_text(recorder.to_json(), format_name="json")
@@ -2493,6 +2523,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(yaml_workflow.steps[2].delay_ms, 5)
         self.assertEqual(yaml_workflow.steps[2].backend, "ydotool")
         self.assertTrue(yaml_workflow.steps[3].preserve_clipboard)
+        self.assertTrue(yaml_workflow.steps[3].dry_run)
+        self.assertEqual(yaml_workflow.steps[3].clipboard_backend, "xclip")
+        self.assertEqual(yaml_workflow.steps[3].hotkey_backend, "xdotool")
+        self.assertEqual(yaml_workflow.steps[3].delay_ms, 30)
+        self.assertEqual(yaml_workflow.steps[3].restore_delay_ms, 70)
+        self.assertEqual(yaml_workflow.steps[3].restore_policy, "best-effort")
 
     def test_agent_runtime_executes_workflow_file(self) -> None:
         fake_client = FakeClient()
@@ -2794,7 +2830,19 @@ class RuntimeTests(unittest.TestCase):
                 "delay_ms": 10,
             },
         )
-        pasted = server.call_tool("paste_text", {"text": "World", "preserve_clipboard": True})
+        pasted = server.call_tool(
+            "paste_text",
+            {
+                "text": "World",
+                "preserve_clipboard": True,
+                "dry_run": True,
+                "clipboard_backend": "xclip",
+                "hotkey_backend": "xdotool",
+                "delay_ms": 30,
+                "restore_delay_ms": 70,
+                "restore_policy": "best-effort",
+            },
+        )
         hotkey = server.call_tool("hotkey", {"keys": ["ctrl", "s"]})
         state = server.call_tool("get_desktop_state", {})
         desktop_focus = server.call_tool("desktop_focus", {"app": "telegram"})
@@ -2856,6 +2904,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(typed["message"], "typed 5 chars")
         self.assertEqual(fake_client.pasted_text, "World")
         self.assertTrue(fake_client.preserve_clipboard)
+        self.assertTrue(fake_client.last_paste_options["dry_run"])
+        self.assertEqual(fake_client.last_paste_options["clipboard_backend"], "xclip")
+        self.assertEqual(fake_client.last_paste_options["hotkey_backend"], "xdotool")
+        self.assertEqual(fake_client.last_paste_options["delay_ms"], 30)
+        self.assertEqual(fake_client.last_paste_options["restore_delay_ms"], 70)
+        self.assertEqual(fake_client.last_paste_options["restore_policy"], "best-effort")
         self.assertEqual(pasted["message"], "pasted 5 chars")
         self.assertTrue(hotkey["ok"])
         self.assertEqual(fake_client.hotkeys[-1], ("ctrl", "s"))
@@ -4482,7 +4536,16 @@ class RuntimeTests(unittest.TestCase):
         stub = Stub()
         client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
 
-        paste = client.paste_text("Hello", preserve_clipboard=True)
+        paste = client.paste_text(
+            "Hello",
+            preserve_clipboard=True,
+            dry_run=True,
+            clipboard_backend="xclip",
+            hotkey_backend="xdotool",
+            delay_ms=30,
+            restore_delay_ms=70,
+            restore_policy="best-effort",
+        )
         dmabuf = client.probe_dmabuf("egl_texture")
         plugins = client.list_plugins(paths=["examples/plugins"])
         executed = client.call_plugin_tool(
@@ -4495,6 +4558,12 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(paste.backend_name, "clipboard")
         self.assertTrue(stub.requests[0][1].preserve_clipboard)
+        self.assertTrue(stub.requests[0][1].dry_run)
+        self.assertEqual(stub.requests[0][1].clipboard_backend, "xclip")
+        self.assertEqual(stub.requests[0][1].hotkey_backend, "xdotool")
+        self.assertEqual(stub.requests[0][1].delay_ms, 30)
+        self.assertEqual(stub.requests[0][1].restore_delay_ms, 70)
+        self.assertEqual(stub.requests[0][1].restore_policy, "best-effort")
         self.assertEqual(
             stub.requests[1][1].import_target,
             peekaboox_pb2.DMA_BUF_IMPORT_TARGET_EGL_TEXTURE,

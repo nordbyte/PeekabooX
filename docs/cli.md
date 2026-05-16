@@ -123,6 +123,7 @@ cargo run -q -p peekaboox-cli -- type --backend wtype --typing-speed 20 --delay-
 cargo run -q -p peekaboox-cli -- type --file ./message.txt --key-delay-ms 15 --dry-run
 printf 'multi-line\ntext\n' | cargo run -q -p peekaboox-cli -- type --stdin --dry-run
 cargo run -q -p peekaboox-cli -- paste --dry-run "/tmp/PeekabooX Example.txt"
+cargo run -q -p peekaboox-cli -- paste --clipboard-backend wl-copy --hotkey-backend ydotool --delay-ms 80 --restore-delay-ms 120 --restore-policy best-effort --preserve-clipboard --dry-run --json --text "/tmp/PeekabooX Example.txt"
 cargo run -q -p peekaboox-cli -- type --paste --preserve-clipboard --dry-run "/tmp/PeekabooX Example.txt"
 cargo run -q -p peekaboox-cli -- hotkey --dry-run ctrl+s
 ```
@@ -146,7 +147,11 @@ output, and text from positional arguments, `--text`, `--stdin`, or `--file`.
 Use `--` before literal text that starts with a dash. Clipboard paste uses
 `wl-copy`, `xclip`, or `xsel` plus the safest available `ctrl+v` backend, can
 restore the previous textual clipboard with `--preserve-clipboard`, and is
-better than synthetic typing for paths and layout-sensitive text.
+better than synthetic typing for paths and layout-sensitive text. Paste accepts
+`--clipboard-backend auto|wl-copy|xclip|xsel`, `--hotkey-backend
+auto|ydotool|xdotool`, `--delay-ms`, `--restore-delay-ms`, `--restore-policy
+strict|best-effort|off`, `--dry-run`, `--json`, and the same `--text`,
+`--stdin`, `--file`, positional, and `--` text sources as `type`.
 
 Semantic click targets use AT-SPI and resolve to the center of the matching UI
 element. Add `--vision-fallback` when a semantic lookup may need screenshot
