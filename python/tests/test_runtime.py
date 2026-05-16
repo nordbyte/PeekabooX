@@ -1539,6 +1539,93 @@ class RuntimeTests(unittest.TestCase):
             )
         )
 
+    def test_runtime_persists_preflight_audit_events(self) -> None:
+        warning_doctor = DoctorResult(
+            status="ok",
+            checks=(
+                DoctorCheck(
+                    name="input-click",
+                    status="warn",
+                    detail="only fallback input backend available",
+                ),
+            ),
+            categories=(
+                DoctorCategory(
+                    name="input",
+                    status="warn",
+                    severity="warning",
+                    ok_count=0,
+                    warn_count=1,
+                    fail_count=0,
+                    total_count=1,
+                ),
+            ),
+            ok_count=0,
+            warn_count=1,
+            fail_count=0,
+            exit_code=0,
+        )
+        blocked_doctor = DoctorResult(
+            status="fail",
+            checks=(
+                DoctorCheck(
+                    name="display-server",
+                    status="fail",
+                    detail="neither WAYLAND_DISPLAY nor DISPLAY is set",
+                ),
+            ),
+            categories=(
+                DoctorCategory(
+                    name="desktop",
+                    status="fail",
+                    severity="error",
+                    ok_count=0,
+                    warn_count=0,
+                    fail_count=1,
+                    total_count=1,
+                ),
+            ),
+            ok_count=0,
+            warn_count=0,
+            fail_count=1,
+            exit_code=0,
+        )
+
+        with TemporaryDirectory() as tmpdir:
+            audit_path = Path(tmpdir) / "runtime-audit.jsonl"
+            runtime = AgentRuntime(
+                audit_logger=JsonlAuditLogger(audit_path),
+                preflight_mode="strict",
+            )
+            with patch(
+                "peekaboox.agent.runtime.run_doctor",
+                side_effect=(warning_doctor, blocked_doctor),
+            ):
+                runtime.preflight("input", operation="hotkey")
+                with self.assertRaises(PreflightError):
+                    runtime.require_preflight("desktop", operation="list_windows", refresh=True)
+
+            audit_events = runtime.preflight_audit()
+            records = [
+                json.loads(line)
+                for line in audit_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual([event.status for event in audit_events], ["warning", "blocked"])
+        self.assertEqual(audit_events[0].operation, "hotkey")
+        self.assertEqual(audit_events[0].warning_categories, ("input",))
+        self.assertEqual(audit_events[1].blocked_categories, ("desktop",))
+        preflight_records = [record for record in records if record["event"] == "preflight"]
+        self.assertEqual(
+            [record["status"] for record in preflight_records],
+            ["warning", "blocked"],
+        )
+        self.assertEqual(preflight_records[0]["details"]["operation"], "hotkey")
+        self.assertEqual(preflight_records[0]["details"]["mode"], "strict")
+        self.assertEqual(preflight_records[0]["details"]["warning_categories"], ["input"])
+        self.assertEqual(preflight_records[1]["details"]["blocked_categories"], ["desktop"])
+        self.assertIn("preflight blocked list_windows", preflight_records[1]["error"])
+
     def test_semantic_desktop_graph_ingests_and_serializes_state(self) -> None:
         graph = SemanticDesktopGraph()
 

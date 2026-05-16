@@ -113,7 +113,8 @@ surface the same denial as a tool result with `isError: true`, so clients can
 distinguish policy denial from protocol errors. Every capability check appends
 an in-memory audit event available through `runtime.capability_audit()`.
 
-Pass `audit_log_path` to persist capability and confirmation checks as JSONL:
+Pass `audit_log_path` to persist capability, confirmation, and preflight checks
+as JSONL:
 
 ```python
 runtime = AgentRuntime.connect(audit_log_path="peekaboox-runtime-audit.jsonl")
@@ -126,6 +127,12 @@ from peekaboox.security import JsonlAuditLogger
 
 runtime = AgentRuntime(audit_logger=JsonlAuditLogger("peekaboox-runtime-audit.jsonl"))
 ```
+
+Preflight checks append `PreflightAuditEvent` entries in memory and write JSONL
+records with `event: "preflight"` when an audit logger is configured. A clean
+preflight records status `ok`; usable categories with Doctor warnings record
+status `warning`; blocked or missing categories record status `blocked` with the
+blocking reason in the JSONL `error` field.
 
 ## Confirmation Mode
 

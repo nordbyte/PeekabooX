@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
@@ -116,6 +117,19 @@ class PreflightResult:
     doctor_status: str = "ok"
 
 
+@dataclass(frozen=True, slots=True)
+class PreflightAuditEvent:
+    operation: str
+    status: str
+    mode: str
+    ok: bool
+    occurred_at_unix_ms: int
+    required_categories: tuple[str, ...]
+    blocked_categories: tuple[str, ...]
+    warning_categories: tuple[str, ...]
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
 class PreflightError(RuntimeError):
     def __init__(self, result: PreflightResult) -> None:
         super().__init__(_preflight_error_message(result))
@@ -143,6 +157,7 @@ class AgentRuntime:
     plugin_registry: PluginDiscoveryResult | None = None
     preflight_mode: str | None = None
     preflight_timeout_seconds: float = 30.0
+    preflight_audit_events: list[PreflightAuditEvent] = field(default_factory=list)
     _preflight_doctor_result: DoctorResult | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -249,6 +264,9 @@ class AgentRuntime:
     def confirmation_audit(self) -> tuple[ConfirmationAuditEvent, ...]:
         return tuple(self.confirmation_policy.audit_events)
 
+    def preflight_audit(self) -> tuple[PreflightAuditEvent, ...]:
+        return tuple(self.preflight_audit_events)
+
     def doctor(
         self,
         *,
@@ -280,11 +298,13 @@ class AgentRuntime:
             refresh=refresh,
             timeout_seconds=timeout_seconds,
         )
-        return _preflight_result(
+        result = _preflight_result(
             doctor,
             operation=operation,
             required_categories=required_categories,
         )
+        self._record_preflight_audit(result)
+        return result
 
     def require_preflight(
         self,
@@ -1710,6 +1730,31 @@ class AgentRuntime:
             raise PreflightError(result)
         return result
 
+    def _record_preflight_audit(self, result: PreflightResult) -> None:
+        status = _preflight_status(result)
+        metadata = _preflight_metadata(result)
+        metadata["mode"] = self.preflight_mode
+        metadata["enforced"] = self.preflight_mode == "strict"
+        event = PreflightAuditEvent(
+            operation=result.operation,
+            status=status,
+            mode=self.preflight_mode,
+            ok=result.ok,
+            occurred_at_unix_ms=_unix_ms(),
+            required_categories=result.required_categories,
+            blocked_categories=result.blocked_categories,
+            warning_categories=result.warning_categories,
+            metadata=metadata,
+        )
+        self.preflight_audit_events.append(event)
+        if self.audit_logger is not None:
+            self.audit_logger.write(
+                "preflight",
+                status,
+                metadata,
+                error=None if result.ok else _preflight_error_message(result),
+            )
+
     def _require_client(self) -> PeekabooXClient:
         if self.client is None:
             raise RuntimeError("AgentRuntime requires a PeekabooXClient for daemon RPC calls")
@@ -1963,6 +2008,14 @@ def _preflight_error_message(result: PreflightResult) -> str:
     return f"preflight blocked {result.operation}: {categories}; {detail}"
 
 
+def _preflight_status(result: PreflightResult) -> str:
+    if not result.ok:
+        return "blocked"
+    if result.warning_categories:
+        return "warning"
+    return "ok"
+
+
 def _preflight_metadata(result: PreflightResult) -> dict[str, object]:
     return {
         "operation": result.operation,
@@ -2021,6 +2074,10 @@ def _workflow_preflight_categories(workflow: Workflow) -> tuple[str, ...]:
         elif action in {"list_windows", "get_desktop_state"}:
             add("desktop")
     return tuple(categories)
+
+
+def _unix_ms() -> int:
+    return int(time.time() * 1000)
 
 
 def _hotkey_keys(keys: Sequence[str] | str) -> list[str]:

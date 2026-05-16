@@ -233,10 +233,11 @@ capabilities are `observe`, `click`, `type_text`, `workflow_execute`,
 `workflow_record`, `workflow_generate`, `vision`, `memory_read`, and
 `memory_write`, `plugin_read`, and `plugin_execute`. Denied calls raise
 `CapabilityDeniedError`, and all checks append an in-memory
-`CapabilityAuditEvent` retrievable through `runtime.capability_audit()`. This
-policy is layered above the daemon's input policy; daemon-routed input still
-requires `peekabooxd run --profile operator`, `--allow-input`, or
-`PEEKABOOX_ALLOW_INPUT=1`.
+`CapabilityAuditEvent` retrievable through `runtime.capability_audit()`.
+Preflight checks append `PreflightAuditEvent` entries retrievable through
+`runtime.preflight_audit()`. This policy is layered above the daemon's input
+policy; daemon-routed input still requires `peekabooxd run --profile operator`,
+`--allow-input`, or `PEEKABOOX_ALLOW_INPUT=1`.
 
 `ConfirmationPolicy` adds optional confirmation checks for dangerous runtime
 operations before execution. The dangerous action names are `click`,
@@ -246,8 +247,8 @@ operations before execution. The dangerous action names are `click`,
 configured confirmer raise `ConfirmationRequiredError`; rejected confirmations
 raise `ConfirmationDeniedError`. Audit events are available through
 `runtime.confirmation_audit()`.
-When `audit_log_path` is set, capability and confirmation checks are also
-persisted as newline-delimited JSON records.
+When `audit_log_path` is set, capability, confirmation, and preflight checks
+are also persisted as newline-delimited JSON records.
 
 ### Semantic Desktop Graph
 

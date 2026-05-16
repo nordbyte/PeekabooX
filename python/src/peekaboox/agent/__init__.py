@@ -1,6 +1,7 @@
 from .runtime import (
     ActionAttempt,
     AgentRuntime,
+    PreflightAuditEvent,
     PreflightError,
     PreflightResult,
     StepExecutionResult,
@@ -11,6 +12,7 @@ from .runtime import (
 __all__ = [
     "ActionAttempt",
     "AgentRuntime",
+    "PreflightAuditEvent",
     "PreflightError",
     "PreflightResult",
     "StepExecutionResult",

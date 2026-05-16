@@ -70,7 +70,9 @@ as usable but visible in `PreflightResult.warning_categories`, and blocks
 `fail` or missing categories with `PreflightError`. Use `preflight_mode="warn"`
 to collect the same diagnostics without blocking, or call
 `runtime.require_preflight(["desktop", "input"], operation="click")` manually
-before a custom action.
+before a custom action. Preflight decisions are available through
+`runtime.preflight_audit()` and are persisted as JSONL `preflight` events when
+an audit logger is configured.
 
 ## Workflows
 
