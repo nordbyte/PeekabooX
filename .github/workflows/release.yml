@@ -19,9 +19,9 @@ jobs:
     env:
       RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
@@ -78,7 +78,7 @@ jobs:
               encoding="utf-8",
           )
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: peekaboox-${{ env.RELEASE_VERSION }}-release-artifacts
           path: |
