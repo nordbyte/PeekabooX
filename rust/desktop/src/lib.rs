@@ -2432,18 +2432,16 @@ fn external_target(path: &Path, target: ExternalTargetDefinition) -> Result<Cust
             height,
             point_x,
             point_y,
-        }) => {
-            validate_relative_rect(path, name, x, y, width, height, point_x, point_y)?;
-            CustomTargetVisual::RelativeRect {
-                x,
-                y,
-                width,
-                height,
-                point_x,
-                point_y,
-            }
-        }
+        }) => CustomTargetVisual::RelativeRect {
+            x,
+            y,
+            width,
+            height,
+            point_x,
+            point_y,
+        },
     };
+    validate_relative_rect(path, name, &visual)?;
     Ok(CustomTarget {
         name: name.to_owned(),
         supports: normalized_supports(target.supports),
@@ -2455,16 +2453,18 @@ fn external_target(path: &Path, target: ExternalTargetDefinition) -> Result<Cust
     })
 }
 
-fn validate_relative_rect(
-    path: &Path,
-    target: &str,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    point_x: f32,
-    point_y: f32,
-) -> Result<()> {
+fn validate_relative_rect(path: &Path, target: &str, visual: &CustomTargetVisual) -> Result<()> {
+    let CustomTargetVisual::RelativeRect {
+        x,
+        y,
+        width,
+        height,
+        point_x,
+        point_y,
+    } = *visual
+    else {
+        return Ok(());
+    };
     for (name, value) in [
         ("x", x),
         ("y", y),
