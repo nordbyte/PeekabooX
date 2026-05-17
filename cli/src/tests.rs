@@ -14,12 +14,13 @@ use super::{
     DesktopFocusArgs, DesktopLocateArgs, DesktopProfilesArgs, DesktopTypeIntoArgs, DragArgs,
     DragCommand, DragEndpoint, ElementsArgs, ElementsCommand, GlobalArgs, HotkeyArgs,
     HotkeyCommand, MoveArgs, MoveCommand, MoveTarget, OcrArgs, OcrCommand, PasteArgs, PasteCommand,
-    PluginsArgs, PluginsCommand, TypeArgs, TypeCommand, TypeTextSource, UiStateArgs,
-    UiStateCommand, VisionElementsArgs, VisionElementsCommand, WindowsArgs, WindowsCommand,
-    parse_capture_args, parse_capture_backends_args, parse_capture_delta_args,
-    parse_capture_dmabuf_args, parse_click_args, parse_compare_args, parse_desktop_args,
-    parse_drag_args, parse_elements_args, parse_global_args, parse_hotkey_args, parse_move_args,
-    parse_ocr_args, parse_paste_args, parse_plugins_args, parse_see_args, parse_type_args,
+    PluginCallArgs, PluginCallCommand, PluginsArgs, PluginsCommand, TypeArgs, TypeCommand,
+    TypeTextSource, UiStateArgs, UiStateCommand, VisionElementsArgs, VisionElementsCommand,
+    WindowsArgs, WindowsCommand, cli_command_registry, parse_capture_args,
+    parse_capture_backends_args, parse_capture_delta_args, parse_capture_dmabuf_args,
+    parse_click_args, parse_compare_args, parse_desktop_args, parse_drag_args, parse_elements_args,
+    parse_global_args, parse_hotkey_args, parse_move_args, parse_ocr_args, parse_paste_args,
+    parse_plugin_call_args, parse_plugins_args, parse_see_args, parse_type_args,
     parse_ui_state_args, parse_vision_elements_args, parse_windows_args,
 };
 use peekaboox_core::{Point, Rect};
@@ -114,6 +115,18 @@ fn parses_global_daemon_flags() {
             args: vec!["windows".to_owned()]
         }
     );
+}
+
+#[test]
+fn command_registry_includes_dispatched_primary_commands() {
+    let commands = cli_command_registry();
+
+    for command in ["doctor", "drag", "type"] {
+        assert!(
+            commands.contains(&command),
+            "cli command registry is missing dispatched command {command}"
+        );
+    }
 }
 
 #[test]
@@ -555,6 +568,35 @@ fn plugins_rejects_missing_path() {
     assert_eq!(
         error,
         CliError::Failure("missing value for --path".to_owned())
+    );
+}
+
+#[test]
+fn plugin_call_accepts_trust_policy_flags() {
+    let command = parse_plugin_call_args(vec![
+        "--path".to_owned(),
+        "examples/plugins".to_owned(),
+        "--require-trusted".to_owned(),
+        "--trust-policy".to_owned(),
+        "trusted_plugins.json".to_owned(),
+        "demo.plugin".to_owned(),
+        "demo.tool".to_owned(),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        command,
+        PluginCallCommand::Run(PluginCallArgs {
+            plugin_id: "demo.plugin".to_owned(),
+            tool: "demo.tool".to_owned(),
+            arguments: serde_json::json!({}),
+            paths: vec![PathBuf::from("examples/plugins")],
+            timeout_ms: 10_000,
+            max_output_bytes: 1_048_576,
+            require_trusted: true,
+            trust_policy: Some(PathBuf::from("trusted_plugins.json")),
+            json: false,
+        })
     );
 }
 

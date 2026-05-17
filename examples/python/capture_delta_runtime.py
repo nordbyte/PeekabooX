@@ -11,7 +11,6 @@ import sys
 import time
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any
 
 

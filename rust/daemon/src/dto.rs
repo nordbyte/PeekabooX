@@ -279,7 +279,13 @@ pub(super) fn plugin_dto(plugin: &peekaboox_plugins::PluginDescriptor) -> Plugin
                     .unwrap_or_else(|_| "{}".to_owned()),
             })
             .collect(),
-        metadata: plugin.manifest.metadata.clone(),
+        metadata: {
+            let mut metadata = plugin.manifest.metadata.clone();
+            if let Ok(fingerprint) = peekaboox_plugins::plugin_manifest_sha256(plugin) {
+                metadata.insert("peekaboox.manifest_sha256".to_owned(), fingerprint);
+            }
+            metadata
+        },
     }
 }
 
@@ -343,7 +349,13 @@ pub(super) fn proto_plugin(plugin: &peekaboox_plugins::PluginDescriptor) -> prot
                     .unwrap_or_else(|_| "{}".to_owned()),
             })
             .collect(),
-        metadata: plugin.manifest.metadata.clone().into_iter().collect(),
+        metadata: {
+            let mut metadata = plugin.manifest.metadata.clone();
+            if let Ok(fingerprint) = peekaboox_plugins::plugin_manifest_sha256(plugin) {
+                metadata.insert("peekaboox.manifest_sha256".to_owned(), fingerprint);
+            }
+            metadata.into_iter().collect()
+        },
     }
 }
 

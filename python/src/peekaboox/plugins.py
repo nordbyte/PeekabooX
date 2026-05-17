@@ -5,6 +5,7 @@ import os
 import subprocess
 import threading
 import time
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -13,6 +14,8 @@ from typing import Any, Iterable, Mapping
 PLUGIN_SDK_VERSION = "peekaboox.plugin.v1"
 PLUGIN_MANIFEST_FILE = "peekaboox.plugin.json"
 PLUGIN_PATH_ENV = "PEEKABOOX_PLUGIN_PATH"
+PLUGIN_TRUST_POLICY_ENV = "PEEKABOOX_PLUGIN_TRUST_POLICY"
+PLUGIN_REQUIRE_TRUSTED_ENV = "PEEKABOOX_REQUIRE_TRUSTED_PLUGINS"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +70,14 @@ class PluginExecutionPolicy:
     timeout_seconds: float = 10.0
     max_output_bytes: int = 1_048_576
     environment: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class PluginTrustStatus:
+    plugin_id: str
+    manifest_sha256: str
+    trusted: bool
+    reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +171,8 @@ def execute_plugin_tool(
     timeout_seconds: float = 10.0,
     max_output_bytes: int = 1_048_576,
     environment: Mapping[str, str] | None = None,
+    require_trusted: bool | None = None,
+    trust_policy_path: str | os.PathLike[str] | None = None,
 ) -> PluginToolExecutionResult:
     if plugin.manifest.entrypoint is None:
         raise ValueError(f"plugin {plugin.manifest.id!r} does not declare an entrypoint")
@@ -170,6 +183,15 @@ def execute_plugin_tool(
         raise ValueError("timeout_seconds must be positive")
     if max_output_bytes < 0:
         raise ValueError("max_output_bytes must be non-negative")
+    if require_trusted is None:
+        require_trusted = _env_flag(PLUGIN_REQUIRE_TRUSTED_ENV)
+    if require_trusted:
+        trust = verify_plugin_trust(plugin, trust_policy_path=trust_policy_path)
+        if not trust.trusted:
+            raise ValueError(
+                f"plugin {plugin.manifest.id!r} is not trusted: {trust.reason}; "
+                f"manifest_sha256={trust.manifest_sha256}"
+            )
     plugin_arguments = dict(arguments or {})
     validate_json_schema(plugin_tool.input_schema, plugin_arguments)
     policy = PluginExecutionPolicy(
@@ -276,6 +298,111 @@ def execute_plugin_tool(
         stderr=stderr,
         result=result,
         error=error,
+    )
+
+
+def plugin_manifest_sha256(plugin: PluginDescriptor) -> str:
+    digest = hashlib.sha256()
+    digest.update(plugin.manifest_path.read_bytes())
+    return digest.hexdigest()
+
+
+def default_plugin_trust_policy_path() -> Path:
+    configured = os.environ.get(PLUGIN_TRUST_POLICY_ENV)
+    if configured:
+        return Path(configured)
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    if config_home:
+        return Path(config_home) / "peekaboox" / "trusted_plugins.json"
+    return Path.home() / ".config" / "peekaboox" / "trusted_plugins.json"
+
+
+def load_plugin_trust_policy(
+    path: str | os.PathLike[str] | None = None,
+) -> dict[str, str]:
+    policy_path = Path(path) if path is not None else default_plugin_trust_policy_path()
+    if not policy_path.exists():
+        return {}
+    payload = json.loads(policy_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"plugin trust policy {policy_path} must be a JSON object")
+    plugins = payload.get("plugins", payload)
+    if not isinstance(plugins, dict):
+        raise ValueError(f"plugin trust policy {policy_path} plugins must be an object")
+    trusted: dict[str, str] = {}
+    for plugin_id, entry in plugins.items():
+        if isinstance(entry, str):
+            fingerprint = entry
+        elif isinstance(entry, dict):
+            fingerprint = entry.get("manifest_sha256")
+        else:
+            fingerprint = None
+        if not isinstance(plugin_id, str) or not isinstance(fingerprint, str):
+            raise ValueError(f"plugin trust policy {policy_path} contains an invalid entry")
+        trusted[plugin_id] = fingerprint.casefold()
+    return trusted
+
+
+def save_plugin_trust_policy(
+    trusted: Mapping[str, str],
+    path: str | os.PathLike[str] | None = None,
+) -> Path:
+    policy_path = Path(path) if path is not None else default_plugin_trust_policy_path()
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "plugins": {
+            plugin_id: {"manifest_sha256": fingerprint}
+            for plugin_id, fingerprint in sorted(trusted.items())
+        },
+    }
+    policy_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return policy_path
+
+
+def trust_plugin(
+    plugin: PluginDescriptor,
+    path: str | os.PathLike[str] | None = None,
+) -> PluginTrustStatus:
+    trusted = load_plugin_trust_policy(path)
+    fingerprint = plugin_manifest_sha256(plugin)
+    trusted[plugin.manifest.id] = fingerprint
+    save_plugin_trust_policy(trusted, path)
+    return PluginTrustStatus(
+        plugin_id=plugin.manifest.id,
+        manifest_sha256=fingerprint,
+        trusted=True,
+        reason="manifest fingerprint stored in trust policy",
+    )
+
+
+def verify_plugin_trust(
+    plugin: PluginDescriptor,
+    *,
+    trust_policy_path: str | os.PathLike[str] | None = None,
+) -> PluginTrustStatus:
+    fingerprint = plugin_manifest_sha256(plugin)
+    trusted = load_plugin_trust_policy(trust_policy_path)
+    expected = trusted.get(plugin.manifest.id)
+    if expected is None:
+        return PluginTrustStatus(
+            plugin_id=plugin.manifest.id,
+            manifest_sha256=fingerprint,
+            trusted=False,
+            reason="plugin id is not present in trust policy",
+        )
+    if expected.casefold() != fingerprint.casefold():
+        return PluginTrustStatus(
+            plugin_id=plugin.manifest.id,
+            manifest_sha256=fingerprint,
+            trusted=False,
+            reason="manifest fingerprint does not match trust policy",
+        )
+    return PluginTrustStatus(
+        plugin_id=plugin.manifest.id,
+        manifest_sha256=fingerprint,
+        trusted=True,
+        reason="manifest fingerprint matches trust policy",
     )
 
 
@@ -403,6 +530,10 @@ def _validate_identifier(label: str, value: str) -> None:
         raise ValueError(
             f"{label} {value!r} must use only ASCII letters, digits, dots, underscores, or dashes"
         )
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
 def validate_json_schema(schema: dict[str, Any], value: Any) -> None:

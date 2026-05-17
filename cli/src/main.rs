@@ -262,6 +262,14 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some("diagnose") => match doctor::diagnose(args.collect()) {
+            Ok(()) => {}
+            Err(CliError::HelpRequested) => {}
+            Err(CliError::Failure(error)) => {
+                eprintln!("diagnose failed: {error}");
+                std::process::exit(1);
+            }
+        },
         Some("agent") => match agent_command(args.collect(), &global.context) {
             Ok(()) => {}
             Err(CliError::HelpRequested) => {}

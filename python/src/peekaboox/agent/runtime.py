@@ -61,6 +61,7 @@ from peekaboox.workflows import (
     Workflow,
     WorkflowRecorder,
     WorkflowStep,
+    create_workflow_bundle,
     load_workflow_file,
     save_workflow_file,
 )
@@ -247,6 +248,8 @@ class AgentRuntime:
         paths: tuple[str | Path, ...] | list[str | Path] | None = None,
         timeout_seconds: float = 10.0,
         max_output_bytes: int = 1_048_576,
+        require_trusted: bool | None = None,
+        trust_policy_path: str | Path | None = None,
     ) -> PluginToolExecutionResult:
         self._require_capability(
             Capability.PLUGIN_EXECUTE,
@@ -264,6 +267,8 @@ class AgentRuntime:
             dict(arguments or {}),
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
+            require_trusted=require_trusted,
+            trust_policy_path=trust_policy_path,
         )
 
     def plan(self, goal: str) -> list[str]:
@@ -3000,6 +3005,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="maximum seconds to wait for this preflight Doctor check",
     )
+    workflow_parser = subparsers.add_parser(
+        "workflow",
+        help="validate, replay, and bundle workflow files",
+    )
+    workflow_subparsers = workflow_parser.add_subparsers(dest="workflow_command")
+    workflow_validate_parser = workflow_subparsers.add_parser(
+        "validate",
+        help="load a JSON/YAML workflow and print its normalized shape",
+    )
+    workflow_validate_parser.add_argument("path", help="workflow JSON/YAML file")
+    workflow_replay_parser = workflow_subparsers.add_parser(
+        "replay",
+        help="execute a workflow file through the daemon",
+    )
+    workflow_replay_parser.add_argument("path", help="workflow JSON/YAML file")
+    workflow_bundle_parser = workflow_subparsers.add_parser(
+        "bundle",
+        help="write a replay bundle with normalized workflow and diagnostics",
+    )
+    workflow_bundle_parser.add_argument("path", help="workflow JSON/YAML file")
+    workflow_bundle_parser.add_argument(
+        "--out",
+        help="bundle output directory; defaults to target/workflow-bundles/<name>-<timestamp>",
+    )
+    workflow_bundle_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="also replay the workflow and include replay-result.json",
+    )
+    workflow_bundle_parser.add_argument(
+        "--skip-doctor",
+        action="store_true",
+        help="omit doctor.json from the bundle",
+    )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.version:
@@ -3010,6 +3049,66 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     try:
+        if args.command == "workflow":
+            if args.workflow_command is None:
+                workflow_parser.print_help()
+                return 0
+            workflow = load_workflow_file(args.path)
+            if args.workflow_command == "validate":
+                _print_json({"ok": True, "path": args.path, "workflow": workflow})
+                return 0
+            if args.workflow_command == "replay":
+                runtime = AgentRuntime.connect(
+                    target=args.target,
+                    capability_profile=args.profile,
+                    audit_log_path=args.audit_log,
+                    plugin_paths=tuple(Path(path) for path in args.plugin_path),
+                    preflight_mode=args.preflight_mode,
+                    preflight_timeout_seconds=args.preflight_timeout,
+                    grpc_token=args.grpc_token,
+                )
+                result = runtime.execute_workflow(workflow)
+                _print_json(result)
+                return 0 if result.ok else 1
+            if args.workflow_command == "bundle":
+                doctor_result = None
+                if not args.skip_doctor:
+                    doctor_result = _local_runtime(
+                        args.profile,
+                        args.audit_log,
+                        tuple(Path(path) for path in args.plugin_path),
+                        preflight_mode=args.preflight_mode,
+                        preflight_timeout_seconds=args.preflight_timeout,
+                    ).doctor(strict=False, timeout_seconds=args.preflight_timeout)
+                replay_result = None
+                if args.execute:
+                    runtime = AgentRuntime.connect(
+                        target=args.target,
+                        capability_profile=args.profile,
+                        audit_log_path=args.audit_log,
+                        plugin_paths=tuple(Path(path) for path in args.plugin_path),
+                        preflight_mode=args.preflight_mode,
+                        preflight_timeout_seconds=args.preflight_timeout,
+                        grpc_token=args.grpc_token,
+                    )
+                    replay_result = runtime.execute_workflow(workflow)
+                bundle_dir = create_workflow_bundle(
+                    workflow,
+                    args.out or _default_workflow_bundle_dir(args.path),
+                    source_path=args.path,
+                    doctor_result=doctor_result,
+                    replay_result=replay_result,
+                )
+                _print_json(
+                    {
+                        "ok": True,
+                        "bundle": bundle_dir,
+                        "workflow": workflow.name,
+                        "steps": len(workflow.steps),
+                        "executed": args.execute,
+                    }
+                )
+                return 0 if replay_result is None or replay_result.ok else 1
         if args.command == "plugins":
             paths = tuple(Path(path) for path in [*args.plugin_path, *args.path])
             runtime = _local_runtime(
@@ -3119,6 +3218,15 @@ def _window_query_kwargs(
     if diagnose:
         kwargs["diagnose"] = diagnose
     return kwargs
+
+
+def _default_workflow_bundle_dir(path: str | Path) -> Path:
+    stem = Path(path).stem or "workflow"
+    safe_stem = "".join(
+        character if character.isalnum() or character in "._-" else "-"
+        for character in stem
+    ).strip(".-")
+    return Path("target") / "workflow-bundles" / f"{safe_stem or 'workflow'}-{int(time.time() * 1000)}"
 
 
 def _clean_optional_string(value: str | None) -> str | None:

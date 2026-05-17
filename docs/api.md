@@ -140,7 +140,9 @@ Current gRPC method coverage:
 - `DetectUiElements` for vision-only UI-region detection from image bytes
 - `ProbeDmaBuf` for the optional DMA-BUF capture/import path
 - `ListPlugins` and `CallPluginTool` for plugin discovery and bounded process
-  tool execution
+  tool execution. Python/MCP callers can require trusted plugin manifests by
+  passing `require_trusted` plus an optional `trust_policy` path; local CLI
+  execution exposes the same guard through `plugin-call --require-trusted`.
 - `DesktopProfiles`, `DesktopFocus`, `DesktopLocate`, `DesktopClick`,
   `DesktopDrag`, `DesktopTypeInto`, and `DesktopAssert` for named app-target
   desktop helpers backed by the Rust desktop profiles. `DesktopProfiles`
@@ -414,6 +416,9 @@ JSON round-trips through `export_desktop_graph()` and `import_desktop_graph()`.
 - `stop_recording()` ends the active recording and returns a `Workflow`.
 - `recorded_workflow()` returns the active or last completed recording.
 - `save_recording(path, format_name=None)` exports the recording as JSON/YAML.
+- `peekaboox-agent workflow validate|replay|bundle` validates workflow files,
+  replays them through the daemon, and writes portable replay bundles with
+  normalized workflow files, Doctor diagnostics, and optional replay results.
 - `execute_step(step)` retries a single step up to `retries + 1` attempts.
 
 Execution results include per-attempt messages, verification results, and

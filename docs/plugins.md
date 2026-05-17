@@ -72,11 +72,43 @@ result = runtime.call_plugin_tool(
 
 MCP exposes `list_plugins` with an optional `paths` array. It also exposes
 `call_plugin_tool` with `plugin_id`, `tool`, optional `arguments`, optional
-`paths`, optional `timeout_seconds`, and optional `max_output_bytes`. Python and
-MCP execution is gated by the `plugin_execute` runtime capability.
+`paths`, optional `timeout_seconds`, optional `max_output_bytes`, optional
+`require_trusted`, and optional `trust_policy`. Python and MCP execution is
+gated by the `plugin_execute` runtime capability.
 Use `examples/python/plugins_runtime.py` and `examples/mcp/jsonrpc_plugins.sh`
 to validate the same discovery and execution path through the Python runtime
 and MCP JSON-RPC.
+
+## Trust Policy
+
+PeekabooX can require plugin manifests to match a pinned SHA-256 fingerprint
+before execution. A trust policy is a JSON file:
+
+```json
+{
+  "schema_version": 1,
+  "plugins": {
+    "org.peekaboox.examples.system-info": {
+      "manifest_sha256": "<sha256>"
+    }
+  }
+}
+```
+
+Set `PEEKABOOX_REQUIRE_TRUSTED_PLUGINS=1` for Python runtime execution, pass
+`require_trusted=True` to `AgentRuntime.call_plugin_tool(...)`, or use:
+
+```bash
+peekaboox plugin-call org.peekaboox.examples.system-info system_info.uname \
+  --path examples/plugins \
+  --require-trusted \
+  --trust-policy trusted_plugins.json \
+  --json
+```
+
+If `--trust-policy` is omitted, the default path is
+`$XDG_CONFIG_HOME/peekaboox/trusted_plugins.json` or
+`~/.config/peekaboox/trusted_plugins.json`.
 
 ## Execution Safety
 

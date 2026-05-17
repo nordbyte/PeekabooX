@@ -20,6 +20,8 @@ pub(super) struct PluginCallArgs {
     pub(super) paths: Vec<PathBuf>,
     pub(super) timeout_ms: u64,
     pub(super) max_output_bytes: usize,
+    pub(super) require_trusted: bool,
+    pub(super) trust_policy: Option<PathBuf>,
     pub(super) json: bool,
 }
 
@@ -103,6 +105,13 @@ pub(super) fn plugin_call(args: Vec<String>, context: &CliContext) -> Result<(),
         return Err(CliError::HelpRequested);
     };
 
+    if context.use_daemon && args.require_trusted {
+        return Err(CliError::Failure(
+            "--require-trusted is enforced by the local plugin runner; run without --daemon"
+                .to_owned(),
+        ));
+    }
+
     let result = if context.use_daemon {
         let result = daemon_request(
             context,
@@ -148,6 +157,10 @@ pub(super) fn plugin_call(args: Vec<String>, context: &CliContext) -> Result<(),
             max_output_bytes: args.max_output_bytes,
             ..Default::default()
         };
+        if args.require_trusted {
+            peekaboox_plugins::require_plugin_trust(plugin, args.trust_policy.as_deref())
+                .map_err(CliError::Failure)?;
+        }
         plugin_execution_dto(
             peekaboox_plugins::execute_plugin_tool(
                 plugin,
@@ -176,6 +189,8 @@ pub(super) fn parse_plugin_call_args(args: Vec<String>) -> Result<PluginCallComm
     let mut arguments = serde_json::json!({});
     let mut timeout_ms = 10_000;
     let mut max_output_bytes = 1_048_576;
+    let mut require_trusted = false;
+    let mut trust_policy = None;
     let mut json = false;
     let mut positional = Vec::new();
     let mut index = 0;
@@ -218,6 +233,16 @@ pub(super) fn parse_plugin_call_args(args: Vec<String>) -> Result<PluginCallComm
                 };
                 max_output_bytes = parse_usize("--max-output-bytes", value)?;
             }
+            "--require-trusted" => require_trusted = true,
+            "--trust-policy" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --trust-policy".to_owned(),
+                    ));
+                };
+                trust_policy = Some(PathBuf::from(value));
+            }
             "--json" => json = true,
             "--help" | "-h" => return Ok(PluginCallCommand::Help),
             value if value.starts_with('-') => {
@@ -242,6 +267,8 @@ pub(super) fn parse_plugin_call_args(args: Vec<String>) -> Result<PluginCallComm
         paths,
         timeout_ms,
         max_output_bytes,
+        require_trusted,
+        trust_policy,
         json,
     }))
 }
@@ -306,7 +333,13 @@ pub(super) fn plugin_dto(plugin: &peekaboox_plugins::PluginDescriptor) -> Plugin
                     .unwrap_or_else(|_| "{}".to_owned()),
             })
             .collect(),
-        metadata: plugin.manifest.metadata.clone(),
+        metadata: {
+            let mut metadata = plugin.manifest.metadata.clone();
+            if let Ok(fingerprint) = peekaboox_plugins::plugin_manifest_sha256(plugin) {
+                metadata.insert("peekaboox.manifest_sha256".to_owned(), fingerprint);
+            }
+            metadata
+        },
     }
 }
 

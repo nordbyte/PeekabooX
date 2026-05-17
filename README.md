@@ -65,6 +65,7 @@ For package contents, Docker, Nix, and smoke-install checks, see
 ```bash
 # Check the current desktop/session capabilities.
 peekaboox doctor --json
+peekaboox diagnose bundle --json
 
 # Capture a full screen, region, or known window.
 peekaboox capture --output screenshot.png
@@ -142,6 +143,7 @@ peekaboox completions fish
 | [vision-elements](docs/cli.md#vision-tools) | `--ignore-region`, `--min-confidence`, `--sort`, `--mask-output`, `--overlay-output`, `--json` | Detect UI-like regions from pixels |
 | [desktop](docs/cli.md#desktop-helpers) | `profiles`, `focus`, `locate`, `click`, `drag`, `type-into`, `assert` | Use app profiles and named targets |
 | [doctor](docs/cli.md#doctor) | `--json`, `--strict` | Diagnose capture, input, OCR, Python, and profile support with category summaries |
+| [diagnose](docs/cli.md#doctor) | `bundle`, `--output`, `--json` | Write a redacted local diagnostics bundle for bug reports |
 | [click](docs/cli.md#input-actions) | `--x`, `--y`, `--text`, `--selector`, `--dry-run` | Click coordinates or semantic targets |
 | [move](docs/cli.md#input-actions) | `--x`, `--y`, `--dry-run` | Move the pointer |
 | [drag / swipe](docs/cli.md#input-actions) | `--from`, `--to`, `--duration-ms`, `--dry-run` | Drag or swipe between coordinates |
@@ -151,7 +153,7 @@ peekaboox completions fish
 | [agent](docs/cli.md#snapshots-agent-and-system-commands) | `--goal`, `--dry-run`, `--resume`, `list-sessions` | Run the local deterministic agent session wrapper |
 | [config / permissions / tools / completions / clean](docs/cli.md#snapshots-agent-and-system-commands) | `show`, `status`, `bash`, `--all` | Manage local config, diagnostics metadata, completion scripts, and cached state |
 | [plugins](docs/plugins.md#discovery) | `--path`, `--json` | Discover Plugin SDK packages |
-| [plugin-call](docs/plugins.md#discovery) | `plugin_id`, `tool`, `--json` | Execute a bounded plugin process tool |
+| [plugin-call](docs/plugins.md#discovery) | `plugin_id`, `tool`, `--require-trusted`, `--json` | Execute a bounded plugin process tool |
 
 ## Models and providers
 

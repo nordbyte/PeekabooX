@@ -186,6 +186,20 @@ runtime.type_text("Hello", typing_speed_chars_per_second=20, backend="wtype")
 runtime.save_recording("recordings/manual-submit.yaml")
 ```
 
+Workflow files can be validated, replayed, and exported as reproducible bundles
+through the Python CLI:
+
+```bash
+peekaboox-agent workflow validate examples/workflow.yaml
+peekaboox-agent workflow replay examples/workflow.yaml
+peekaboox-agent workflow bundle examples/workflow.yaml --out target/workflow-bundle
+peekaboox-agent workflow bundle examples/workflow.yaml --execute
+```
+
+A bundle contains normalized JSON/YAML workflow files, metadata, optional
+`doctor.json`, and optional `replay-result.json`. This gives examples and bug
+reports a stable artifact without requiring prose log parsing.
+
 `find_element` also accepts daemon-scoped element lookup fields such as
 `app`, `window_title`, `window_id`, and the `vision_*` fallback detector tuning
 arguments. Scoped or vision-tuned lookups bypass stale graph cache hits and go

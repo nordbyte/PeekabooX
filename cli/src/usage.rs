@@ -1,6 +1,6 @@
 pub(super) fn print_usage() {
     println!(
-        "Usage: peekaboox [--daemon] [--socket <path>] <capture|see|agent|windows|window|elements|set-value|perform-action|ocr|compare|state|vision-elements|desktop|doctor|click|move|drag|swipe|type|paste|hotkey|press|scroll|app|launcher|workspace|dialog|menu|config|permissions|tools|completions|clean>"
+        "Usage: peekaboox [--daemon] [--socket <path>] <capture|see|agent|windows|window|elements|set-value|perform-action|ocr|compare|state|vision-elements|desktop|doctor|diagnose|click|move|drag|swipe|type|paste|hotkey|press|scroll|app|launcher|workspace|dialog|menu|config|permissions|tools|completions|clean>"
     );
     println!("Try:   peekaboox capture --output screenshot.png");
     println!("Try:   peekaboox see --annotate --json");
@@ -22,6 +22,7 @@ pub(super) fn print_usage() {
     println!("Try:   peekaboox desktop focus --app telegram");
     println!("Try:   peekaboox desktop click --app telegram --target search-input");
     println!("Try:   peekaboox doctor --json");
+    println!("Try:   peekaboox diagnose bundle --json");
     println!("Try:   peekaboox click --x 100 --y 200");
     println!("Try:   peekaboox click --text \"Submit\"");
     println!("Try:   peekaboox move --x 100 --y 200");
@@ -60,7 +61,7 @@ pub(super) fn print_plugins_usage() {
 
 pub(super) fn print_plugin_call_usage() {
     println!(
-        "Usage: peekaboox [--daemon] plugin-call <plugin-id> <tool> [--arguments-json <json>] [--path <plugin-dir-or-manifest>]... [--timeout-ms <ms>] [--max-output-bytes <n>] [--json]"
+        "Usage: peekaboox [--daemon] plugin-call <plugin-id> <tool> [--arguments-json <json>] [--path <plugin-dir-or-manifest>]... [--timeout-ms <ms>] [--max-output-bytes <n>] [--require-trusted] [--trust-policy <path>] [--json]"
     );
 }
 

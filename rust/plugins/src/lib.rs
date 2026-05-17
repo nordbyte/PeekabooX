@@ -9,10 +9,12 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 pub const PLUGIN_SDK_VERSION: &str = "peekaboox.plugin.v1";
 pub const PLUGIN_MANIFEST_FILE: &str = "peekaboox.plugin.json";
 pub const PLUGIN_PATH_ENV: &str = "PEEKABOOX_PLUGIN_PATH";
+pub const PLUGIN_TRUST_POLICY_ENV: &str = "PEEKABOOX_PLUGIN_TRUST_POLICY";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
@@ -100,6 +102,14 @@ pub struct PluginToolExecutionResult {
     pub stderr: String,
     pub result: Option<Value>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginTrustStatus {
+    pub plugin_id: String,
+    pub manifest_sha256: String,
+    pub trusted: bool,
+    pub reason: String,
 }
 
 pub fn default_plugin_search_paths() -> Vec<PathBuf> {
@@ -360,6 +370,151 @@ pub fn execute_plugin_tool(
         result,
         error,
     })
+}
+
+pub fn plugin_manifest_sha256(plugin: &PluginDescriptor) -> Result<String, String> {
+    let bytes = fs::read(&plugin.manifest_path)
+        .map_err(|error| format!("failed to read {}: {error}", plugin.manifest_path.display()))?;
+    let digest = Sha256::digest(bytes);
+    Ok(format!("{digest:x}"))
+}
+
+pub fn default_plugin_trust_policy_path() -> PathBuf {
+    if let Some(path) = env::var_os(PLUGIN_TRUST_POLICY_ENV) {
+        return PathBuf::from(path);
+    }
+    if let Some(config_home) = env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(config_home).join("peekaboox/trusted_plugins.json");
+    }
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config/peekaboox/trusted_plugins.json")
+}
+
+pub fn load_plugin_trust_policy(path: Option<&Path>) -> Result<BTreeMap<String, String>, String> {
+    let path = path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_plugin_trust_policy_path);
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let payload = fs::read_to_string(&path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let value: Value = serde_json::from_str(&payload)
+        .map_err(|error| format!("invalid plugin trust policy {}: {error}", path.display()))?;
+    let plugins = value.get("plugins").unwrap_or(&value);
+    let Some(object) = plugins.as_object() else {
+        return Err(format!(
+            "plugin trust policy {} plugins must be a JSON object",
+            path.display()
+        ));
+    };
+    let mut trusted = BTreeMap::new();
+    for (plugin_id, entry) in object {
+        let fingerprint = if let Some(fingerprint) = entry.as_str() {
+            fingerprint
+        } else if let Some(fingerprint) = entry.get("manifest_sha256").and_then(Value::as_str) {
+            fingerprint
+        } else {
+            return Err(format!(
+                "plugin trust policy {} has invalid entry for {plugin_id:?}",
+                path.display()
+            ));
+        };
+        trusted.insert(plugin_id.clone(), fingerprint.to_ascii_lowercase());
+    }
+    Ok(trusted)
+}
+
+pub fn save_plugin_trust_policy(
+    trusted: &BTreeMap<String, String>,
+    path: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let path = path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_plugin_trust_policy_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+    let plugins = trusted
+        .iter()
+        .map(|(plugin_id, fingerprint)| {
+            (
+                plugin_id.clone(),
+                serde_json::json!({ "manifest_sha256": fingerprint }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let payload = serde_json::json!({
+        "schema_version": 1,
+        "plugins": plugins,
+    });
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&payload).map_err(|error| error.to_string())? + "\n",
+    )
+    .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+    Ok(path)
+}
+
+pub fn trust_plugin(
+    plugin: &PluginDescriptor,
+    path: Option<&Path>,
+) -> Result<PluginTrustStatus, String> {
+    let mut trusted = load_plugin_trust_policy(path)?;
+    let manifest_sha256 = plugin_manifest_sha256(plugin)?;
+    trusted.insert(plugin.manifest.id.clone(), manifest_sha256.clone());
+    save_plugin_trust_policy(&trusted, path)?;
+    Ok(PluginTrustStatus {
+        plugin_id: plugin.manifest.id.clone(),
+        manifest_sha256,
+        trusted: true,
+        reason: "manifest fingerprint stored in trust policy".to_owned(),
+    })
+}
+
+pub fn verify_plugin_trust(
+    plugin: &PluginDescriptor,
+    path: Option<&Path>,
+) -> Result<PluginTrustStatus, String> {
+    let manifest_sha256 = plugin_manifest_sha256(plugin)?;
+    let trusted = load_plugin_trust_policy(path)?;
+    match trusted.get(&plugin.manifest.id) {
+        None => Ok(PluginTrustStatus {
+            plugin_id: plugin.manifest.id.clone(),
+            manifest_sha256,
+            trusted: false,
+            reason: "plugin id is not present in trust policy".to_owned(),
+        }),
+        Some(expected) if expected.eq_ignore_ascii_case(&manifest_sha256) => {
+            Ok(PluginTrustStatus {
+                plugin_id: plugin.manifest.id.clone(),
+                manifest_sha256,
+                trusted: true,
+                reason: "manifest fingerprint matches trust policy".to_owned(),
+            })
+        }
+        Some(_) => Ok(PluginTrustStatus {
+            plugin_id: plugin.manifest.id.clone(),
+            manifest_sha256,
+            trusted: false,
+            reason: "manifest fingerprint does not match trust policy".to_owned(),
+        }),
+    }
+}
+
+pub fn require_plugin_trust(plugin: &PluginDescriptor, path: Option<&Path>) -> Result<(), String> {
+    let status = verify_plugin_trust(plugin, path)?;
+    if status.trusted {
+        Ok(())
+    } else {
+        Err(format!(
+            "plugin {:?} is not trusted: {}; manifest_sha256={}",
+            status.plugin_id, status.reason, status.manifest_sha256
+        ))
+    }
 }
 
 pub fn validate_json_schema(schema: &Value, value: &Value) -> Result<(), String> {
@@ -741,7 +896,8 @@ mod tests {
     use super::{
         PLUGIN_MANIFEST_FILE, PLUGIN_SDK_VERSION, PluginEntrypoint, PluginEntrypointKind,
         PluginExecutionPolicy, PluginManifest, PluginTool, discover_plugins, execute_plugin_tool,
-        load_plugin, validate_json_schema, validate_manifest,
+        load_plugin, require_plugin_trust, trust_plugin, validate_json_schema, validate_manifest,
+        verify_plugin_trust,
     };
 
     #[test]
@@ -838,6 +994,38 @@ mod tests {
         assert_eq!(plugin.manifest.id, "file.demo");
         assert_eq!(plugin.root_dir, root);
         fs::remove_dir_all(plugin.root_dir).ok();
+    }
+
+    #[test]
+    fn plugin_trust_policy_verifies_manifest_fingerprint() {
+        let root = unique_temp_dir("peekaboox-plugin-trust");
+        let plugin_dir = root.join("demo");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(
+            plugin_dir.join(PLUGIN_MANIFEST_FILE),
+            serde_json::json!({
+                "schema_version": PLUGIN_SDK_VERSION,
+                "id": "trusted.demo",
+                "name": "Trusted Demo",
+                "version": "1.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let plugin = load_plugin(&plugin_dir).unwrap();
+        let policy = root.join("trusted_plugins.json");
+
+        let untrusted = verify_plugin_trust(&plugin, Some(&policy)).unwrap();
+        assert!(!untrusted.trusted);
+        assert!(require_plugin_trust(&plugin, Some(&policy)).is_err());
+
+        let trusted = trust_plugin(&plugin, Some(&policy)).unwrap();
+        let verified = verify_plugin_trust(&plugin, Some(&policy)).unwrap();
+
+        assert!(trusted.trusted);
+        assert!(verified.trusted);
+        require_plugin_trust(&plugin, Some(&policy)).unwrap();
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]

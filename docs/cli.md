@@ -456,6 +456,8 @@ Check the current environment before running live automation:
 cargo run -q -p peekaboox-cli -- doctor
 cargo run -q -p peekaboox-cli -- doctor --json
 cargo run -q -p peekaboox-cli -- doctor --strict
+cargo run -q -p peekaboox-cli -- diagnose bundle --json
+cargo run -q -p peekaboox-cli -- diagnose bundle --output target/diagnose-local
 ```
 
 `doctor` reports display/session state, helper commands, capture, DMA-BUF,
@@ -463,6 +465,11 @@ window enumeration, input, OCR, Python gRPC imports, and desktop profiles.
 JSON output includes a `category` and `severity` for every check plus top-level
 `categories` summaries so agents can decide whether capture, input, OCR,
 desktop, or Python runtime support is currently usable.
+
+`diagnose bundle` writes a redacted local diagnostics directory with
+`doctor.json`, `versions.json`, `environment.json`, `capture-backends.json`,
+and `manifest.json`. It is intended for bug reports and release triage; it does
+not inject input or close windows.
 
 ## Daemon Routing
 
@@ -505,6 +512,7 @@ Plugins use the declarative SDK manifest `peekaboox.plugin.json`:
 peekaboox plugins --path examples/plugins
 peekaboox plugins --path examples/plugins --json
 peekaboox plugin-call org.peekaboox.examples.system-info system_info.uname --path examples/plugins --json
+peekaboox plugin-call org.peekaboox.examples.system-info system_info.uname --path examples/plugins --require-trusted --trust-policy trusted_plugins.json --json
 examples/cli/plugins_system_info.sh
 ```
 
