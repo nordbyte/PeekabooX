@@ -119,6 +119,16 @@ class McpTests(unittest.TestCase):
         self.assertIn("diagnose", window_schema)
         self.assertEqual(window_schema["limit"]["minimum"], 1)
 
+    def test_mcp_input_schemas_are_codex_function_compatible(self) -> None:
+        server = McpServer()
+        server.register_default_tools()
+
+        unsupported_top_level_keywords = {"allOf", "anyOf", "enum", "not", "oneOf"}
+        for tool in server.list_tools():
+            schema = tool["inputSchema"]
+            found = unsupported_top_level_keywords.intersection(schema)
+            self.assertFalse(found, f"{tool['name']} has unsupported top-level keys: {found}")
+
     def test_mcp_server_registers_runtime_handlers(self) -> None:
         runtime = AgentRuntime(client=FakeClient())
         server = McpServer(runtime=runtime)

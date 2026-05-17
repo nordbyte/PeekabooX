@@ -107,8 +107,6 @@ def schema(
     }
     if required:
         value["required"] = required
-    if any_of:
-        value["anyOf"] = any_of
     return value
 
 
