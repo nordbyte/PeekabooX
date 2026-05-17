@@ -1623,6 +1623,7 @@ fn capture_session_display(value: &str) -> String {
 fn capture_availability_display(value: &str) -> String {
     match value {
         "available" => "Available".to_owned(),
+        "missing_pipewire_backend" => "MissingPipeWireBackend".to_owned(),
         "missing_pipewire_session" => "MissingPipeWireSession".to_owned(),
         "unsupported_session" => "UnsupportedSession".to_owned(),
         other => other.to_owned(),

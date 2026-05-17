@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::io::Cursor;
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, IntoRawFd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use dbus::arg::{PropMap, RefArg, Variant};
 use dbus::blocking::Connection;
+use dbus::channel::Token as DbusMatchToken;
 use dbus::message::MatchRule;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
@@ -203,14 +204,16 @@ impl CaptureTool {
     }
 
     fn supports_output(self, output: &Path) -> bool {
-        if self != Self::Xwd {
-            return true;
-        }
-
-        output
+        let is_xwd_output = output
             .extension()
             .and_then(OsStr::to_str)
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("xwd"))
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("xwd"));
+
+        if is_xwd_output {
+            self == Self::Xwd
+        } else {
+            self != Self::Xwd
+        }
     }
 
     fn supports_stdout_capture(self) -> bool {
@@ -294,6 +297,7 @@ impl ZeroCopyTransport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZeroCopyAvailability {
     Available,
+    MissingPipeWireBackend,
     MissingPipeWireSession,
     UnsupportedSession,
 }
@@ -306,6 +310,7 @@ impl ZeroCopyAvailability {
     pub fn name(self) -> &'static str {
         match self {
             Self::Available => "available",
+            Self::MissingPipeWireBackend => "missing_pipewire_backend",
             Self::MissingPipeWireSession => "missing_pipewire_session",
             Self::UnsupportedSession => "unsupported_session",
         }
@@ -340,6 +345,12 @@ pub struct DmaBufPlaneDescriptor {
     pub modifier: u64,
 }
 
+impl Drop for DmaBufPlaneDescriptor {
+    fn drop(&mut self) {
+        close_raw_fd(&mut self.fd);
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct DmaBufFrameDescriptor {
     pub width: u32,
@@ -347,14 +358,6 @@ pub struct DmaBufFrameDescriptor {
     pub format: PixelFormat,
     pub fourcc: u32,
     pub planes: Vec<DmaBufPlaneDescriptor>,
-}
-
-impl Drop for DmaBufFrameDescriptor {
-    fn drop(&mut self) {
-        for plane in &mut self.planes {
-            close_raw_fd(&mut plane.fd);
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,7 +405,11 @@ impl DmaBufMemoryLayout {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Owned DMA-BUF plane descriptor handed to an importer.
+///
+/// The descriptor closes `fd` on drop. Call `try_clone_owned()` on the frame
+/// descriptor when another importer needs an independently owned handle.
+#[derive(Debug, PartialEq, Eq)]
 pub struct DmaBufPlaneImportDescriptor {
     pub plane_index: usize,
     pub fd: i32,
@@ -411,7 +418,29 @@ pub struct DmaBufPlaneImportDescriptor {
     pub modifier: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl DmaBufPlaneImportDescriptor {
+    fn try_clone_owned(&self) -> Result<Self> {
+        Ok(Self {
+            plane_index: self.plane_index,
+            fd: duplicate_raw_fd(self.fd, "DMA-BUF import plane fd")?,
+            offset: self.offset,
+            stride: self.stride,
+            modifier: self.modifier,
+        })
+    }
+}
+
+impl Drop for DmaBufPlaneImportDescriptor {
+    fn drop(&mut self) {
+        close_raw_fd(&mut self.fd);
+    }
+}
+
+/// Owned DMA-BUF frame import descriptor for EGL, Vulkan, or compute backends.
+///
+/// Plane file descriptors are duplicated from capture descriptors during
+/// validation and remain valid even if the source frame is dropped.
+#[derive(Debug, PartialEq, Eq)]
 pub struct DmaBufFrameImportDescriptor {
     pub target: DmaBufImportTarget,
     pub width: u32,
@@ -423,7 +452,28 @@ pub struct DmaBufFrameImportDescriptor {
     pub planes: Vec<DmaBufPlaneImportDescriptor>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl DmaBufFrameImportDescriptor {
+    pub fn try_clone_owned(&self) -> Result<Self> {
+        let planes = self
+            .planes
+            .iter()
+            .map(DmaBufPlaneImportDescriptor::try_clone_owned)
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Self {
+            target: self.target,
+            width: self.width,
+            height: self.height,
+            format: self.format,
+            fourcc: self.fourcc,
+            memory_layout: self.memory_layout,
+            synchronization: self.synchronization,
+            planes,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub struct ImportedDmaBufFrame {
     pub backend_name: String,
     pub backend_kind: DmaBufImportTarget,
@@ -502,14 +552,16 @@ pub fn prepare_dmabuf_import_descriptor(
         .planes
         .iter()
         .enumerate()
-        .map(|(plane_index, plane)| DmaBufPlaneImportDescriptor {
-            plane_index,
-            fd: plane.fd,
-            offset: plane.offset,
-            stride: plane.stride,
-            modifier: plane.modifier,
+        .map(|(plane_index, plane)| {
+            Ok(DmaBufPlaneImportDescriptor {
+                plane_index,
+                fd: duplicate_raw_fd(plane.fd, "DMA-BUF frame plane fd")?,
+                offset: plane.offset,
+                stride: plane.stride,
+                modifier: plane.modifier,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(DmaBufFrameImportDescriptor {
         target,
@@ -660,6 +712,20 @@ fn unsupported_dmabuf_fourcc_error(fourcc: u32) -> PeekabooXError {
     ))
 }
 
+fn duplicate_raw_fd(fd: i32, description: &str) -> Result<i32> {
+    if fd < 0 {
+        return Err(PeekabooXError::new(format!(
+            "{description} is an invalid file descriptor"
+        )));
+    }
+
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    borrowed
+        .try_clone_to_owned()
+        .map(IntoRawFd::into_raw_fd)
+        .map_err(|error| PeekabooXError::new(format!("failed to duplicate {description}: {error}")))
+}
+
 fn close_raw_fd(fd: &mut i32) {
     if *fd < 0 {
         return;
@@ -673,7 +739,7 @@ fn close_raw_fd(fd: &mut i32) {
 }
 
 #[cfg(any(test, feature = "pipewire-backend"))]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct DmaBufPlaneCandidate {
     fd: i32,
     offset: u32,
@@ -681,7 +747,14 @@ struct DmaBufPlaneCandidate {
 }
 
 #[cfg(any(test, feature = "pipewire-backend"))]
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl Drop for DmaBufPlaneCandidate {
+    fn drop(&mut self) {
+        close_raw_fd(&mut self.fd);
+    }
+}
+
+#[cfg(any(test, feature = "pipewire-backend"))]
+#[derive(Debug, PartialEq, Eq)]
 struct DmaBufFrameCandidate {
     width: u32,
     height: u32,
@@ -709,7 +782,7 @@ fn dmabuf_descriptor_from_candidate(
     }
 
     let mut planes = Vec::with_capacity(candidate.planes.len());
-    for (index, plane) in candidate.planes.into_iter().enumerate() {
+    for (index, mut plane) in candidate.planes.into_iter().enumerate() {
         if plane.fd < 0 {
             return Err(PeekabooXError::new(format!(
                 "PipeWire DMA-BUF plane {index} has an invalid file descriptor"
@@ -721,8 +794,10 @@ fn dmabuf_descriptor_from_candidate(
             )));
         }
 
+        let fd = plane.fd;
+        plane.fd = -1;
         planes.push(DmaBufPlaneDescriptor {
-            fd: plane.fd,
+            fd,
             offset: plane.offset,
             stride: plane.stride,
             modifier: candidate.modifier,
@@ -917,6 +992,7 @@ mod egl_importer {
                 )));
             }
 
+            let owned_descriptor = descriptor.try_clone_owned()?;
             let attributes = egl_dma_buf_attributes(descriptor, self.display.supports_modifiers)?;
             let image = unsafe {
                 (self.display.create_image)(
@@ -933,7 +1009,7 @@ mod egl_importer {
 
             Ok(EglImportedDmaBufFrame {
                 backend_name: "egl-dmabuf-import".to_owned(),
-                descriptor: descriptor.clone(),
+                descriptor: owned_descriptor,
                 image,
                 display: self.display.clone(),
             })
@@ -1553,11 +1629,14 @@ mod egl_importer {
 
     #[cfg(test)]
     mod tests {
+        use std::os::fd::IntoRawFd;
+
         use super::*;
 
         #[test]
         fn builds_egl_attributes_without_invalid_modifier() {
             let descriptor = egl_import_descriptor(DRM_FORMAT_MOD_INVALID);
+            let fd = descriptor.planes[0].fd;
 
             let attributes = egl_dma_buf_attributes(&descriptor, false).unwrap();
 
@@ -1571,7 +1650,7 @@ mod egl_importer {
                     EGL_LINUX_DRM_FOURCC_EXT,
                     fourcc_code(b'X', b'R', b'2', b'4') as EglInt,
                     EGL_DMA_BUF_PLANE_FD_EXT[0],
-                    12,
+                    fd,
                     EGL_DMA_BUF_PLANE_OFFSET_EXT[0],
                     128,
                     EGL_DMA_BUF_PLANE_PITCH_EXT[0],
@@ -1584,6 +1663,7 @@ mod egl_importer {
         #[test]
         fn builds_egl_attributes_with_explicit_modifier() {
             let descriptor = egl_import_descriptor(0x0102_0304_0506_0708);
+            let fd = descriptor.planes[0].fd;
 
             let attributes = egl_dma_buf_attributes(&descriptor, true).unwrap();
 
@@ -1597,7 +1677,7 @@ mod egl_importer {
                     EGL_LINUX_DRM_FOURCC_EXT,
                     fourcc_code(b'X', b'R', b'2', b'4') as EglInt,
                     EGL_DMA_BUF_PLANE_FD_EXT[0],
-                    12,
+                    fd,
                     EGL_DMA_BUF_PLANE_OFFSET_EXT[0],
                     128,
                     EGL_DMA_BUF_PLANE_PITCH_EXT[0],
@@ -1643,7 +1723,7 @@ mod egl_importer {
                 synchronization: DmaBufSynchronization::Implicit,
                 planes: vec![DmaBufPlaneImportDescriptor {
                     plane_index: 0,
-                    fd: 12,
+                    fd: std::fs::File::open("/dev/null").unwrap().into_raw_fd(),
                     offset: 128,
                     stride: 7680,
                     modifier,
@@ -2496,6 +2576,8 @@ pub fn zero_copy_capture_capabilities(
 ) -> Vec<ZeroCopyCaptureCapability> {
     let availability = if environment.session_type != SessionType::Wayland {
         ZeroCopyAvailability::UnsupportedSession
+    } else if !pipewire_backend_feature_enabled() {
+        ZeroCopyAvailability::MissingPipeWireBackend
     } else if !environment.pipewire_session_available {
         ZeroCopyAvailability::MissingPipeWireSession
     } else {
@@ -2564,7 +2646,9 @@ fn open_pipewire_screencast_stream(
 
 fn screencast_create_session(connection: &Connection) -> Result<String> {
     let proxy = portal_proxy(connection);
-    let mut options = portal_request_options("peekaboox_screencast_create");
+    let token = portal_token("peekaboox_screencast_create");
+    let waiter = prepare_portal_request(connection, &token, "ScreenCast.CreateSession")?;
+    let mut options = portal_request_options(&token);
     options.insert(
         "session_handle_token".to_owned(),
         Variant(Box::new(portal_token("peekaboox_screencast_session"))),
@@ -2577,13 +2661,16 @@ fn screencast_create_session(connection: &Connection) -> Result<String> {
                 "xdg-desktop-portal ScreenCast.CreateSession failed: {error}"
             ))
         })?;
-    let results = wait_for_portal_request(connection, handle, "ScreenCast.CreateSession")?;
+    verify_portal_request_handle(&waiter.handle, &handle, "ScreenCast.CreateSession")?;
+    let results = wait_for_portal_request(connection, waiter, "ScreenCast.CreateSession")?;
     portal_result_object_path(&results, "session_handle")
 }
 
 fn screencast_select_sources(connection: &Connection, session_handle: &str) -> Result<()> {
     let proxy = portal_proxy(connection);
-    let mut options = portal_request_options("peekaboox_screencast_select");
+    let token = portal_token("peekaboox_screencast_select");
+    let waiter = prepare_portal_request(connection, &token, "ScreenCast.SelectSources")?;
+    let mut options = portal_request_options(&token);
     options.insert("types".to_owned(), Variant(Box::new(1_u32)));
     options.insert("multiple".to_owned(), Variant(Box::new(false)));
     options.insert("cursor_mode".to_owned(), Variant(Box::new(2_u32)));
@@ -2600,7 +2687,8 @@ fn screencast_select_sources(connection: &Connection, session_handle: &str) -> R
                 "xdg-desktop-portal ScreenCast.SelectSources failed: {error}"
             ))
         })?;
-    wait_for_portal_request(connection, handle, "ScreenCast.SelectSources")?;
+    verify_portal_request_handle(&waiter.handle, &handle, "ScreenCast.SelectSources")?;
+    wait_for_portal_request(connection, waiter, "ScreenCast.SelectSources")?;
     Ok(())
 }
 
@@ -2609,7 +2697,9 @@ fn screencast_start(
     session_handle: &str,
 ) -> Result<PortalScreenCastStream> {
     let proxy = portal_proxy(connection);
-    let options = portal_request_options("peekaboox_screencast_start");
+    let token = portal_token("peekaboox_screencast_start");
+    let waiter = prepare_portal_request(connection, &token, "ScreenCast.Start")?;
+    let options = portal_request_options(&token);
     let session = portal_path(session_handle)?;
 
     let (handle,): (dbus::Path<'static>,) = proxy
@@ -2619,7 +2709,8 @@ fn screencast_start(
                 "xdg-desktop-portal ScreenCast.Start failed: {error}"
             ))
         })?;
-    let results = wait_for_portal_request(connection, handle, "ScreenCast.Start")?;
+    verify_portal_request_handle(&waiter.handle, &handle, "ScreenCast.Start")?;
+    let results = wait_for_portal_request(connection, waiter, "ScreenCast.Start")?;
     portal_first_stream(&results)
 }
 
@@ -2652,11 +2743,11 @@ fn portal_proxy(connection: &Connection) -> dbus::blocking::Proxy<'_, &Connectio
     )
 }
 
-fn portal_request_options(handle_prefix: &str) -> PropMap {
+fn portal_request_options(handle_token: &str) -> PropMap {
     let mut options = PropMap::new();
     options.insert(
         "handle_token".to_owned(),
-        Variant(Box::new(portal_token(handle_prefix))),
+        Variant(Box::new(handle_token.to_owned())),
     );
     options
 }
@@ -2678,15 +2769,22 @@ fn portal_path(value: &str) -> Result<dbus::Path<'static>> {
         })
 }
 
-fn wait_for_portal_request(
-    connection: &Connection,
+struct PortalRequestWaiter {
     handle: dbus::Path<'static>,
+    receiver: mpsc::Receiver<(u32, PropMap)>,
+    _match_token: DbusMatchToken,
+}
+
+fn prepare_portal_request(
+    connection: &Connection,
+    handle_token: &str,
     operation: &str,
-) -> Result<PropMap> {
+) -> Result<PortalRequestWaiter> {
+    let handle = portal_request_path(connection, handle_token)?;
     let (sender, receiver) = mpsc::channel();
-    let match_rule =
-        MatchRule::new_signal("org.freedesktop.portal.Request", "Response").with_path(handle);
-    let _match_token = connection
+    let match_rule = MatchRule::new_signal("org.freedesktop.portal.Request", "Response")
+        .with_path(handle.clone());
+    let match_token = connection
         .add_match(
             match_rule,
             move |(response, results): (u32, PropMap), _connection: &Connection, _message| {
@@ -2700,6 +2798,46 @@ fn wait_for_portal_request(
             ))
         })?;
 
+    Ok(PortalRequestWaiter {
+        handle,
+        receiver,
+        _match_token: match_token,
+    })
+}
+
+fn portal_request_path(connection: &Connection, handle_token: &str) -> Result<dbus::Path<'static>> {
+    portal_request_path_from_unique_name(&connection.unique_name().to_string(), handle_token)
+}
+
+fn portal_request_path_from_unique_name(
+    unique_name: &str,
+    handle_token: &str,
+) -> Result<dbus::Path<'static>> {
+    let sender = unique_name.trim_start_matches(':').replace(['.', '-'], "_");
+    portal_path(&format!(
+        "/org/freedesktop/portal/desktop/request/{sender}/{handle_token}"
+    ))
+}
+
+fn verify_portal_request_handle(
+    expected: &dbus::Path<'static>,
+    actual: &dbus::Path<'static>,
+    operation: &str,
+) -> Result<()> {
+    if expected == actual {
+        return Ok(());
+    }
+
+    Err(PeekabooXError::new(format!(
+        "xdg-desktop-portal {operation} returned request handle {actual}, expected {expected}"
+    )))
+}
+
+fn wait_for_portal_request(
+    connection: &Connection,
+    waiter: PortalRequestWaiter,
+    operation: &str,
+) -> Result<PropMap> {
     let deadline = Instant::now() + PORTAL_REQUEST_TIMEOUT;
     while Instant::now() < deadline {
         connection
@@ -2710,7 +2848,7 @@ fn wait_for_portal_request(
                 ))
             })?;
 
-        if let Ok((response, results)) = receiver.try_recv() {
+        if let Ok((response, results)) = waiter.receiver.try_recv() {
             return match response {
                 0 => Ok(results),
                 1 => Err(PeekabooXError::new(format!(
@@ -2852,10 +2990,7 @@ pub fn capture_backend_capabilities(
                 tool.command_name()
                     .map(|command| format!("missing command `{command}`"))
             } else if !supports_output {
-                Some(format!(
-                    "{} only supports .xwd output for file capture",
-                    tool.name()
-                ))
+                Some(unsupported_output_reason(tool, output))
             } else {
                 None
             };
@@ -3107,17 +3242,10 @@ fn capture_with_xdg_desktop_portal(output: &Path) -> Result<()> {
         PeekabooXError::new(format!("failed to connect to session bus: {error}"))
     })?;
 
-    let token = format!(
-        "peekaboox{}_{}",
-        std::process::id(),
-        monotonic_token_component()
-    );
+    let token = portal_token("peekaboox_screenshot");
+    let waiter = prepare_portal_request(&connection, &token, "Screenshot")?;
 
-    let proxy = connection.with_proxy(
-        "org.freedesktop.portal.Desktop",
-        "/org/freedesktop/portal/desktop",
-        Duration::from_secs(5),
-    );
+    let proxy = portal_proxy(&connection);
 
     let mut options = PropMap::new();
     options.insert("handle_token".to_owned(), Variant(Box::new(token)));
@@ -3134,72 +3262,34 @@ fn capture_with_xdg_desktop_portal(output: &Path) -> Result<()> {
                 "xdg-desktop-portal Screenshot call failed: {error}"
             ))
         })?;
+    verify_portal_request_handle(&waiter.handle, &handle, "Screenshot")?;
 
-    let (sender, receiver) = mpsc::channel();
-    let match_rule =
-        MatchRule::new_signal("org.freedesktop.portal.Request", "Response").with_path(handle);
-
-    let _match_token = connection
-        .add_match(
-            match_rule,
-            move |(response, results): (u32, PropMap), _connection: &Connection, _message| {
-                let uri = results
-                    .get("uri")
-                    .and_then(|value| value.0.as_str())
-                    .map(str::to_owned);
-                let _ = sender.send((response, uri));
-                true
-            },
-        )
-        .map_err(|error| {
-            PeekabooXError::new(format!(
-                "failed to subscribe to xdg-desktop-portal response: {error}"
-            ))
-        })?;
-
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        connection
-            .process(Duration::from_millis(250))
-            .map_err(|error| {
-                PeekabooXError::new(format!(
-                    "failed while waiting for xdg-desktop-portal response: {error}"
-                ))
-            })?;
-
-        if let Ok((response, uri)) = receiver.try_recv() {
-            return handle_portal_response(response, uri, output);
-        }
-    }
-
-    Err(PeekabooXError::new(
-        "timed out waiting for xdg-desktop-portal screenshot response",
-    ))
+    let results = wait_for_portal_request(&connection, waiter, "Screenshot")?;
+    let uri = portal_result_string(&results, "uri")?;
+    copy_portal_screenshot(&uri, output)
 }
 
-fn handle_portal_response(response: u32, uri: Option<String>, output: &Path) -> Result<()> {
-    match response {
-        0 => {
-            let uri = uri.ok_or_else(|| {
-                PeekabooXError::new("xdg-desktop-portal response did not include a screenshot URI")
-            })?;
-            let source = file_uri_to_path(&uri)?;
-            std::fs::copy(&source, output).map_err(|error| {
-                PeekabooXError::new(format!(
-                    "failed to copy portal screenshot from {} to {}: {error}",
-                    source.display(),
-                    output.display()
-                ))
-            })?;
-            Ok(())
-        }
-        1 => Err(PeekabooXError::new(
-            "xdg-desktop-portal screenshot request was cancelled",
-        )),
-        other => Err(PeekabooXError::new(format!(
-            "xdg-desktop-portal screenshot request failed with response code {other}"
-        ))),
-    }
+fn portal_result_string(results: &PropMap, key: &str) -> Result<String> {
+    portal_result(results, key)?
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            PeekabooXError::new(format!(
+                "xdg-desktop-portal response field {key:?} was not a string"
+            ))
+        })
+}
+
+fn copy_portal_screenshot(uri: &str, output: &Path) -> Result<()> {
+    let source = file_uri_to_path(uri)?;
+    std::fs::copy(&source, output).map_err(|error| {
+        PeekabooXError::new(format!(
+            "failed to copy portal screenshot from {} to {}: {error}",
+            source.display(),
+            output.display()
+        ))
+    })?;
+    Ok(())
 }
 
 fn load_image_file(path: &Path) -> Result<CaptureFrame> {
@@ -3502,15 +3592,30 @@ fn remove_best_effort(path: &Path, description: &str) {
     }
 }
 
-fn detect_pipewire_session(commands: &HashSet<String>) -> bool {
-    if commands.contains("pw-cli") || commands.contains("pipewire") {
-        return true;
+fn unsupported_output_reason(tool: CaptureTool, output: &Path) -> String {
+    let is_xwd_output = output
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("xwd"));
+    if is_xwd_output {
+        format!(
+            "{} cannot write XWD output; use xwd for .xwd files",
+            tool.name()
+        )
+    } else {
+        format!("{} only supports .xwd output for file capture", tool.name())
     }
-    if std::env::var_os("PIPEWIRE_REMOTE").is_some() {
-        return true;
-    }
+}
 
-    pipewire_runtime_socket().is_some_and(|socket| socket.exists())
+fn detect_pipewire_session(_commands: &HashSet<String>) -> bool {
+    detect_pipewire_session_from(
+        std::env::var_os("PIPEWIRE_REMOTE").is_some(),
+        pipewire_runtime_socket().is_some_and(|socket| socket.exists()),
+    )
+}
+
+fn detect_pipewire_session_from(has_pipewire_remote: bool, has_runtime_socket: bool) -> bool {
+    has_pipewire_remote || has_runtime_socket
 }
 
 fn pipewire_runtime_socket() -> Option<PathBuf> {
@@ -3542,12 +3647,13 @@ mod tests {
         DmaBufFrameCandidate, DmaBufFrameDescriptor, DmaBufImportTarget, DmaBufMemoryLayout,
         DmaBufPlaneCandidate, DmaBufPlaneDescriptor, DmaBufSynchronization, SessionType,
         UnimplementedCaptureBackend, ZeroCopyAvailability, capture_backend_capabilities,
-        crop_frame, decode_image_bytes, dmabuf_descriptor_from_candidate, file_uri_to_path,
-        fourcc_code, grim_region_geometry, import_dmabuf_frame, portal_first_stream,
-        portal_first_stream_node_id, portal_result_object_path, prepare_dmabuf_import_descriptor,
-        select_backend, select_frame_backend, select_region_frame_backend,
-        select_zero_copy_backend, validate_region_capture_frame, x11_region_geometry,
-        zero_copy_capture_capabilities,
+        crop_frame, decode_image_bytes, detect_pipewire_session_from,
+        dmabuf_descriptor_from_candidate, file_uri_to_path, fourcc_code, grim_region_geometry,
+        import_dmabuf_frame, portal_first_stream, portal_first_stream_node_id,
+        portal_request_path_from_unique_name, portal_result_object_path,
+        prepare_dmabuf_import_descriptor, select_backend, select_frame_backend,
+        select_region_frame_backend, select_zero_copy_backend, validate_region_capture_frame,
+        x11_region_geometry, zero_copy_capture_capabilities,
     };
     use peekaboox_core::{CaptureFrame, PixelFormat, Rect};
 
@@ -3593,6 +3699,29 @@ mod tests {
         let backend = select_backend(&environment, Path::new("screenshot.xwd")).unwrap();
 
         assert_eq!(backend.tool, CaptureTool::Xwd);
+    }
+
+    #[test]
+    fn selects_xwd_for_xwd_output_when_other_x11_backends_exist() {
+        let environment = environment(SessionType::X11, None, ["scrot", "xwd"]);
+
+        let backend = select_backend(&environment, Path::new("screenshot.xwd")).unwrap();
+        let names = super::candidate_backends(&environment, Path::new("screenshot.xwd"))
+            .iter()
+            .map(|backend| backend.name())
+            .collect::<Vec<_>>();
+
+        assert_eq!(backend.tool, CaptureTool::Xwd);
+        assert_eq!(names, vec!["xwd"]);
+    }
+
+    #[test]
+    fn does_not_select_portal_for_xwd_output() {
+        let environment = environment(SessionType::Wayland, Some("sway"), ["grim"]);
+
+        let backend = select_backend(&environment, Path::new("screenshot.xwd"));
+
+        assert!(backend.is_none());
     }
 
     #[test]
@@ -3659,6 +3788,7 @@ mod tests {
         assert_eq!(backend.tool, CaptureTool::Maim);
     }
 
+    #[cfg(feature = "pipewire-backend")]
     #[test]
     fn selects_zero_copy_backend_on_wayland_with_pipewire() {
         let environment = environment_with_pipewire(SessionType::Wayland, Some("GNOME"), []);
@@ -3672,6 +3802,7 @@ mod tests {
         assert_eq!(backend.backend_kind, peekaboox_core::BackendKind::Portal);
     }
 
+    #[cfg(feature = "pipewire-backend")]
     #[test]
     fn reports_missing_pipewire_for_wayland_zero_copy() {
         let environment = environment(SessionType::Wayland, Some("sway"), []);
@@ -3686,6 +3817,30 @@ mod tests {
             ZeroCopyAvailability::MissingPipeWireSession
         );
         assert!(select_zero_copy_backend(&environment).is_none());
+    }
+
+    #[cfg(not(feature = "pipewire-backend"))]
+    #[test]
+    fn reports_missing_pipewire_backend_when_feature_is_disabled() {
+        let environment = environment_with_pipewire(SessionType::Wayland, Some("GNOME"), []);
+
+        let capability = zero_copy_capture_capabilities(&environment)
+            .into_iter()
+            .next()
+            .unwrap();
+
+        assert_eq!(
+            capability.availability,
+            ZeroCopyAvailability::MissingPipeWireBackend
+        );
+        assert!(select_zero_copy_backend(&environment).is_none());
+    }
+
+    #[test]
+    fn pipewire_session_detection_ignores_command_presence_only() {
+        assert!(!detect_pipewire_session_from(false, false));
+        assert!(detect_pipewire_session_from(true, false));
+        assert!(detect_pipewire_session_from(false, true));
     }
 
     #[test]
@@ -3745,6 +3900,16 @@ mod tests {
     }
 
     #[test]
+    fn derives_portal_request_path_before_method_call() {
+        let path = portal_request_path_from_unique_name(":1.42", "peekaboox_token").unwrap();
+
+        assert_eq!(
+            path.to_string(),
+            "/org/freedesktop/portal/desktop/request/1_42/peekaboox_token"
+        );
+    }
+
+    #[test]
     fn uses_linux_drm_invalid_modifier_value() {
         assert_eq!(DRM_FORMAT_MOD_INVALID, 0x00ff_ffff_ffff_ffff);
     }
@@ -3793,6 +3958,37 @@ mod tests {
     }
 
     #[test]
+    fn closes_candidate_plane_fds_when_validation_fails() {
+        let valid_fd = owned_test_fd();
+        let invalid_fd = owned_test_fd();
+
+        let error = dmabuf_descriptor_from_candidate(DmaBufFrameCandidate {
+            width: 1920,
+            height: 1080,
+            format: PixelFormat::Bgra8,
+            fourcc: fourcc_code(b'X', b'R', b'2', b'4'),
+            modifier: DRM_FORMAT_MOD_INVALID,
+            planes: vec![
+                DmaBufPlaneCandidate {
+                    fd: valid_fd,
+                    offset: 128,
+                    stride: 7680,
+                },
+                DmaBufPlaneCandidate {
+                    fd: invalid_fd,
+                    offset: 128,
+                    stride: 0,
+                },
+            ],
+        })
+        .unwrap_err();
+
+        assert!(error.message().contains("zero stride"));
+        assert!(!fd_is_open(valid_fd));
+        assert!(!fd_is_open(invalid_fd));
+    }
+
+    #[test]
     fn prepares_dmabuf_import_descriptor_for_compute_backend() {
         let descriptor = single_plane_dmabuf_descriptor();
         let fd = descriptor.planes[0].fd;
@@ -3809,10 +4005,27 @@ mod tests {
         assert_eq!(import.synchronization, DmaBufSynchronization::Implicit);
         assert_eq!(import.planes.len(), 1);
         assert_eq!(import.planes[0].plane_index, 0);
-        assert_eq!(import.planes[0].fd, fd);
+        assert_ne!(import.planes[0].fd, fd);
+        assert!(fd_is_open(import.planes[0].fd));
         assert_eq!(import.planes[0].offset, 128);
         assert_eq!(import.planes[0].stride, 7680);
         assert_eq!(import.planes[0].modifier, DRM_FORMAT_MOD_INVALID);
+    }
+
+    #[test]
+    fn import_descriptor_keeps_fd_valid_after_source_descriptor_drops() {
+        let descriptor = single_plane_dmabuf_descriptor();
+        let source_fd = descriptor.planes[0].fd;
+        let import =
+            prepare_dmabuf_import_descriptor(&descriptor, DmaBufImportTarget::Compute).unwrap();
+        let import_fd = import.planes[0].fd;
+
+        drop(descriptor);
+
+        assert!(!fd_is_open(source_fd));
+        assert!(fd_is_open(import_fd));
+        drop(import);
+        assert!(!fd_is_open(import_fd));
     }
 
     #[test]
@@ -3966,5 +4179,13 @@ mod tests {
 
     fn owned_test_fd() -> i32 {
         std::fs::File::open("/dev/null").unwrap().into_raw_fd()
+    }
+
+    fn fd_is_open(fd: i32) -> bool {
+        if fd < 0 {
+            return false;
+        }
+        let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+        borrowed.try_clone_to_owned().is_ok()
     }
 }

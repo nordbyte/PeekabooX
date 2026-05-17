@@ -1086,7 +1086,7 @@ fn run_command_capture_allowing_empty<const N: usize>(
 ) -> Result<String> {
     let output = Command::new(program).args(args).output()?;
 
-    if output.status.success() || output.stdout.is_empty() {
+    if output.status.success() || (output.stdout.is_empty() && output.stderr.is_empty()) {
         return Ok(String::from_utf8_lossy(&output.stdout).to_string());
     }
 
@@ -1112,7 +1112,7 @@ mod tests {
     use super::{
         WindowEnvironment, WindowQuery, WindowSort, WindowTool, apply_window_query,
         atspi_state_contains, candidate_backends, parse_xdotool_geometry, parse_xprop_window_state,
-        parse_xprop_wm_class, should_ignore_xdotool_window,
+        parse_xprop_wm_class, run_command_capture_allowing_empty, should_ignore_xdotool_window,
     };
     use crate::SessionType;
     use peekaboox_core::{Rect, WindowInfo, WindowState};
@@ -1219,6 +1219,22 @@ mod tests {
             ),
             Some(WindowState::Maximized)
         );
+    }
+
+    #[test]
+    fn command_allowing_empty_accepts_silent_no_match() {
+        let output = run_command_capture_allowing_empty("sh", ["-c", "exit 1"]).unwrap();
+
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn command_allowing_empty_rejects_stderr_failures() {
+        let error =
+            run_command_capture_allowing_empty("sh", ["-c", "printf 'xdotool failed' >&2; exit 1"])
+                .unwrap_err();
+
+        assert!(error.message().contains("xdotool failed"));
     }
 
     fn environment<const N: usize>(

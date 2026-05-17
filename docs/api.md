@@ -889,7 +889,10 @@ coordinate space.
   `DmaBufFrameDescriptor` plane metadata. The capture crate also exposes
   `DmaBufImportTarget`, `DmaBufFrameImportDescriptor`, and
   `ValidatingDmaBufImporter` so graphics/compute backends receive a checked
-  DMA-BUF handoff before creating native EGL/Vulkan resources. With
+  DMA-BUF handoff before creating native EGL/Vulkan resources.
+  `DmaBufFrameImportDescriptor` owns duplicated plane file descriptors, closes
+  them on drop, and can produce another owned copy with `try_clone_owned()`.
+  With
   `--features egl-backend`, `EglDmaBufImporter` opens an EGL display, checks
   `EGL_EXT_image_dma_buf_import`, builds `EGL_LINUX_DMA_BUF_EXT` attributes, and
   destroys the resulting `EGLImage` when the imported frame is dropped.
