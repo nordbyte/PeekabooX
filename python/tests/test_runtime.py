@@ -1536,6 +1536,90 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "additional property"):
                 execute_plugin_tool(plugin, "schema.echo", {"text": "ok", "extra": True})
 
+    def test_process_plugin_tool_limits_output_while_draining_pipe(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "demo"
+            plugin_dir.mkdir()
+            (plugin_dir / "plugin.py").write_text(
+                "import sys\nsys.stdin.read()\nsys.stdout.write('x' * 2048)\n",
+                encoding="utf-8",
+            )
+            (plugin_dir / PLUGIN_MANIFEST_FILE).write_text(
+                json.dumps(
+                    {
+                        "schema_version": PLUGIN_SDK_VERSION,
+                        "id": "limit.demo",
+                        "name": "Limit Demo",
+                        "version": "1.0.0",
+                        "entrypoint": {
+                            "kind": "process",
+                            "command": [sys.executable, "plugin.py"],
+                        },
+                        "tools": [
+                            {
+                                "name": "limit.out",
+                                "description": "Emit output",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            plugin = discover_plugins([Path(tmpdir)]).plugins[0]
+
+            result = execute_plugin_tool(plugin, "limit.out", {}, max_output_bytes=16)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(len(result.stdout), 16)
+        self.assertEqual(result.error, "plugin output exceeded max_output_bytes=16")
+
+    def test_process_plugin_tool_timeout_covers_blocked_stdin_write(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "demo"
+            plugin_dir.mkdir()
+            (plugin_dir / "plugin.py").write_text(
+                "import time\ntime.sleep(2)\n",
+                encoding="utf-8",
+            )
+            (plugin_dir / PLUGIN_MANIFEST_FILE).write_text(
+                json.dumps(
+                    {
+                        "schema_version": PLUGIN_SDK_VERSION,
+                        "id": "timeout.demo",
+                        "name": "Timeout Demo",
+                        "version": "1.0.0",
+                        "entrypoint": {
+                            "kind": "process",
+                            "command": [sys.executable, "plugin.py"],
+                        },
+                        "tools": [
+                            {
+                                "name": "timeout.sleep",
+                                "description": "Sleep",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {"payload": {"type": "string"}},
+                                    "additionalProperties": False,
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            plugin = discover_plugins([Path(tmpdir)]).plugins[0]
+
+            result = execute_plugin_tool(
+                plugin,
+                "timeout.sleep",
+                {"payload": "x" * 2_000_000},
+                timeout_seconds=0.05,
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, -1)
+        self.assertIn("timed out", result.error or "")
+
     def test_capability_policy_can_load_profile_from_env(self) -> None:
         with patch.dict("os.environ", {"PEEKABOOX_CAPABILITY_PROFILE": "plan"}):
             policy = CapabilityPolicy.from_env()

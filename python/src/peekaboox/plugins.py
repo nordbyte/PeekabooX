@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -181,35 +183,76 @@ def execute_plugin_tool(
         "tool": tool_name,
         "arguments": plugin_arguments,
     }
+    request_bytes = json.dumps(request).encode("utf-8")
+    process = subprocess.Popen(
+        plugin.manifest.entrypoint.command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=plugin.root_dir,
+        env=_plugin_environment(plugin, tool_name, policy.environment),
+    )
+    stdout_reader = _PipeReader(process.stdout, policy.max_output_bytes)
+    stderr_reader = _PipeReader(process.stderr, policy.max_output_bytes)
+    stdout_reader.start()
+    stderr_reader.start()
+    writer_error: list[BaseException] = []
+
+    def write_request() -> None:
+        try:
+            assert process.stdin is not None
+            process.stdin.write(request_bytes)
+            process.stdin.flush()
+            process.stdin.close()
+        except BaseException as error:  # pragma: no cover - surfaced after process exit.
+            writer_error.append(error)
+            if process.stdin is not None:
+                process.stdin.close()
+
+    writer = threading.Thread(target=write_request, daemon=True)
+    writer.start()
+    timed_out = False
     try:
-        completed = subprocess.run(
-            plugin.manifest.entrypoint.command,
-            input=json.dumps(request),
-            text=True,
-            capture_output=True,
-            cwd=plugin.root_dir,
-            timeout=policy.timeout_seconds,
-            check=False,
-            env=_plugin_environment(plugin, tool_name, policy.environment),
-        )
-    except subprocess.TimeoutExpired as error:
+        deadline = time.monotonic() + policy.timeout_seconds
+        while process.poll() is None:
+            if time.monotonic() >= deadline:
+                timed_out = True
+                process.kill()
+                break
+            time.sleep(0.01)
+        return_code = process.wait(timeout=2)
+    finally:
+        writer.join(timeout=2)
+        stdout_reader.join(timeout=2)
+        stderr_reader.join(timeout=2)
+
+    stdout_bytes = stdout_reader.data
+    stderr_bytes = stderr_reader.data
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+
+    if timed_out:
         return PluginToolExecutionResult(
             ok=False,
             plugin_id=plugin.manifest.id,
             tool=tool_name,
             exit_code=-1,
-            stdout=_limited_text(error.stdout or "", policy.max_output_bytes),
-            stderr=_limited_text(error.stderr or "", policy.max_output_bytes),
+            stdout=stdout,
+            stderr=stderr,
             result=None,
             error=f"plugin timed out after {policy.timeout_seconds:g} seconds",
         )
+    if writer_error:
+        raise ValueError(f"failed to write plugin request: {writer_error[0]}")
+    if stdout_reader.error is not None:
+        raise ValueError(f"failed to read plugin stdout: {stdout_reader.error}")
+    if stderr_reader.error is not None:
+        raise ValueError(f"failed to read plugin stderr: {stderr_reader.error}")
 
-    stdout_too_large = len(completed.stdout.encode("utf-8")) > policy.max_output_bytes
-    stderr_too_large = len(completed.stderr.encode("utf-8")) > policy.max_output_bytes
-    stdout = _limited_text(completed.stdout, policy.max_output_bytes)
-    stderr = _limited_text(completed.stderr, policy.max_output_bytes)
+    stdout_too_large = stdout_reader.truncated
+    stderr_too_large = stderr_reader.truncated
     payload = _parse_stdout_json(stdout)
-    ok = completed.returncode == 0 and not (
+    ok = return_code == 0 and not (
         isinstance(payload, dict) and payload.get("ok") is False
     )
     result = payload.get("result") if isinstance(payload, dict) else payload
@@ -223,12 +266,12 @@ def execute_plugin_tool(
         elif stderr:
             error = stderr.strip()
         else:
-            error = f"plugin exited with status {completed.returncode}"
+            error = f"plugin exited with status {return_code}"
     return PluginToolExecutionResult(
         ok=ok,
         plugin_id=plugin.manifest.id,
         tool=tool_name,
-        exit_code=completed.returncode,
+        exit_code=return_code,
         stdout=stdout,
         stderr=stderr,
         result=result,
@@ -479,14 +522,49 @@ def _plugin_environment(
     return environment
 
 
-def _limited_text(value: str | bytes, max_output_bytes: int) -> str:
-    if max_output_bytes < 0:
-        raise ValueError("max_output_bytes must be non-negative")
-    if isinstance(value, bytes):
-        data = value
-    else:
-        data = value.encode("utf-8")
-    return data[:max_output_bytes].decode("utf-8", errors="replace")
+class _PipeReader:
+    def __init__(self, stream: Any, max_bytes: int) -> None:
+        self._stream = stream
+        self._max_bytes = max_bytes
+        self._chunks: list[bytes] = []
+        self._total_bytes = 0
+        self._stored_bytes = 0
+        self.error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def join(self, timeout: float | None = None) -> None:
+        self._thread.join(timeout)
+
+    @property
+    def data(self) -> bytes:
+        return b"".join(self._chunks)
+
+    @property
+    def truncated(self) -> bool:
+        return self._total_bytes > self._max_bytes
+
+    def _run(self) -> None:
+        if self._stream is None:
+            return
+        try:
+            while True:
+                chunk = self._stream.read(8192)
+                if not chunk:
+                    break
+                self._total_bytes += len(chunk)
+                if self._stored_bytes < self._max_bytes:
+                    remaining = self._max_bytes - self._stored_bytes
+                    self._chunks.append(chunk[:remaining])
+                    self._stored_bytes += min(len(chunk), remaining)
+        except BaseException as error:  # pragma: no cover - surfaced by execute_plugin_tool.
+            self.error = error
+        finally:
+            close = getattr(self._stream, "close", None)
+            if close is not None:
+                close()
 
 
 def _parse_stdout_json(stdout: str) -> Any:

@@ -1,12 +1,11 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -253,11 +252,18 @@ pub fn execute_plugin_tool(
     let mut child = command
         .spawn()
         .map_err(|error| format!("failed to start plugin {:?}: {error}", plugin.manifest.id))?;
-    let child_pid = child.id();
     let mut child_stdin = child
         .stdin
         .take()
         .ok_or_else(|| format!("failed to open stdin for plugin {:?}", plugin.manifest.id))?;
+    let child_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("failed to open stdout for plugin {:?}", plugin.manifest.id))?;
+    let child_stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| format!("failed to open stderr for plugin {:?}", plugin.manifest.id))?;
     let request_bytes = request.to_string().into_bytes();
     let writer = thread::spawn(move || {
         child_stdin
@@ -265,51 +271,57 @@ pub fn execute_plugin_tool(
             .and_then(|_| child_stdin.flush())
             .map_err(|error| format!("failed to write plugin request: {error}"))
     });
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let result = child
-            .wait_with_output()
-            .map_err(|error| format!("failed to collect plugin output: {error}"));
-        let _ = tx.send(result);
-    });
-    let output = match rx.recv_timeout(policy.timeout) {
-        Ok(result) => result?,
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            kill_process(child_pid);
-            let output = rx
-                .recv_timeout(Duration::from_secs(2))
-                .map_err(|_| "failed to collect timed-out plugin output".to_owned())?
-                .map_err(|error| format!("failed to collect timed-out plugin output: {error}"))?;
-            let _ = writer.join();
-            return Ok(PluginToolExecutionResult {
-                ok: false,
-                plugin_id: plugin.manifest.id.clone(),
-                tool: tool_name.to_owned(),
-                exit_code: -1,
-                stdout: limited_output(&output.stdout, policy.max_output_bytes),
-                stderr: limited_output(&output.stderr, policy.max_output_bytes),
-                result: None,
-                error: Some(format!(
-                    "plugin timed out after {} ms",
-                    policy.timeout.as_millis()
-                )),
-            });
+
+    let max_output_bytes = policy.max_output_bytes;
+    let stdout_reader = thread::spawn(move || read_limited_output(child_stdout, max_output_bytes));
+    let stderr_reader = thread::spawn(move || read_limited_output(child_stderr, max_output_bytes));
+    let deadline = Instant::now() + policy.timeout;
+    let mut timed_out = false;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("failed to poll plugin process: {error}"))?
+        {
+            break status;
         }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            return Err("plugin output collector disconnected".to_owned());
+        if Instant::now() >= deadline {
+            timed_out = true;
+            let _ = child.kill();
+            break child
+                .wait()
+                .map_err(|error| format!("failed to reap timed-out plugin process: {error}"))?;
         }
+        thread::sleep(Duration::from_millis(10));
     };
+    let stdout_output = join_limited_output(stdout_reader, "stdout")?;
+    let stderr_output = join_limited_output(stderr_reader, "stderr")?;
+    if timed_out {
+        let _ = writer.join();
+        return Ok(PluginToolExecutionResult {
+            ok: false,
+            plugin_id: plugin.manifest.id.clone(),
+            tool: tool_name.to_owned(),
+            exit_code: -1,
+            stdout: limited_output_string(&stdout_output.bytes),
+            stderr: limited_output_string(&stderr_output.bytes),
+            result: None,
+            error: Some(format!(
+                "plugin timed out after {} ms",
+                policy.timeout.as_millis()
+            )),
+        });
+    }
     match writer.join() {
         Ok(Ok(())) => {}
         Ok(Err(error)) => return Err(error),
         Err(_) => return Err("plugin request writer panicked".to_owned()),
     }
-    let stdout_too_large = output.stdout.len() > policy.max_output_bytes;
-    let stderr_too_large = output.stderr.len() > policy.max_output_bytes;
-    let stdout = limited_output(&output.stdout, policy.max_output_bytes);
-    let stderr = limited_output(&output.stderr, policy.max_output_bytes);
+    let stdout_too_large = stdout_output.truncated;
+    let stderr_too_large = stderr_output.truncated;
+    let stdout = limited_output_string(&stdout_output.bytes);
+    let stderr = limited_output_string(&stderr_output.bytes);
     let payload = parse_stdout_json(&stdout);
-    let mut ok = output.status.success()
+    let mut ok = status.success()
         && !matches!(&payload, Some(Value::Object(object)) if object.get("ok") == Some(&Value::Bool(false)));
     let mut error = None;
 
@@ -326,7 +338,7 @@ pub fn execute_plugin_tool(
             .map(value_to_error_string)
             .or_else(|| {
                 if stderr.trim().is_empty() {
-                    Some(format!("plugin exited with status {}", output.status))
+                    Some(format!("plugin exited with status {status}"))
                 } else {
                     Some(stderr.trim().to_owned())
                 }
@@ -342,7 +354,7 @@ pub fn execute_plugin_tool(
         ok,
         plugin_id: plugin.manifest.id.clone(),
         tool: tool_name.to_owned(),
-        exit_code: output.status.code().unwrap_or(-1),
+        exit_code: status.code().unwrap_or(-1),
         stdout,
         stderr,
         result,
@@ -658,15 +670,49 @@ fn validate_array_bounds(
     Ok(())
 }
 
-fn limited_output(bytes: &[u8], max_output_bytes: usize) -> String {
-    let limit = bytes.len().min(max_output_bytes);
-    String::from_utf8_lossy(&bytes[..limit]).into_owned()
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LimitedOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
 }
 
-fn kill_process(pid: u32) {
-    unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+fn read_limited_output(
+    mut reader: impl Read,
+    max_output_bytes: usize,
+) -> std::io::Result<LimitedOutput> {
+    let mut bytes = Vec::with_capacity(max_output_bytes.min(8192));
+    let mut total_bytes = 0usize;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        total_bytes = total_bytes.saturating_add(count);
+        if bytes.len() < max_output_bytes {
+            let remaining = max_output_bytes - bytes.len();
+            bytes.extend_from_slice(&buffer[..count.min(remaining)]);
+        }
     }
+    Ok(LimitedOutput {
+        bytes,
+        truncated: total_bytes > max_output_bytes,
+    })
+}
+
+fn join_limited_output(
+    handle: thread::JoinHandle<std::io::Result<LimitedOutput>>,
+    label: &str,
+) -> Result<LimitedOutput, String> {
+    match handle.join() {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(error)) => Err(format!("failed to read plugin {label}: {error}")),
+        Err(_) => Err(format!("plugin {label} reader panicked")),
+    }
+}
+
+fn limited_output_string(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 fn parse_stdout_json(stdout: &str) -> Option<Value> {
@@ -690,6 +736,7 @@ fn value_to_error_string(value: &Value) -> String {
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::time::Duration;
 
     use super::{
         PLUGIN_MANIFEST_FILE, PLUGIN_SDK_VERSION, PluginEntrypoint, PluginEntrypointKind,
@@ -884,6 +931,99 @@ mod tests {
 
         assert!(result.ok);
         assert_eq!(result.result.unwrap()["value"], "ok");
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn process_plugin_output_is_limited_while_draining_pipe() {
+        let root = unique_temp_dir("peekaboox-plugin-output-limit");
+        let plugin_dir = root.join("demo");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(
+            plugin_dir.join("plugin.py"),
+            "import sys\nsys.stdin.read()\nsys.stdout.write('x' * 2048)\n",
+        )
+        .unwrap();
+        fs::write(
+            plugin_dir.join(PLUGIN_MANIFEST_FILE),
+            serde_json::json!({
+                "schema_version": PLUGIN_SDK_VERSION,
+                "id": "limit.demo",
+                "name": "Limit Demo",
+                "version": "1.0.0",
+                "entrypoint": {"kind": "process", "command": ["python3", "plugin.py"]},
+                "tools": [{"name": "limit.out", "description": "Emit output"}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let plugin = load_plugin(&plugin_dir).unwrap();
+        let policy = PluginExecutionPolicy {
+            max_output_bytes: 16,
+            ..PluginExecutionPolicy::default()
+        };
+
+        let result =
+            execute_plugin_tool(&plugin, "limit.out", serde_json::json!({}), &policy).unwrap();
+
+        assert!(!result.ok);
+        assert_eq!(result.stdout.len(), 16);
+        assert_eq!(
+            result.error.as_deref(),
+            Some("plugin output exceeded max_output_bytes=16")
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn process_plugin_timeout_covers_blocked_stdin_write() {
+        let root = unique_temp_dir("peekaboox-plugin-timeout");
+        let plugin_dir = root.join("demo");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(plugin_dir.join("plugin.py"), "import time\ntime.sleep(2)\n").unwrap();
+        fs::write(
+            plugin_dir.join(PLUGIN_MANIFEST_FILE),
+            serde_json::json!({
+                "schema_version": PLUGIN_SDK_VERSION,
+                "id": "timeout.demo",
+                "name": "Timeout Demo",
+                "version": "1.0.0",
+                "entrypoint": {"kind": "process", "command": ["python3", "plugin.py"]},
+                "tools": [{
+                    "name": "timeout.sleep",
+                    "description": "Sleep",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"payload": {"type": "string"}},
+                        "additionalProperties": false
+                    }
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let plugin = load_plugin(&plugin_dir).unwrap();
+        let policy = PluginExecutionPolicy {
+            timeout: Duration::from_millis(50),
+            ..PluginExecutionPolicy::default()
+        };
+
+        let result = execute_plugin_tool(
+            &plugin,
+            "timeout.sleep",
+            serde_json::json!({"payload": "x".repeat(2_000_000)}),
+            &policy,
+        )
+        .unwrap();
+
+        assert!(!result.ok);
+        assert_eq!(result.exit_code, -1);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("timed out"))
+        );
         fs::remove_dir_all(root).ok();
     }
 
