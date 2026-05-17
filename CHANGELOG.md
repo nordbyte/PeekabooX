@@ -4,6 +4,21 @@ All notable PeekabooX changes are recorded here.
 
 Release entries use `## VERSION - YYYY-MM-DD`. Git tags use `vVERSION`.
 
+## 1.1.2 - 2026-05-17
+
+- 5f08978 Implement runtime hardening and modularity improvements
+- ec2dfb7 Add workflow bundles and harden runtime surfaces
+- b744b50 Update GitHub Actions to Node 24 majors
+- 83b3584 Modularize daemon runtime
+- 97a1ef0 Modularize CLI commands
+- aa78c5a Add desktop example harness
+- 524a92f Externalize desktop profiles
+- f1078c2 Harden plugin process IO
+- bc34fcc Validate Nix release version
+- 6b5accf Secure MCP HTTP transports
+- 47d01e1 Add end-to-end gRPC token support
+- 4d30754 Fix capture and window report findings
+
 ## 1.1.1 - 2026-05-16
 
 - bbf4975 Bump version to 1.1.1

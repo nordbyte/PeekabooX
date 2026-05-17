@@ -3,4 +3,4 @@ from peekaboox.plugins import discover_plugins
 
 __all__ = ["PeekabooXClient", "discover_plugins", "__version__"]
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"

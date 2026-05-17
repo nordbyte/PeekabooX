@@ -795,7 +795,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "peekaboox-accessibility"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "dbus",
  "peekaboox-core",
@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "peekaboox-capture"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "dbus",
  "image",
@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "peekaboox-cli"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "peekaboox-accessibility",
  "peekaboox-capture",
@@ -832,11 +832,11 @@ dependencies = [
 
 [[package]]
 name = "peekaboox-core"
-version = "1.1.1"
+version = "1.1.2"
 
 [[package]]
 name = "peekaboox-desktop"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "peekaboox-accessibility",
  "peekaboox-capture",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "peekaboox-input"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "libc",
  "peekaboox-core",
@@ -858,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "peekaboox-ipc"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "libc",
  "peekaboox-core",
@@ -873,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "peekaboox-plugins"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "peekaboox-vision"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "image",
  "peekaboox-capture",
@@ -891,7 +891,7 @@ dependencies = [
 
 [[package]]
 name = "peekaboox-windows"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "dbus",
  "peekaboox-core",
@@ -900,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "peekabooxd"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "base64",
  "dbus",

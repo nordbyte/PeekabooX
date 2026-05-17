@@ -90,7 +90,7 @@ from peekaboox.workflows import dump_workflow_text, workflow_from_dict, workflow
 
 MCP_PROTOCOL_VERSION = "2025-11-25"
 SERVER_NAME = "peekaboox-mcp"
-SERVER_VERSION = "1.1.1"
+SERVER_VERSION = "1.1.2"
 DEFAULT_MCP_MAX_REQUEST_BYTES = 1_048_576
 
 PARSE_ERROR = -32700

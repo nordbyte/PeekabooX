@@ -18,7 +18,7 @@
         {
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "peekaboox";
-            version = "1.1.1";
+            version = "1.1.2";
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
 
