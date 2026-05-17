@@ -83,8 +83,8 @@ python3 packaging/release_manifest.py
 ```
 
 The script validates `Cargo.toml`, `python/pyproject.toml`,
-`python/src/peekaboox/__init__.py`, `python/src/peekaboox/mcp/server.py`, and
-`CHANGELOG.md`, then writes `target/dist/release-manifest.json` and
+`python/src/peekaboox/__init__.py`, `python/src/peekaboox/mcp/server.py`,
+`flake.nix`, and `CHANGELOG.md`, then writes `target/dist/release-manifest.json` and
 `target/dist/SHA256SUMS`. If
 `target/dist/docker-image.json` exists, it is included as Docker image metadata.
 The full release workflow is documented in `docs/release.md`.

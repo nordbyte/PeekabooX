@@ -29,6 +29,7 @@ class VersionSet:
     python_project: str
     python_package: str
     mcp_server: str
+    nix_flake: str
 
     @property
     def values(self) -> dict[str, str]:
@@ -37,6 +38,7 @@ class VersionSet:
             "python_project": self.python_project,
             "python_package": self.python_package,
             "mcp_server": self.mcp_server,
+            "nix_flake": self.nix_flake,
         }
 
     @property
@@ -141,11 +143,13 @@ def read_versions() -> VersionSet:
     python_project = read_pyproject_version()
     python_package = read_python_package_version()
     mcp_server = read_mcp_server_version()
+    nix_flake = read_nix_flake_version()
     return VersionSet(
         cargo=cargo,
         python_project=python_project,
         python_package=python_package,
         mcp_server=mcp_server,
+        nix_flake=nix_flake,
     )
 
 
@@ -186,6 +190,18 @@ def read_mcp_server_version() -> str:
     )
     if match is None:
         raise ValueError("missing SERVER_VERSION in python/src/peekaboox/mcp/server.py")
+    return match.group(1)
+
+
+def read_nix_flake_version() -> str:
+    flake = REPO_ROOT / "flake.nix"
+    match = re.search(
+        r'^\s*version\s*=\s*"([^"]+)";',
+        flake.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if match is None:
+        raise ValueError("missing version in flake.nix")
     return match.group(1)
 
 
