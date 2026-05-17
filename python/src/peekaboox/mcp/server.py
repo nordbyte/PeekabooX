@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hmac
 import http.server
+import ipaddress
 import json
 import os
 import sys
@@ -34,6 +36,7 @@ from peekaboox.workflows import dump_workflow_text, workflow_from_dict, workflow
 MCP_PROTOCOL_VERSION = "2025-11-25"
 SERVER_NAME = "peekaboox-mcp"
 SERVER_VERSION = "1.1.1"
+DEFAULT_MCP_MAX_REQUEST_BYTES = 1_048_576
 
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
@@ -350,16 +353,44 @@ class McpServer:
             output_stream.write(json.dumps(response, separators=(",", ":")) + "\n")
             output_stream.flush()
 
-    def serve_http(self, host: str = "127.0.0.1", port: int = 47778, *, sse: bool = False) -> None:
+    def serve_http(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 47778,
+        *,
+        sse: bool = False,
+        auth_token: str | None = None,
+        max_request_bytes: int = DEFAULT_MCP_MAX_REQUEST_BYTES,
+    ) -> None:
         """Serve JSON-RPC over HTTP POST, with an optional MCP-style SSE endpoint."""
 
         mcp_server = self
+        auth_token = _normalize_mcp_auth_token(auth_token)
+        if max_request_bytes <= 0:
+            raise ValueError("max_request_bytes must be greater than zero")
+        if auth_token is None and _mcp_http_host_requires_auth(host):
+            raise ValueError(
+                "refusing to expose unauthenticated MCP HTTP/SSE on a non-loopback host; "
+                "set --auth-token or PEEKABOOX_MCP_TOKEN"
+            )
 
         class Handler(http.server.BaseHTTPRequestHandler):
             server_version = f"{SERVER_NAME}/{SERVER_VERSION}"
 
             def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
-                if self.path in ("/", "/health", "/mcp"):
+                if self.path == "/health":
+                    self._write_json(
+                        {
+                            "name": SERVER_NAME,
+                            "version": SERVER_VERSION,
+                            "status": "ok",
+                            "auth": "required" if auth_token is not None else "none",
+                        }
+                    )
+                    return
+                if self.path in ("/", "/mcp"):
+                    if not self._require_auth():
+                        return
                     self._write_json(
                         {
                             "name": SERVER_NAME,
@@ -367,10 +398,14 @@ class McpServer:
                             "transport": "sse" if sse else "http",
                             "jsonrpc_endpoint": "/mcp",
                             "sse_endpoint": "/sse",
+                            "auth": "required" if auth_token is not None else "none",
+                            "max_request_bytes": max_request_bytes,
                         }
                     )
                     return
                 if self.path.startswith("/sse"):
+                    if not self._require_auth():
+                        return
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.send_header("Cache-Control", "no-cache")
@@ -392,10 +427,18 @@ class McpServer:
                 if self.path not in ("/", "/mcp"):
                     self.send_error(404, "not found")
                     return
+                if not self._require_auth():
+                    return
                 try:
-                    length = int(self.headers.get("Content-Length", "0"))
+                    length = _mcp_http_content_length(
+                        self.headers.get("Content-Length"),
+                        max_request_bytes,
+                    )
                 except ValueError:
                     self.send_error(411, "invalid content length")
+                    return
+                except OverflowError:
+                    self.send_error(413, "request body too large")
                     return
                 payload = self.rfile.read(length).decode("utf-8")
                 try:
@@ -423,6 +466,24 @@ class McpServer:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            def _require_auth(self) -> bool:
+                if _mcp_http_request_authorized(self.headers, auth_token):
+                    return True
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("WWW-Authenticate", 'Bearer realm="PeekabooX MCP"')
+                self.end_headers()
+                self.wfile.write(
+                    json.dumps(
+                        {
+                            "error": "unauthorized",
+                            "message": "missing or invalid PeekabooX MCP token",
+                        },
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                return False
 
         httpd = http.server.ThreadingHTTPServer((host, port), Handler)
         httpd.serve_forever()
@@ -2856,11 +2917,28 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
 def _env_positive_float(name: str, default: float) -> float:
     value = os.environ.get(name)
     if value is None:
         return default
     parsed = float(value)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be greater than zero")
+    return parsed
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    parsed = int(value)
     if parsed <= 0:
         raise ValueError(f"{name} must be greater than zero")
     return parsed
@@ -3289,6 +3367,74 @@ def _jsonrpc_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
     }
 
 
+def _normalize_mcp_auth_token(token: str | None) -> str | None:
+    if token is None:
+        return None
+    token = token.strip()
+    return token or None
+
+
+def _mcp_http_host_requires_auth(host: str) -> bool:
+    host = host.strip().strip("[]").casefold()
+    if host in {"localhost"}:
+        return False
+    if not host:
+        return True
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True
+
+
+def _mcp_http_request_authorized(headers: Any, auth_token: str | None) -> bool:
+    if auth_token is None:
+        return True
+    bearer = _header_value(headers, "authorization")
+    if bearer is not None:
+        scheme, _, value = bearer.partition(" ")
+        if scheme.casefold() == "bearer" and hmac.compare_digest(value.strip(), auth_token):
+            return True
+    for header in ("x-peekaboox-mcp-token", "x-peekaboox-token"):
+        value = _header_value(headers, header)
+        if value is not None and hmac.compare_digest(value.strip(), auth_token):
+            return True
+    return False
+
+
+def _header_value(headers: Any, name: str) -> str | None:
+    getter = getattr(headers, "get", None)
+    if getter is None:
+        return None
+    candidates = (name, name.casefold(), "-".join(part.capitalize() for part in name.split("-")))
+    value = None
+    for candidate in candidates:
+        value = getter(candidate)
+        if value is not None:
+            break
+    if value is None:
+        items = getattr(headers, "items", None)
+        if items is not None:
+            for key, candidate_value in items():
+                if str(key).casefold() == name.casefold():
+                    value = candidate_value
+                    break
+    return None if value is None else str(value)
+
+
+def _mcp_http_content_length(value: str | None, max_request_bytes: int) -> int:
+    if value is None:
+        raise ValueError("missing content length")
+    try:
+        length = int(value)
+    except ValueError as error:
+        raise ValueError("invalid content length") from error
+    if length < 0:
+        raise ValueError("invalid content length")
+    if length > max_request_bytes:
+        raise OverflowError("request body too large")
+    return length
+
+
 def create_server(
     target: str | None = None,
     connect: bool = True,
@@ -3408,6 +3554,17 @@ def main() -> None:
         help="PeekabooX daemon gRPC bearer token; defaults to PEEKABOOX_GRPC_TOKEN",
     )
     parser.add_argument(
+        "--auth-token",
+        default=os.environ.get("PEEKABOOX_MCP_TOKEN"),
+        help="HTTP/SSE MCP bearer token; defaults to PEEKABOOX_MCP_TOKEN",
+    )
+    parser.add_argument(
+        "--max-request-bytes",
+        type=_positive_int,
+        default=_env_positive_int("PEEKABOOX_MCP_MAX_REQUEST_BYTES", DEFAULT_MCP_MAX_REQUEST_BYTES),
+        help="maximum HTTP JSON-RPC request body size in bytes",
+    )
+    parser.add_argument(
         "--plugin-path",
         action="append",
         default=[],
@@ -3445,7 +3602,13 @@ def main() -> None:
     if args.transport == "stdio":
         server.serve_stdio()
         return
-    server.serve_http(args.host, args.port, sse=args.transport == "sse")
+    server.serve_http(
+        args.host,
+        args.port,
+        sse=args.transport == "sse",
+        auth_token=args.auth_token,
+        max_request_bytes=args.max_request_bytes,
+    )
 
 
 if __name__ == "__main__":

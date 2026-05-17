@@ -210,6 +210,23 @@ Enable Doctor-backed preflight gates for MCP tool calls at startup:
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --preflight-mode strict --preflight-timeout 5
 ```
 
+When using MCP over HTTP or SSE, set a separate MCP transport token:
+
+```bash
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport http --auth-token secret
+```
+
+or:
+
+```bash
+PEEKABOOX_MCP_TOKEN=secret PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport sse
+```
+
+HTTP/SSE clients authenticate with `Authorization: Bearer <token>` or
+`X-PeekabooX-MCP-Token`. Binding HTTP/SSE to a non-loopback host without a token
+is refused. `--max-request-bytes` and `PEEKABOOX_MCP_MAX_REQUEST_BYTES` cap JSON
+request body size.
+
 or:
 
 ```bash

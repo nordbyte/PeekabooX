@@ -9,6 +9,7 @@ from textwrap import dedent
 from unittest.mock import patch
 
 import peekaboox.agent.runtime as agent_runtime_module
+import peekaboox.mcp.server as mcp_server_module
 from peekaboox.agent import AgentRuntime, PreflightError, VerificationResult
 from peekaboox.client import (
     ActionResult,
@@ -4021,6 +4022,48 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertIs(server.runtime, runtime)
         self.assertEqual(connect.call_args.kwargs["grpc_token"], "secret-token")
+
+    def test_mcp_http_auth_helpers_accept_bearer_and_custom_headers(self) -> None:
+        self.assertTrue(
+            mcp_server_module._mcp_http_request_authorized(
+                {"Authorization": "Bearer secret-token"},
+                "secret-token",
+            )
+        )
+        self.assertTrue(
+            mcp_server_module._mcp_http_request_authorized(
+                {"X-PeekabooX-MCP-Token": "secret-token"},
+                "secret-token",
+            )
+        )
+        self.assertFalse(
+            mcp_server_module._mcp_http_request_authorized(
+                {"Authorization": "Bearer wrong-token"},
+                "secret-token",
+            )
+        )
+
+    def test_mcp_http_host_policy_requires_auth_for_non_loopback(self) -> None:
+        self.assertFalse(mcp_server_module._mcp_http_host_requires_auth("127.0.0.1"))
+        self.assertFalse(mcp_server_module._mcp_http_host_requires_auth("::1"))
+        self.assertFalse(mcp_server_module._mcp_http_host_requires_auth("localhost"))
+        self.assertTrue(mcp_server_module._mcp_http_host_requires_auth("0.0.0.0"))
+        self.assertTrue(mcp_server_module._mcp_http_host_requires_auth("192.168.1.5"))
+
+    def test_mcp_http_content_length_enforces_limit(self) -> None:
+        self.assertEqual(mcp_server_module._mcp_http_content_length("12", 12), 12)
+        with self.assertRaises(OverflowError):
+            mcp_server_module._mcp_http_content_length("13", 12)
+        with self.assertRaises(ValueError):
+            mcp_server_module._mcp_http_content_length(None, 12)
+        with self.assertRaises(ValueError):
+            mcp_server_module._mcp_http_content_length("-1", 12)
+
+    def test_mcp_http_server_rejects_non_loopback_without_auth(self) -> None:
+        server = McpServer(runtime=AgentRuntime(client=FakeClient()))
+
+        with self.assertRaisesRegex(ValueError, "unauthenticated MCP HTTP/SSE"):
+            server.serve_http("0.0.0.0", 0)
 
     def test_mcp_server_reports_confirmation_requirements_as_tool_errors(self) -> None:
         runtime = AgentRuntime(

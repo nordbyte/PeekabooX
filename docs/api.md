@@ -470,8 +470,8 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server --capability-profile obser
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --preflight-mode strict
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --grpc-timeout 15
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --grpc-token secret
-PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport http --port 47778
-PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport sse --port 47778
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport http --port 47778 --auth-token secret
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport sse --port 47778 --auth-token secret
 ```
 
 The stdio and HTTP transports handle `initialize`, `ping`, `tools/list`, `tools/call`,
@@ -510,6 +510,10 @@ Set `--preflight-mode off|warn|strict` and `--preflight-timeout <seconds>` to
 enable Doctor-backed preflight checks directly at MCP server startup.
 Set `--grpc-timeout` or `PEEKABOOX_GRPC_TIMEOUT` when desktop focus or launch
 actions need more time than the default daemon RPC deadline.
+HTTP/SSE transports accept `--auth-token` or `PEEKABOOX_MCP_TOKEN`; non-loopback
+hosts are rejected without a token. Clients can send either
+`Authorization: Bearer <token>` or `X-PeekabooX-MCP-Token`. Request bodies are
+limited by `--max-request-bytes` or `PEEKABOOX_MCP_MAX_REQUEST_BYTES`.
 
 MCP resources expose server state, tool descriptors, desktop profile metadata,
 latest Doctor/preflight state, desktop graph status/snapshots, plugin discovery,

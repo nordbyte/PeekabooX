@@ -95,8 +95,8 @@ peekaboox --daemon capture-delta --stream agent-loop --low-bandwidth
 # Run the MCP server from a checkout.
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --list-tools
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server
-PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport http --port 47778
-PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport sse --port 47778
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport http --port 47778 --auth-token secret
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport sse --port 47778 --auth-token secret
 
 # Run structured runtime/MCP diagnostics examples.
 PYTHONPATH=python/src python3 examples/python/doctor_runtime.py

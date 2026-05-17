@@ -453,6 +453,9 @@ For Python, MCP, or other gRPC clients, protect the daemon with `--grpc-token`
 or `PEEKABOOX_GRPC_TOKEN`. Python clients, `peekaboox-agent`, and
 `peekaboox-mcp` read the same environment variable and expose explicit
 `grpc_token` or `--grpc-token` options.
+For MCP HTTP/SSE transports, use `peekaboox-mcp --auth-token ...` or
+`PEEKABOOX_MCP_TOKEN`; non-loopback HTTP/SSE binds require that token, and
+`--max-request-bytes` caps incoming JSON-RPC bodies.
 
 ## Plugins
 
