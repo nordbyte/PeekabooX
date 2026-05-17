@@ -19,6 +19,12 @@ pub(super) fn grpc_click(
     if !request.dry_run {
         ensure_input_allowed(config).map_err(Status::permission_denied)?;
     }
+    if can_click_semantic_selector_via_accessibility_action(&request, button)
+        && let Some(selector) = request.semantic_selector.as_deref()
+        && let Some(response) = semantic_click_via_accessibility_action(selector)?
+    {
+        return Ok(response);
+    }
     let resolved = resolve_grpc_click_target(&request, config, accessibility_cache, list_windows)?;
     let position = peekaboox_input::resolve_move_position(resolved.position, options.bounds_policy)
         .map_err(|error| Status::invalid_argument(error.to_string()))?;
@@ -82,6 +88,62 @@ pub(super) fn grpc_click(
     })
 }
 
+fn can_click_semantic_selector_via_accessibility_action(
+    request: &proto::ClickRequest,
+    button: peekaboox_input::MouseButton,
+) -> bool {
+    !request.dry_run
+        && button == peekaboox_input::MouseButton::Left
+        && request.semantic_selector.is_some()
+        && request.coordinates.is_none()
+        && request.region.is_none()
+        && request.ratio_x.is_none()
+        && request.ratio_y.is_none()
+        && request.window_id.is_none()
+        && request.app.is_none()
+        && request.window_title.is_none()
+        && request.title_regex.is_none()
+}
+
+fn semantic_click_via_accessibility_action(
+    selector: &str,
+) -> Result<Option<proto::ActionResponse>, Status> {
+    for action in ["click", "press", "activate"] {
+        match peekaboox_accessibility::perform_action(selector, Some(action), None) {
+            Ok(result) if result.ok => {
+                return Ok(Some(accessibility_action_click_response(selector, result)));
+            }
+            Ok(_) | Err(_) => {}
+        }
+    }
+    match peekaboox_accessibility::perform_action(selector, None, Some(0)) {
+        Ok(result) if result.ok => Ok(Some(accessibility_action_click_response(selector, result))),
+        Ok(_) => Ok(None),
+        Err(_) => Ok(None),
+    }
+}
+
+fn accessibility_action_click_response(
+    selector: &str,
+    result: peekaboox_accessibility::AccessibilityActionResult,
+) -> proto::ActionResponse {
+    let backend_kind = backend_kind_name(result.backend_kind);
+    let label = result
+        .element
+        .label
+        .as_deref()
+        .unwrap_or(result.element.role.as_str());
+    proto::ActionResponse {
+        ok: true,
+        message: format!(
+            "clicked selector {:?} using AT-SPI action {} ({label})",
+            selector, result.action
+        ),
+        backend_name: Some(result.backend_name),
+        backend_kind: Some(backend_kind),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ResolvedClickTarget {
     pub(super) position: Point,
@@ -105,6 +167,16 @@ pub(super) fn resolve_grpc_click_target(
         + usize::from(request.semantic_selector.is_some())
         + usize::from(has_scope);
     if target_count != 1 {
+        if request.coordinates.is_some() && has_scope {
+            return Err(Status::invalid_argument(
+                "click x/y coordinates are absolute screen coordinates and cannot be combined with app/window/region/ratio scope; use ratio_x/ratio_y with app/window filters for scoped clicks",
+            ));
+        }
+        if request.semantic_selector.is_some() && (request.coordinates.is_some() || has_scope) {
+            return Err(Status::invalid_argument(
+                "click semantic_selector cannot be combined with coordinates, region, ratio, app, or window filters",
+            ));
+        }
         return Err(Status::invalid_argument(
             "provide exactly one click target: coordinates, semantic_selector, or ratio/region/window scope",
         ));

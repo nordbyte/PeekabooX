@@ -480,6 +480,11 @@ class McpServer:
                 schema(
                     {
                         "include_semantic_tree": {"type": "boolean", "default": False},
+                        "include_image_base64": {"type": "boolean", "default": True},
+                        "omit_image_base64": {"type": "boolean", "default": False},
+                        "semantic_only": {"type": "boolean", "default": False},
+                        "path_only": {"type": "boolean", "default": False},
+                        "image_path": {"type": "string"},
                         "region": RECT_SCHEMA,
                         "window_id": {"type": "string"},
                         "app": {"type": "string"},
@@ -1221,6 +1226,7 @@ class McpServer:
                             "type": "number",
                             "minimum": 0.0,
                             "maximum": 1.0,
+                            "description": "Minimum OCR confidence as a fraction from 0.0 to 1.0.",
                         },
                         "whitelist": {"type": "string"},
                         "config": {
@@ -1589,6 +1595,12 @@ class McpServer:
         return self.runtime
 
     def _capture_screen(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        semantic_only = bool(arguments.get("semantic_only", False))
+        path_only = bool(arguments.get("path_only", False))
+        image_path = _optional_string(arguments, "image_path")
+        if path_only and image_path is None:
+            raise ValueError("capture_screen path_only requires image_path")
+
         result = self._require_runtime().capture_screen(
             include_semantic_tree=bool(arguments.get("include_semantic_tree", False)),
             region=_optional_rect(arguments, "region"),
@@ -1598,7 +1610,26 @@ class McpServer:
             title_regex=_optional_string(arguments, "title_regex"),
         )
         payload = _to_mcp_value(result)
-        payload["image_base64"] = payload.pop("image")
+        image_base64 = payload.pop("image")
+        if image_path is not None:
+            target = Path(image_path).expanduser()
+            if target.parent:
+                target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(result.image)
+            payload["image_path"] = str(target)
+
+        include_image_base64 = bool(arguments.get("include_image_base64", True))
+        omit_image_base64 = (
+            bool(arguments.get("omit_image_base64", False)) or semantic_only or path_only
+        )
+        if include_image_base64 and not omit_image_base64:
+            payload["image_base64"] = image_base64
+        if path_only:
+            return {
+                "image_path": payload["image_path"],
+                "mime_type": payload["mime_type"],
+                "metadata": payload["metadata"],
+            }
         return payload
 
     def _capture_delta(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1697,7 +1728,10 @@ class McpServer:
 
         if selector is not None:
             if has_coordinates or has_scope:
-                raise ValueError("provide exactly one click target")
+                raise ValueError(
+                    "click selector cannot be combined with x/y coordinates, region, ratio, "
+                    "app, or window filters"
+                )
             return _to_mcp_value(
                 runtime.click_selector(
                     str(selector),
@@ -1708,6 +1742,12 @@ class McpServer:
 
         if has_coordinates and ("x" not in arguments or "y" not in arguments):
             raise ValueError("click x/y target is incomplete")
+        if has_coordinates and has_scope:
+            raise ValueError(
+                "click x/y coordinates are absolute screen coordinates and cannot be combined "
+                "with app/window/region/ratio scope; use ratio_x/ratio_y with app/window filters "
+                "for scoped clicks"
+            )
         if not has_coordinates and not has_scope:
             raise ValueError("click requires x/y coordinates, selector, or scope")
         return _to_mcp_value(
@@ -1837,7 +1877,7 @@ class McpServer:
     def _find_element(self, arguments: dict[str, Any]) -> list[dict[str, Any]]:
         return _to_mcp_value(
             self._require_runtime().find_element(
-                _required_str(arguments, "selector"),
+                _find_selector(arguments),
                 vision_fallback=bool(arguments.get("vision_fallback", False)),
                 app=_optional_string(arguments, "app"),
                 window_title=_optional_string(arguments, "window_title"),
@@ -2353,6 +2393,13 @@ class McpServer:
 
     def _preflight_audit(self, _arguments: dict[str, Any]) -> dict[str, Any]:
         return {"events": _to_mcp_value(self._require_runtime().preflight_audit())}
+
+
+def _find_selector(arguments: dict[str, Any]) -> str:
+    selector = _required_str(arguments, "selector")
+    if selector.strip().casefold() in {"*", "all", "any"}:
+        return ""
+    return selector
 
 
 def create_server(

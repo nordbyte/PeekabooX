@@ -862,8 +862,20 @@ class PeekabooXClient:
             for value in (region, ratio_x, ratio_y, window_id, app, window_title, title_regex)
         )
         if sum(1 for value in (has_coordinates, has_selector, has_scope) if value) != 1:
+            if has_coordinates and has_scope:
+                raise ValueError(
+                    "click x/y coordinates are absolute screen coordinates and cannot be "
+                    "combined with app/window/region/ratio scope; use ratio_x/ratio_y with "
+                    "app/window filters for scoped clicks"
+                )
+            if has_selector and (has_coordinates or has_scope):
+                raise ValueError(
+                    "click semantic_selector cannot be combined with coordinates, region, "
+                    "ratio, app, or window filters"
+                )
             raise ValueError(
-                "provide exactly one click target: coordinates, semantic_selector, or region/ratio/window scope"
+                "provide exactly one click target: coordinates, semantic_selector, or "
+                "region/ratio/window scope"
             )
 
         request_kwargs: dict[str, Any] = {

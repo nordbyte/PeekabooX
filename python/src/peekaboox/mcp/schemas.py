@@ -130,6 +130,7 @@ def ocr_input_schema() -> dict[str, Any]:
                 "type": "number",
                 "minimum": 0.0,
                 "maximum": 1.0,
+                "description": "Minimum OCR confidence as a fraction from 0.0 to 1.0.",
             },
             "whitelist": {"type": "string"},
             "config": {
@@ -222,22 +223,26 @@ def tool_output_schema(name: str) -> dict[str, Any]:
             "type": "object",
             "properties": {
                 "image_base64": {"type": "string"},
+                "image_path": {"type": "string"},
                 "mime_type": {"type": "string"},
                 "semantic_tree": array_schema,
                 "metadata": object_schema,
             },
-            "required": ["image_base64", "mime_type", "metadata"],
+            "required": ["mime_type", "metadata"],
             "additionalProperties": True,
         }
     if name in {
         "find_element",
         "find_elements",
         "elements",
+    }:
+        return array_schema
+    if name in {
         "list_windows",
         "query_desktop_graph",
         "query_desktop_edges",
     }:
-        return {"oneOf": [array_schema, object_schema]}
+        return object_schema
     if name in {"click", "move_mouse", "drag", "type_text", "paste_text", "hotkey"}:
         return {
             "type": "object",

@@ -1284,9 +1284,7 @@ fn run_type_text_tool(tool: InputTool, text: &str, options: TypeTextOptions) -> 
             run_command_with_stdin_vec("wtype", type_text_command_args(tool, options), text)
         }
         InputTool::Xdotool => {
-            if let Some(delay_ms) = options.delay_ms {
-                sleep_ms(delay_ms);
-            }
+            sleep_ms(type_initial_delay_ms(tool, options));
             run_command_with_stdin_vec("xdotool", type_text_command_args(tool, options), text)
         }
         InputTool::WlClipboard | InputTool::XclipClipboard | InputTool::XselClipboard => {
@@ -1339,6 +1337,7 @@ fn type_text_command_args(tool: InputTool, options: TypeTextOptions) -> Vec<Stri
 fn type_initial_delay_ms(tool: InputTool, options: TypeTextOptions) -> u64 {
     options.delay_ms.unwrap_or(match tool {
         InputTool::Ydotool => 120,
+        InputTool::Xdotool => 80,
         _ => 0,
     })
 }
@@ -2796,6 +2795,17 @@ mod tests {
                 "-".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn xdotool_typing_has_default_initial_delay() {
+        let options = TypeTextOptions::default();
+
+        assert_eq!(
+            super::type_initial_delay_ms(InputTool::Xdotool, options),
+            80
+        );
+        assert_eq!(super::type_initial_delay_ms(InputTool::Wtype, options), 0);
     }
 
     #[test]

@@ -67,6 +67,15 @@ const TEXT_EDITOR_PROFILE_ID: &str = "text-editor";
 const TEXT_EDITOR_SEARCH_NAME: &str = "Text Editor";
 const TEXT_EDITOR_DESKTOP_IDS: &[&str] = &["org.gnome.TextEditor", "gnome-text-editor"];
 const TEXT_EDITOR_ALIASES: &[&str] = &["text-editor", "gnome-text-editor", "org.gnome.TextEditor"];
+const CALENDAR_PROFILE_ID: &str = "calendar";
+const CALENDAR_SEARCH_NAME: &str = "Calendar";
+const CALENDAR_DESKTOP_IDS: &[&str] = &["org.gnome.Calendar", "gnome-calendar"];
+const CALENDAR_ALIASES: &[&str] = &[
+    "calendar",
+    "gnome-calendar",
+    "org.gnome.Calendar",
+    "org.gnome.Calendar.desktop",
+];
 const SUPPORTED_APPS: &[&str] = &[
     TELEGRAM_PROFILE_ID,
     PAINT_PROFILE_ID,
@@ -74,6 +83,7 @@ const SUPPORTED_APPS: &[&str] = &[
     PINTA_PROFILE_ID,
     KOLOURPAINT_PROFILE_ID,
     TEXT_EDITOR_PROFILE_ID,
+    CALENDAR_PROFILE_ID,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -970,7 +980,25 @@ pub fn click_target(
     target: &str,
     options: &ClickOptions,
 ) -> Result<DesktopActionResult> {
+    let profile = resolve_profile(app)?;
     let focus = focus_before_live_action(app, &options.locate, options.dry_run)?;
+    if can_click_target_via_accessibility_action(&profile, target, options)
+        && let Some(selector) = profile.accessibility_selector(target)
+        && let Some(result) =
+            click_target_via_accessibility_action(&profile, target, selector, focus.as_ref())?
+    {
+        return maybe_verify_action(result, options.verify, || {
+            locate_target(app, target, &options.locate).map(|verified| {
+                format!(
+                    "target {} present at {},{} via {}",
+                    verified.target,
+                    verified.point.x,
+                    verified.point.y,
+                    verified.source.label()
+                )
+            })
+        });
+    }
     let resolved = locate_target(app, target, &options.locate)?;
     if options.dry_run {
         return Ok(DesktopActionResult {
@@ -1020,6 +1048,73 @@ pub fn click_target(
             )
         })
     })
+}
+
+fn can_click_target_via_accessibility_action(
+    profile: &AppProfile,
+    target: &str,
+    options: &ClickOptions,
+) -> bool {
+    !options.dry_run
+        && options.button == MouseButton::Left
+        && options.locate.prefer_accessibility
+        && options.locate.image.is_none()
+        && options.locate.window_title.is_none()
+        && options.locate.window_id.is_none()
+        && profile.accessibility_selector(target).is_some()
+}
+
+fn click_target_via_accessibility_action(
+    profile: &AppProfile,
+    target: &str,
+    selector: &str,
+    focus: Option<&DesktopActionResult>,
+) -> Result<Option<DesktopActionResult>> {
+    for action in ["click", "press", "activate"] {
+        match peekaboox_accessibility::perform_action(selector, Some(action), None) {
+            Ok(result) if result.ok => {
+                return Ok(Some(accessibility_action_desktop_result(
+                    profile, target, selector, result, focus,
+                )));
+            }
+            Ok(_) | Err(_) => {}
+        }
+    }
+    match peekaboox_accessibility::perform_action(selector, None, Some(0)) {
+        Ok(result) if result.ok => Ok(Some(accessibility_action_desktop_result(
+            profile, target, selector, result, focus,
+        ))),
+        Ok(_) | Err(_) => Ok(None),
+    }
+}
+
+fn accessibility_action_desktop_result(
+    profile: &AppProfile,
+    target: &str,
+    selector: &str,
+    result: peekaboox_accessibility::AccessibilityActionResult,
+    focus: Option<&DesktopActionResult>,
+) -> DesktopActionResult {
+    let label = result
+        .element
+        .label
+        .as_deref()
+        .unwrap_or(result.element.role.as_str());
+    DesktopActionResult {
+        app: profile.id.to_owned(),
+        action: "click".to_owned(),
+        detail: action_detail_with_focus(
+            focus,
+            format!(
+                "clicked {} via AT-SPI action {} on selector {:?} ({label})",
+                target, result.action, selector
+            ),
+        ),
+        backend_name: result.backend_name,
+        verified: false,
+        verification_detail: None,
+        focus_diagnostics: focus_diagnostics_from(focus),
+    }
 }
 
 pub fn drag_target(
@@ -1822,11 +1917,34 @@ fn resolve_profile(app: &str) -> Result<AppProfile> {
     if let Some(profile) = matching_profiles_for_app(&profiles, app).into_iter().next() {
         return Ok(profile.clone());
     }
+    if let Some(profile) = generic_profile_for_desktop_id(app) {
+        return Ok(profile);
+    }
 
     Err(PeekabooXError::new(format!(
         "unsupported desktop app {app:?}; supported apps: {}",
         profile_ids_text(&profiles)
     )))
+}
+
+fn generic_profile_for_desktop_id(app: &str) -> Option<AppProfile> {
+    let trimmed = app.trim();
+    if trimmed.is_empty() || trimmed.contains('/') || !desktop_entry_exists(trimmed) {
+        return None;
+    }
+    let desktop_id = trimmed
+        .strip_suffix(".desktop")
+        .unwrap_or(trimmed)
+        .to_owned();
+    Some(AppProfile {
+        id: desktop_id.clone(),
+        aliases: vec![trimmed.to_owned(), desktop_id.clone()],
+        search_name: desktop_id.clone(),
+        desktop_ids: vec![desktop_id],
+        commands: Vec::new(),
+        kind: ProfileKind::Generic,
+        targets: vec![default_window_target()],
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2258,6 +2376,7 @@ fn builtin_profiles() -> Vec<AppProfile> {
             &[("gnome-text-editor", &[] as &[&str])],
             ProfileKind::TextEditor,
         ),
+        calendar_profile(),
     ]
 }
 
@@ -2288,6 +2407,113 @@ fn builtin_profile(
 
 fn string_vec(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+fn calendar_profile() -> AppProfile {
+    AppProfile {
+        id: CALENDAR_PROFILE_ID.to_owned(),
+        aliases: string_vec(CALENDAR_ALIASES),
+        search_name: CALENDAR_SEARCH_NAME.to_owned(),
+        desktop_ids: string_vec(CALENDAR_DESKTOP_IDS),
+        commands: vec![
+            CommandSpec {
+                program: "gnome-calendar".to_owned(),
+                args: Vec::new(),
+            },
+            CommandSpec {
+                program: "flatpak".to_owned(),
+                args: string_vec(&["run", "org.gnome.Calendar"]),
+            },
+        ],
+        kind: ProfileKind::Generic,
+        targets: vec![
+            default_window_target(),
+            calendar_accessibility_target(
+                "new-event-button",
+                &["click", "assert-present"],
+                "role=push button,label-regex=New Event|New event|Create Event|Create event|Add Event|Add event",
+                "New",
+                Some(RelativeRectSpec {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 0.22,
+                }),
+            ),
+            calendar_accessibility_target(
+                "edit-details-button",
+                &["click", "assert-present"],
+                "role=push button,label-regex=Edit Details|Edit details",
+                "Edit Details",
+                None,
+            ),
+            calendar_accessibility_target(
+                "save-event-button",
+                &["click", "assert-present"],
+                "role=push button,label-regex=Save Event|Save event|Save",
+                "Save",
+                Some(RelativeRectSpec {
+                    x: 0.45,
+                    y: 0.0,
+                    width: 0.55,
+                    height: 0.35,
+                }),
+            ),
+            calendar_accessibility_target(
+                "save-button",
+                &["click", "assert-present"],
+                "role=push button,label-regex=Save Event|Save event|Save",
+                "Save",
+                Some(RelativeRectSpec {
+                    x: 0.45,
+                    y: 0.0,
+                    width: 0.55,
+                    height: 0.35,
+                }),
+            ),
+            calendar_accessibility_target(
+                "title-field",
+                &["click", "type-into", "assert-present", "assert-contains"],
+                "role-regex=text|entry,label-regex=Title|Summary|Event",
+                "Title",
+                None,
+            ),
+        ],
+    }
+}
+
+fn default_window_target() -> CustomTarget {
+    CustomTarget {
+        name: "window".to_owned(),
+        supports: string_vec(&["locate", "click", "drag", "assert-present"]),
+        accessibility_selector: None,
+        visual: CustomTargetVisual::Window,
+        text_anchor: None,
+        color_anchor: None,
+        wait: None,
+    }
+}
+
+fn calendar_accessibility_target(
+    name: &str,
+    supports: &[&str],
+    accessibility_selector: &str,
+    text_anchor: &str,
+    region: Option<RelativeRectSpec>,
+) -> CustomTarget {
+    CustomTarget {
+        name: name.to_owned(),
+        supports: string_vec(supports),
+        accessibility_selector: Some(accessibility_selector.to_owned()),
+        visual: CustomTargetVisual::OcrText {
+            region,
+            point_x: 0.5,
+            point_y: 0.5,
+        },
+        text_anchor: Some(text_anchor.to_owned()),
+        color_anchor: None,
+        wait: None,
+    }
 }
 
 fn desktop_profile_search_paths() -> Vec<PathBuf> {
@@ -2414,20 +2640,7 @@ fn external_profile(path: &Path, definition: ExternalProfileDefinition) -> Resul
             .iter()
             .any(|target| target.name.eq_ignore_ascii_case("window"))
     {
-        targets.push(CustomTarget {
-            name: "window".to_owned(),
-            supports: vec![
-                "locate".to_owned(),
-                "click".to_owned(),
-                "drag".to_owned(),
-                "assert-present".to_owned(),
-            ],
-            accessibility_selector: None,
-            visual: CustomTargetVisual::Window,
-            text_anchor: None,
-            color_anchor: None,
-            wait: None,
-        });
+        targets.push(default_window_target());
     }
 
     Ok(AppProfile {

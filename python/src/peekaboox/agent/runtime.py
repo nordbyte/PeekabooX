@@ -461,6 +461,27 @@ class AgentRuntime:
             result = self.execute_workflow(workflow, verifier=verifier)
             all_steps.extend(result.steps)
             if result.ok:
+                if _workflow_observation_only(workflow) and _goal_requests_live_action(goal):
+                    recovery = dict(result.recovery)
+                    recovery.update(
+                        {
+                            "reason": (
+                                "planner produced only observation steps for an action-oriented "
+                                "goal"
+                            ),
+                            "retryable": False,
+                            "next_action": "provide_explicit_workflow",
+                        }
+                    )
+                    if replan_events:
+                        recovery["replanned"] = True
+                        recovery["replans"] = replan_events
+                    return WorkflowExecutionResult(
+                        goal=result.goal,
+                        ok=False,
+                        steps=tuple(all_steps),
+                        recovery=recovery,
+                    )
                 recovery = dict(result.recovery)
                 if replan_events:
                     recovery["replanned"] = True
@@ -2742,6 +2763,45 @@ def _preflight_recovery(result: PreflightResult) -> dict[str, object]:
         "next_action": "run_doctor",
         "preflight": _preflight_metadata(result),
     }
+
+
+def _workflow_observation_only(workflow: Workflow) -> bool:
+    return all(
+        step.action.strip().lower() in {"observe", "capture", "capture_screen"}
+        for step in workflow.steps
+    )
+
+
+def _goal_requests_live_action(goal: str) -> bool:
+    normalized = goal.casefold()
+    action_terms = (
+        "add",
+        "click",
+        "create",
+        "drag",
+        "enter",
+        "focus",
+        "input",
+        "launch",
+        "move",
+        "open",
+        "paste",
+        "press",
+        "save",
+        "select",
+        "submit",
+        "type",
+        "write",
+        "anlegen",
+        "erstelle",
+        "klicke",
+        "oeffne",
+        "\u00f6ffne",
+        "schreibe",
+        "speichere",
+        "tippe",
+    )
+    return any(f" {term} " in f" {normalized} " for term in action_terms)
 
 
 def _workflow_preflight_categories(workflow: Workflow) -> tuple[str, ...]:

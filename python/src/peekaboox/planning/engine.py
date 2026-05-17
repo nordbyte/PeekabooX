@@ -57,10 +57,7 @@ class PlanningEngine:
         normalized = goal.strip()
         if not normalized:
             raise ValueError("goal must not be empty")
-        return Workflow(
-            name=normalized,
-            steps=[WorkflowStep(action="observe", value=normalized)],
-        )
+        return self.generate_workflow(normalized)
 
     def generate_workflow(
         self,

@@ -88,6 +88,10 @@ class McpTests(unittest.TestCase):
         self.assertIn("app", capture_schema)
         self.assertIn("window_title", capture_schema)
         self.assertIn("title_regex", capture_schema)
+        self.assertIn("image_path", capture_schema)
+        self.assertIn("omit_image_base64", capture_schema)
+        self.assertIn("semantic_only", capture_schema)
+        self.assertIn("path_only", capture_schema)
         compare_schema = server.tools["compare_images"].input_schema["properties"]
         self.assertIn("ignore_regions", compare_schema)
         self.assertIn("max_changed_pixels", compare_schema)
@@ -472,6 +476,62 @@ class McpTests(unittest.TestCase):
         self.assertIsNotNone(fake_client.last_capture)
         self.assertIsNone(fake_client.last_capture["region"])
         self.assertEqual(fake_client.last_capture["window_id"], "window-1")
+
+    def test_capture_screen_can_write_image_and_omit_base64(self) -> None:
+        server = McpServer(runtime=AgentRuntime(client=FakeClient()))
+        server.register_default_tools()
+
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "capture.png"
+            result = server.call_tool(
+                "capture_screen",
+                {
+                    "image_path": str(path),
+                    "omit_image_base64": True,
+                    "include_semantic_tree": True,
+                },
+            )
+
+            self.assertEqual(path.read_bytes(), b"png")
+            self.assertEqual(result["image_path"], str(path))
+            self.assertNotIn("image_base64", result)
+            self.assertEqual(result["semantic_tree"][0]["label"], "Submit")
+
+    def test_capture_screen_path_only_requires_and_returns_path(self) -> None:
+        server = McpServer(runtime=AgentRuntime(client=FakeClient()))
+        server.register_default_tools()
+
+        with self.assertRaisesRegex(ValueError, "path_only requires image_path"):
+            server.call_tool("capture_screen", {"path_only": True})
+
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "capture.png"
+            result = server.call_tool(
+                "capture_screen",
+                {"path_only": True, "image_path": str(path)},
+            )
+
+        self.assertEqual(result["image_path"], str(path))
+        self.assertEqual(result["mime_type"], "image/png")
+        self.assertNotIn("image_base64", result)
+        self.assertNotIn("semantic_tree", result)
+
+    def test_find_elements_all_selector_expands_to_unfiltered_query(self) -> None:
+        fake_client = FakeClient()
+        server = McpServer(runtime=AgentRuntime(client=fake_client))
+        server.register_default_tools()
+
+        result = server.call_tool("find_elements", {"selector": "all"})
+
+        self.assertEqual(result[0]["label"], "Submit")
+        self.assertEqual(fake_client.last_find_selector, "")
+
+    def test_click_rejects_absolute_coordinates_combined_with_window_scope(self) -> None:
+        server = McpServer(runtime=AgentRuntime(client=FakeClient()))
+        server.register_default_tools()
+
+        with self.assertRaisesRegex(ValueError, "absolute screen coordinates"):
+            server.call_tool("click", {"x": 10, "y": 20, "app": "Calendar"})
 
     def test_mcp_server_calls_list_plugins_tool(self) -> None:
         with TemporaryDirectory() as tmpdir:

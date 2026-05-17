@@ -1562,6 +1562,19 @@ class RuntimeCoreTests(unittest.TestCase):
         self.assertEqual(result.steps[0].step.action, "observe")
         self.assertEqual(result.steps[0].result.mime_type, "image/png")
 
+    def test_agent_runtime_execute_goal_rejects_observe_only_action_goal(self) -> None:
+        class ObserveOnlyPlanner(PlanningEngine):
+            def plan_workflow(self, goal: str) -> Workflow:
+                return Workflow(name=goal, steps=[WorkflowStep(action="observe")])
+
+        runtime = AgentRuntime(client=FakeClient(), planner=ObserveOnlyPlanner())
+
+        result = runtime.execute_goal("Click Submit")
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.steps[0].step.action, "observe")
+        self.assertIn("observation", result.recovery["reason"])
+
     def test_agent_runtime_replans_failed_goal_with_provider(self) -> None:
         class FailingFirstPlanner(PlanningEngine):
             def plan_workflow(self, goal: str) -> Workflow:

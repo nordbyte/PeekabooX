@@ -10,7 +10,8 @@ fn supported_apps_contains_desktop_profiles() {
             "drawing",
             "pinta",
             "kolourpaint",
-            "text-editor"
+            "text-editor",
+            "calendar"
         ]
     );
     assert!(resolve_profile("telegram-desktop").is_ok());
@@ -18,6 +19,11 @@ fn supported_apps_contains_desktop_profiles() {
     assert_eq!(
         resolve_profile("gnome-text-editor").unwrap().id,
         "text-editor"
+    );
+    assert_eq!(resolve_profile("gnome-calendar").unwrap().id, "calendar");
+    assert_eq!(
+        resolve_profile("org.gnome.Calendar").unwrap().id,
+        "calendar"
     );
 }
 
@@ -46,6 +52,22 @@ fn desktop_profile_query_prefers_specific_profiles_over_paint_aggregate() {
     .unwrap();
     assert_eq!(paint.count, 1);
     assert_eq!(paint.profiles[0].id, "paint");
+}
+
+#[test]
+fn calendar_profile_exposes_fast_event_targets() {
+    let profile = resolve_profile("calendar").unwrap();
+    let targets = profile.supported_targets();
+
+    assert!(targets.contains(&"window".to_owned()));
+    assert!(targets.contains(&"new-event-button".to_owned()));
+    assert!(targets.contains(&"edit-details-button".to_owned()));
+    assert!(targets.contains(&"save-event-button".to_owned()));
+    assert!(target_info(&profile, "title-field").can_type);
+    assert_eq!(
+        profile.accessibility_selector("save-button"),
+        Some("role=push button,label-regex=Save Event|Save event|Save")
+    );
 }
 
 #[test]
