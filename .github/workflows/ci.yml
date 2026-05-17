@@ -28,9 +28,7 @@ jobs:
       - run: PYTHONPATH=python/src python examples/python/runtime_smoke.py
       - run: PYTHONPATH=python/src bash examples/mcp/jsonrpc_list_tools.sh
       - name: Validate live desktop example syntax
-        run: |
-          bash -n examples/desktop/capture_window_targets.sh
-          bash -n examples/desktop/capture_daemon_mcp_targets.sh
+        run: bash examples/desktop/run_all.sh --syntax-only
       - run: python -m pip wheel --no-deps -w target/python-wheel ./python
       - run: python packaging/smoke_install.py --skip-deb --skip-cargo-install --wheel "target/python-wheel/peekaboox-*.whl"
       - uses: actions/upload-artifact@v4

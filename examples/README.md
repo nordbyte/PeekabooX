@@ -156,6 +156,9 @@ These examples expect a Linux desktop session with matching capture,
 accessibility, and input backends:
 
 ```bash
+bash examples/desktop/run_all.sh --syntax-only
+bash examples/desktop/run_all.sh --smoke
+bash examples/desktop/run_all.sh --live --filter live_smoke
 bash examples/desktop/live_smoke.sh
 bash examples/desktop/capture_backends_diagnostics.sh
 bash examples/cli/capture_dmabuf_probe.sh
@@ -188,6 +191,16 @@ Set `PEEKABOOX_STRICT=1` when you want the live smoke script to fail on the
 first backend error. Without strict mode, unavailable desktop capabilities are
 reported as warnings so the script remains useful across Wayland, X11, and
 headless environments.
+
+`examples/desktop/run_all.sh` is the desktop example harness. By default it
+runs `bash -n` against every desktop shell example. Use `--smoke` for
+non-GUI registry and daemon parity checks, or `--live` for the full local
+desktop suite. `--filter <text>` narrows the run by filename,
+`--out-dir <path>` selects a shared output root, and `--strict` propagates
+strict failure handling. App windows are kept open by default where examples
+support close control; pass `--close` to let those examples close launched apps.
+Telegram is excluded from `--live` unless `--include-destructive` is present,
+because that sample sends a real Saved Messages chat message.
 
 `examples/desktop/capture_backends_diagnostics.sh` runs
 `peekaboox capture-backends --diagnose --json`, probes file, frame, region, and
