@@ -3,22 +3,23 @@ import json
 import os
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
-from typing import Any, Sequence
 
+from peekaboox import __version__ as PEEKABOOX_VERSION
 from peekaboox.client import (
+    DEFAULT_GRPC_TARGET,
+    DEFAULT_GRPC_TIMEOUT_SECONDS,
     ActionResult,
     CaptureBackendsResult,
     CaptureDeltaResult,
     CaptureScreenResult,
-    DEFAULT_GRPC_TIMEOUT_SECONDS,
-    DetectUiElementsResult,
     DesktopActionResult,
     DesktopLocateResult,
     DesktopProfilesResult,
     DesktopState,
+    DetectUiElementsResult,
     DmaBufProbeResult,
     OcrResult,
     PeekabooXClient,
@@ -26,10 +27,9 @@ from peekaboox.client import (
     UiElement,
     UiStateResult,
     VisualDiffResult,
-    WindowListResult,
     WindowInfo,
+    WindowListResult,
 )
-from peekaboox.client import DEFAULT_GRPC_TARGET
 from peekaboox.doctor import DoctorResult, run_doctor
 from peekaboox.memory import (
     DesktopGraphSnapshot,
@@ -42,12 +42,13 @@ from peekaboox.memory import (
 )
 from peekaboox.planning import PlanningEngine
 from peekaboox.plugins import (
+    PluginDiscoveryResult,
     PluginToolExecutionResult,
     discover_plugins,
     execute_plugin_tool,
-    PluginDiscoveryResult,
 )
 from peekaboox.security import (
+    KNOWN_CAPABILITY_PROFILES,
     Capability,
     CapabilityAuditEvent,
     CapabilityPolicy,
@@ -55,7 +56,6 @@ from peekaboox.security import (
     ConfirmationPolicy,
     DangerousAction,
     JsonlAuditLogger,
-    KNOWN_CAPABILITY_PROFILES,
 )
 from peekaboox.workflows import (
     Workflow,
@@ -64,9 +64,8 @@ from peekaboox.workflows import (
     create_workflow_bundle,
     load_workflow_file,
     save_workflow_file,
+    workflow_json_schema,
 )
-from peekaboox import __version__ as PEEKABOOX_VERSION
-
 
 WINDOW_SORT_CHOICES = ("backend", "focused", "title", "app", "area", "id", "state")
 WINDOW_BACKEND_CHOICES = ("auto", "gnome", "at-spi", "xdotool")
@@ -3015,6 +3014,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="load a JSON/YAML workflow and print its normalized shape",
     )
     workflow_validate_parser.add_argument("path", help="workflow JSON/YAML file")
+    workflow_subparsers.add_parser(
+        "schema",
+        help="print the PeekabooX workflow JSON schema",
+    )
     workflow_replay_parser = workflow_subparsers.add_parser(
         "replay",
         help="execute a workflow file through the daemon",
@@ -3052,6 +3055,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "workflow":
             if args.workflow_command is None:
                 workflow_parser.print_help()
+                return 0
+            if args.workflow_command == "schema":
+                _print_json(workflow_json_schema())
                 return 0
             workflow = load_workflow_file(args.path)
             if args.workflow_command == "validate":

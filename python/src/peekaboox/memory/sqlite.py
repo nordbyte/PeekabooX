@@ -37,7 +37,7 @@ class SQLiteMemoryStore(MemoryStore):
         self._connection.commit()
         self._connection.close()
 
-    def __enter__(self) -> "SQLiteMemoryStore":
+    def __enter__(self) -> SQLiteMemoryStore:
         return self
 
     def __exit__(

@@ -1605,6 +1605,8 @@ class RuntimeCoreTests(unittest.TestCase):
         self.assertEqual(workflow.steps[2].selector, "role=push button,label=Submit")
         self.assertTrue(workflow.steps[2].vision_fallback)
         self.assertEqual(workflow.steps[3].value, "Hello")
+        self.assertEqual(json_roundtrip.schema_version, WORKFLOW_SCHEMA_VERSION)
+        self.assertEqual(yaml_roundtrip.schema_version, WORKFLOW_SCHEMA_VERSION)
         self.assertEqual(json_roundtrip.steps[2].selector, "role=push button,label=Submit")
         self.assertEqual(yaml_roundtrip.steps[3].value, "Hello")
 
@@ -1656,13 +1658,14 @@ class RuntimeCoreTests(unittest.TestCase):
 
         runtime = AgentRuntime(planner=PlanningEngine(workflow_refiner=refiner))
 
-        with self.assertRaisesRegex(ValueError, "unsupported"):
+        with self.assertRaisesRegex(ValueError, "not supported"):
             runtime.refine_workflow("Run shell")
 
     def test_workflow_loader_reads_json_and_yaml_definitions(self) -> None:
         json_workflow = load_workflow_text(
             json.dumps(
                 {
+                    "schema_version": WORKFLOW_SCHEMA_VERSION,
                     "name": "json-submit",
                     "steps": [
                         {"action": "find_element", "selector": "role=push button"},
@@ -1683,6 +1686,7 @@ class RuntimeCoreTests(unittest.TestCase):
         yaml_workflow = load_workflow_text(
             dedent(
                 """
+            schema_version: peekaboox.workflow.v1
             name: yaml-submit
             steps:
               - action: find_element
@@ -1696,13 +1700,76 @@ class RuntimeCoreTests(unittest.TestCase):
         )
 
         self.assertEqual(json_workflow.name, "json-submit")
+        self.assertEqual(json_workflow.schema_version, WORKFLOW_SCHEMA_VERSION)
         self.assertEqual(json_workflow.steps[1].value, "Hello")
         self.assertEqual(json_workflow.steps[2].from_x, 1)
         self.assertEqual(json_workflow.steps[2].button, "middle")
         self.assertEqual(json_workflow.steps[2].duration_ms, 150)
         self.assertEqual(yaml_workflow.name, "yaml-submit")
+        self.assertEqual(yaml_workflow.schema_version, WORKFLOW_SCHEMA_VERSION)
         self.assertTrue(yaml_workflow.steps[1].vision_fallback)
         self.assertFalse(yaml_workflow.steps[1].verify)
+
+    def test_workflow_loader_migrates_legacy_workflows_and_rejects_invalid_contracts(self) -> None:
+        legacy_workflow = load_workflow_text(
+            json.dumps(
+                {
+                    "name": "legacy",
+                    "steps": [{"action": "observe"}],
+                }
+            ),
+            format_name="json",
+        )
+
+        self.assertEqual(legacy_workflow.schema_version, WORKFLOW_SCHEMA_VERSION)
+        self.assertEqual(
+            json.loads(dump_workflow_text(legacy_workflow, format_name="json"))[
+                "schema_version"
+            ],
+            WORKFLOW_SCHEMA_VERSION,
+        )
+
+        with self.assertRaisesRegex(ValueError, "unsupported top-level keys"):
+            load_workflow_text(
+                json.dumps(
+                    {
+                        "schema_version": WORKFLOW_SCHEMA_VERSION,
+                        "name": "bad",
+                        "steps": [{"action": "observe"}],
+                        "unknown": True,
+                    }
+                ),
+                format_name="json",
+            )
+        with self.assertRaisesRegex(ValueError, "unsupported keys"):
+            load_workflow_text(
+                json.dumps(
+                    {
+                        "schema_version": WORKFLOW_SCHEMA_VERSION,
+                        "name": "bad",
+                        "steps": [{"action": "observe", "unknown": True}],
+                    }
+                ),
+                format_name="json",
+            )
+        with self.assertRaisesRegex(ValueError, "click requires"):
+            load_workflow_text(
+                json.dumps(
+                    {
+                        "schema_version": WORKFLOW_SCHEMA_VERSION,
+                        "name": "bad",
+                        "steps": [{"action": "click"}],
+                    }
+                ),
+                format_name="json",
+            )
+
+    def test_workflow_json_schema_exposes_current_contract(self) -> None:
+        schema = workflow_json_schema()
+
+        self.assertEqual(schema["properties"]["schema_version"]["const"], WORKFLOW_SCHEMA_VERSION)
+        self.assertFalse(schema["additionalProperties"])
+        self.assertIn("click", schema["properties"]["steps"]["items"]["properties"]["action"]["enum"])
 
     def test_workflow_recorder_exports_json_and_yaml(self) -> None:
         recorder = WorkflowRecorder("recorded")
@@ -1863,6 +1930,16 @@ class RuntimeCoreTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["workflow"]["name"], "cli-workflow")
+        self.assertEqual(payload["workflow"]["schema_version"], WORKFLOW_SCHEMA_VERSION)
+
+    def test_agent_cli_prints_workflow_schema(self) -> None:
+        output = StringIO()
+        with patch("sys.stdout", output):
+            exit_code = agent_runtime_module.main(["workflow", "schema"])
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["properties"]["schema_version"]["const"], WORKFLOW_SCHEMA_VERSION)
 
     def test_agent_runtime_saves_generated_workflow_file(self) -> None:
         runtime = AgentRuntime(client=FakeClient())

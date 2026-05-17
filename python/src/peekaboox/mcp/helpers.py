@@ -13,15 +13,13 @@ from typing import Any
 from peekaboox.agent import PreflightError, WorkflowExecutionResult
 from peekaboox.agent.runtime import WINDOW_BACKEND_CHOICES, WINDOW_SORT_CHOICES
 from peekaboox.client import Rect
+from peekaboox.mcp.types import JsonRpcProtocolError, McpPrompt
 from peekaboox.security import (
     CapabilityDeniedError,
     ConfirmationDeniedError,
     ConfirmationRequiredError,
 )
 from peekaboox.workflows import workflow_from_dict
-
-from peekaboox.mcp.types import JsonRpcProtocolError, McpPrompt
-
 
 INVALID_PARAMS = -32602
 

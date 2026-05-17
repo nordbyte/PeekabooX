@@ -34,6 +34,25 @@
       "visual": {
         "type": "window"
       }
+    },
+    {
+      "name": "display-text",
+      "supports": ["assert-contains"],
+      "text_anchor": "0",
+      "visual": {
+        "type": "ocr-text",
+        "region": {
+          "x": 0.08,
+          "y": 0.08,
+          "width": 0.84,
+          "height": 0.24
+        },
+        "point_x": 0.5,
+        "point_y": 0.65
+      },
+      "wait": {
+        "before_ms": 100
+      }
     }
   ]
 }

@@ -15,6 +15,9 @@ requires a `CHANGELOG.md` entry using `## VERSION - YYYY-MM-DD`.
 ## Local Validation
 
 ```bash
+python3 -m ruff check python/src python/tests benchmarks examples/python packaging tests
+PYTHONPATH=python/src python3 tests/api_surface_check.py
+PYTHONPATH=python/src python3 tests/proto_sync_check.py
 python3 packaging/release_manifest.py --check
 python3 -m pip wheel --no-deps -w target/python-wheel ./python
 cargo build --release -p peekaboox-cli -p peekabooxd

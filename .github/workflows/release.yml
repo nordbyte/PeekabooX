@@ -37,6 +37,7 @@ jobs:
       - run: python -m compileall python/src
       - run: PYTHONPATH=python/src python -m unittest discover -s python/tests -p "test_*.py"
       - run: PYTHONPATH=python/src python tests/api_surface_check.py
+      - run: PYTHONPATH=python/src python tests/proto_sync_check.py
       - run: PYTHONPATH=python/src python examples/python/runtime_smoke.py
       - run: PYTHONPATH=python/src bash examples/mcp/jsonrpc_list_tools.sh
       - run: python packaging/release_manifest.py --check --expected-version "$RELEASE_VERSION"

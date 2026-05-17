@@ -1,3 +1,4 @@
+schema_version: peekaboox.workflow.v1
 name: example-submit-form
 steps:
   - action: find_element

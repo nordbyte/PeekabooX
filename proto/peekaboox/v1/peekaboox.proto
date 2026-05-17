@@ -511,6 +511,8 @@ message CallPluginToolRequest {
   repeated string paths = 4;
   optional uint32 timeout_ms = 5;
   optional uint32 max_output_bytes = 6;
+  bool require_trusted = 7;
+  optional string trust_policy = 8;
 }
 
 message PluginToolExecutionResponse {

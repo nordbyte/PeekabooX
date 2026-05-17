@@ -14,7 +14,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WHEEL_GLOB = REPO_ROOT / "target" / "python-wheel" / "peekaboox-*.whl"
 DEFAULT_DEB_GLOB = REPO_ROOT / "target" / "dist" / "peekaboox_*.deb"

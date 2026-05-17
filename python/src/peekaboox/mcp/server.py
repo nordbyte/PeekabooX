@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import http.server
 import json
 import os
 import sys
@@ -18,17 +17,6 @@ from peekaboox.agent.runtime import (
     WINDOW_SORT_CHOICES,
 )
 from peekaboox.client import DEFAULT_GRPC_TIMEOUT_SECONDS
-from peekaboox.security import (
-    KNOWN_CAPABILITY_PROFILES,
-    CapabilityPolicy,
-    CapabilityDeniedError,
-    ConfirmationDeniedError,
-    ConfirmationPolicy,
-    ConfirmationRequiredError,
-    JsonlAuditLogger,
-)
-from peekaboox.workflows import dump_workflow_text, workflow_from_dict, workflow_to_dict
-
 from peekaboox.mcp.helpers import (
     _capability_error_content,
     _completion_context_value,
@@ -39,10 +27,9 @@ from peekaboox.mcp.helpers import (
     _generic_error_content,
     _json_resource,
     _jsonrpc_error,
-    _mcp_http_content_length,
-    _mcp_http_host_requires_auth,
-    _mcp_http_request_authorized,
-    _normalize_mcp_auth_token,
+    _mcp_http_content_length,  # noqa: F401 - compatibility re-export for tests/users
+    _mcp_http_host_requires_auth,  # noqa: F401 - compatibility re-export for tests/users
+    _mcp_http_request_authorized,  # noqa: F401 - compatibility re-export for tests/users
     _optional_bool,
     _optional_choice,
     _optional_float,
@@ -68,15 +55,38 @@ from peekaboox.mcp.helpers import (
     _window_query_kwargs_from_arguments,
     _workflow_execution_result_from_mcp,
 )
+from peekaboox.mcp.prompts import default_prompts
+from peekaboox.mcp.resources import DOC_RESOURCES, default_resource_templates, default_resources
+from peekaboox.mcp.schemas import (
+    DRAG_BACKEND_CHOICES,
+    MOVE_BACKEND_CHOICES,
+    MOVE_BOUNDS_POLICY_CHOICES,
+    RECT_SCHEMA,
+    WORKFLOW_ACTIONS,
+    WORKFLOW_STEP_SCHEMA,
+    ocr_input_schema,
+    schema,
+)
+from peekaboox.mcp.tools import build_tool
+from peekaboox.mcp.transports import serve_http as _serve_http_transport
+from peekaboox.mcp.transports import serve_stdio as _serve_stdio_transport
 from peekaboox.mcp.types import (
     JsonRpcProtocolError,
     McpPrompt,
-    McpPromptArgument,
     McpResource,
     McpResourceTemplate,
     McpTool,
 )
-
+from peekaboox.security import (
+    KNOWN_CAPABILITY_PROFILES,
+    CapabilityDeniedError,
+    CapabilityPolicy,
+    ConfirmationDeniedError,
+    ConfirmationPolicy,
+    ConfirmationRequiredError,
+    JsonlAuditLogger,
+)
+from peekaboox.workflows import dump_workflow_text, workflow_from_dict, workflow_to_dict
 
 MCP_PROTOCOL_VERSION = "2025-11-25"
 SERVER_NAME = "peekaboox-mcp"
@@ -101,106 +111,6 @@ LOG_LEVELS = (
 )
 
 PREFLIGHT_CATEGORIES = ("desktop", "capture", "input", "ocr", "python")
-MOVE_BACKEND_CHOICES = ("auto", "uinput", "ydotool", "xdotool")
-DRAG_BACKEND_CHOICES = ("auto", "uinput", "xdotool")
-MOVE_BOUNDS_POLICY_CHOICES = ("allow", "clamp", "fail", "fail-out-of-bounds")
-WORKFLOW_ACTIONS = (
-    "observe",
-    "capture_screen",
-    "find_element",
-    "click",
-    "move_mouse",
-    "drag",
-    "type_text",
-    "paste_text",
-    "hotkey",
-    "list_windows",
-    "get_desktop_state",
-)
-
-DOC_RESOURCES = {
-    "api": "docs/api.md",
-    "runtime": "docs/runtime.md",
-    "security": "docs/security.md",
-    "plugins": "docs/plugins.md",
-    "cli": "docs/cli.md",
-    "examples": "examples/README.md",
-}
-
-RECT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "x": {"type": "integer"},
-        "y": {"type": "integer"},
-        "width": {"type": "integer", "minimum": 0},
-        "height": {"type": "integer", "minimum": 0},
-    },
-    "required": ["x", "y", "width", "height"],
-    "additionalProperties": False,
-}
-
-WORKFLOW_STEP_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "action": {"type": "string"},
-        "selector": {"type": "string"},
-        "value": {"type": "string"},
-        "x": {"type": "integer"},
-        "y": {"type": "integer"},
-        "from_x": {"type": "integer"},
-        "from_y": {"type": "integer"},
-        "to_x": {"type": "integer"},
-        "to_y": {"type": "integer"},
-        "from_current": {"type": "boolean", "default": False},
-        "from_ratio_x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        "from_ratio_y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        "to_ratio_x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        "to_ratio_y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        "button": {"type": "string", "enum": ["left", "middle", "right"]},
-        "duration_ms": {"type": "integer", "minimum": 0},
-        "relative_x": {"type": "integer"},
-        "relative_y": {"type": "integer"},
-        "region": {"type": "string"},
-        "ratio_x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        "ratio_y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        "window_id": {"type": "string"},
-        "app": {"type": "string"},
-        "window_title": {"type": "string"},
-        "title_regex": {"type": "string"},
-        "steps": {"type": "integer", "minimum": 1},
-        "bounds_policy": {"type": "string", "enum": list(MOVE_BOUNDS_POLICY_CHOICES)},
-        "backend": {
-            "type": "string",
-            "enum": sorted({*MOVE_BACKEND_CHOICES, *DRAG_BACKEND_CHOICES, *TYPE_BACKEND_CHOICES}),
-        },
-        "clipboard_backend": {
-            "type": "string",
-            "enum": ["auto", "wl-copy", "xclip", "xsel"],
-        },
-        "hotkey_backend": {"type": "string", "enum": list(HOTKEY_BACKEND_CHOICES)},
-        "typing_speed_chars_per_second": {"type": "integer", "minimum": 1},
-        "delay_ms": {"type": "integer", "minimum": 0},
-        "key_delay_ms": {"type": "integer", "minimum": 0},
-        "repeat": {"type": "integer", "minimum": 1},
-        "interval_ms": {"type": "integer", "minimum": 0},
-        "release_before": {"type": "boolean", "default": False},
-        "release_after": {"type": "boolean", "default": False},
-        "preserve_clipboard": {"type": "boolean", "default": False},
-        "restore_delay_ms": {"type": "integer", "minimum": 0},
-        "restore_policy": {
-            "type": "string",
-            "enum": ["strict", "best-effort", "off"],
-        },
-        "restore": {"type": "boolean", "default": False},
-        "dry_run": {"type": "boolean", "default": False},
-        "vision_fallback": {"type": "boolean", "default": False},
-        "verify": {"type": "boolean", "default": True},
-    },
-    "required": ["action"],
-    "additionalProperties": False,
-}
-
-
 
 @dataclass(slots=True)
 class McpServer:
@@ -284,14 +194,7 @@ class McpServer:
         input_stream: TextIO = sys.stdin,
         output_stream: TextIO = sys.stdout,
     ) -> None:
-        for line in input_stream:
-            if not line.strip():
-                continue
-            response = self.handle_jsonrpc_line(line)
-            if response is None:
-                continue
-            output_stream.write(json.dumps(response, separators=(",", ":")) + "\n")
-            output_stream.flush()
+        _serve_stdio_transport(self, input_stream, output_stream)
 
     def serve_http(
         self,
@@ -303,130 +206,16 @@ class McpServer:
         max_request_bytes: int = DEFAULT_MCP_MAX_REQUEST_BYTES,
     ) -> None:
         """Serve JSON-RPC over HTTP POST, with an optional MCP-style SSE endpoint."""
-
-        mcp_server = self
-        auth_token = _normalize_mcp_auth_token(auth_token)
-        if max_request_bytes <= 0:
-            raise ValueError("max_request_bytes must be greater than zero")
-        if auth_token is None and _mcp_http_host_requires_auth(host):
-            raise ValueError(
-                "refusing to expose unauthenticated MCP HTTP/SSE on a non-loopback host; "
-                "set --auth-token or PEEKABOOX_MCP_TOKEN"
-            )
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            server_version = f"{SERVER_NAME}/{SERVER_VERSION}"
-
-            def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
-                if self.path == "/health":
-                    self._write_json(
-                        {
-                            "name": SERVER_NAME,
-                            "version": SERVER_VERSION,
-                            "status": "ok",
-                            "auth": "required" if auth_token is not None else "none",
-                        }
-                    )
-                    return
-                if self.path in ("/", "/mcp"):
-                    if not self._require_auth():
-                        return
-                    self._write_json(
-                        {
-                            "name": SERVER_NAME,
-                            "version": SERVER_VERSION,
-                            "transport": "sse" if sse else "http",
-                            "jsonrpc_endpoint": "/mcp",
-                            "sse_endpoint": "/sse",
-                            "auth": "required" if auth_token is not None else "none",
-                            "max_request_bytes": max_request_bytes,
-                        }
-                    )
-                    return
-                if self.path.startswith("/sse"):
-                    if not self._require_auth():
-                        return
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/event-stream")
-                    self.send_header("Cache-Control", "no-cache")
-                    self.send_header("Connection", "keep-alive")
-                    self.end_headers()
-                    self.wfile.write(b"event: endpoint\n")
-                    self.wfile.write(b"data: /mcp\n\n")
-                    self.wfile.write(b"event: tools\n")
-                    self.wfile.write(
-                        b"data: "
-                        + json.dumps({"tools": mcp_server.list_tools()}, separators=(",", ":")).encode()
-                        + b"\n\n"
-                    )
-                    self.wfile.flush()
-                    return
-                self.send_error(404, "not found")
-
-            def do_POST(self) -> None:  # noqa: N802 - stdlib callback name
-                if self.path not in ("/", "/mcp"):
-                    self.send_error(404, "not found")
-                    return
-                if not self._require_auth():
-                    return
-                try:
-                    length = _mcp_http_content_length(
-                        self.headers.get("Content-Length"),
-                        max_request_bytes,
-                    )
-                except ValueError:
-                    self.send_error(411, "invalid content length")
-                    return
-                except OverflowError:
-                    self.send_error(413, "request body too large")
-                    return
-                payload = self.rfile.read(length).decode("utf-8")
-                try:
-                    message = json.loads(payload)
-                except json.JSONDecodeError as error:
-                    response: dict[str, Any] | list[dict[str, Any]] | None = _jsonrpc_error(
-                        None, PARSE_ERROR, f"invalid JSON: {error.msg}"
-                    )
-                else:
-                    response = mcp_server.handle_jsonrpc(message)
-                if response is None:
-                    self.send_response(202)
-                    self.end_headers()
-                    return
-                self._write_json(response)
-
-            def log_message(self, format: str, *args: Any) -> None:
-                if mcp_server.log_level == "debug":
-                    super().log_message(format, *args)
-
-            def _write_json(self, payload: Any) -> None:
-                body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def _require_auth(self) -> bool:
-                if _mcp_http_request_authorized(self.headers, auth_token):
-                    return True
-                self.send_response(401)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("WWW-Authenticate", 'Bearer realm="PeekabooX MCP"')
-                self.end_headers()
-                self.wfile.write(
-                    json.dumps(
-                        {
-                            "error": "unauthorized",
-                            "message": "missing or invalid PeekabooX MCP token",
-                        },
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                )
-                return False
-
-        httpd = http.server.ThreadingHTTPServer((host, port), Handler)
-        httpd.serve_forever()
+        _serve_http_transport(
+            self,
+            host,
+            port,
+            sse=sse,
+            auth_token=auth_token,
+            max_request_bytes=max_request_bytes,
+            server_name=SERVER_NAME,
+            server_version=SERVER_VERSION,
+        )
 
     def _handle_notification(self, method: str) -> None:
         if method == "notifications/initialized":
@@ -669,176 +458,13 @@ class McpServer:
         return ()
 
     def _default_resources(self) -> tuple[McpResource, ...]:
-        resources = [
-            McpResource(
-                uri="peekaboox://server/info",
-                name="server-info",
-                title="PeekabooX MCP Server Info",
-                description="Server version, protocol capabilities, runtime status, and counts.",
-            ),
-            McpResource(
-                uri="peekaboox://tools",
-                name="tools",
-                title="PeekabooX MCP Tools",
-                description="Current MCP tool descriptors, schemas, annotations, and output schemas.",
-            ),
-            McpResource(
-                uri="peekaboox://desktop/profiles",
-                name="desktop-profiles",
-                title="Desktop App Profiles",
-                description="Supported desktop helper app profiles and target names.",
-            ),
-            McpResource(
-                uri="peekaboox://doctor/latest",
-                name="doctor-latest",
-                title="Latest Doctor Result",
-                description="Most recent Doctor result cached by runtime preflight or doctor calls.",
-            ),
-            McpResource(
-                uri="peekaboox://preflight/latest",
-                name="preflight-latest",
-                title="Latest Preflight Decision",
-                description="Most recent runtime preflight audit event.",
-            ),
-            McpResource(
-                uri="peekaboox://desktop/latest-snapshot",
-                name="desktop-latest-snapshot",
-                title="Latest Desktop Graph Snapshot",
-                description="Latest semantic desktop graph snapshot from the runtime memory store.",
-            ),
-            McpResource(
-                uri="peekaboox://desktop/graph/status",
-                name="desktop-graph-status",
-                title="Desktop Graph Status",
-                description="Semantic desktop graph freshness and invalidation status.",
-            ),
-            McpResource(
-                uri="peekaboox://plugins",
-                name="plugins",
-                title="PeekabooX Plugins",
-                description="Discovered local plugins and declared tools.",
-            ),
-            McpResource(
-                uri="peekaboox://audit/capabilities",
-                name="capability-audit",
-                title="Capability Audit",
-                description="In-memory capability audit events for this MCP runtime.",
-            ),
-            McpResource(
-                uri="peekaboox://audit/confirmations",
-                name="confirmation-audit",
-                title="Confirmation Audit",
-                description="In-memory confirmation audit events for this MCP runtime.",
-            ),
-            McpResource(
-                uri="peekaboox://audit/preflight",
-                name="preflight-audit",
-                title="Preflight Audit",
-                description="In-memory preflight audit events for this MCP runtime.",
-            ),
-        ]
-        resources.extend(
-            McpResource(
-                uri=f"peekaboox://docs/{name}",
-                name=f"docs-{name}",
-                title=f"PeekabooX {name.title()} Docs",
-                description=f"Repository documentation from {path}.",
-                mime_type="text/markdown",
-            )
-            for name, path in DOC_RESOURCES.items()
-        )
-        return tuple(resources)
+        return default_resources()
 
     def _default_resource_templates(self) -> tuple[McpResourceTemplate, ...]:
-        return (
-            McpResourceTemplate(
-                uri_template="peekaboox://docs/{document}",
-                name="docs",
-                title="PeekabooX Documentation",
-                description=(
-                    "Read repository documentation; document is one of "
-                    + ", ".join(sorted(DOC_RESOURCES))
-                    + "."
-                ),
-            ),
-            McpResourceTemplate(
-                uri_template="peekaboox://audit/{kind}",
-                name="audit",
-                title="PeekabooX Runtime Audit",
-                description="Read runtime audit events; kind is capabilities, confirmations, or preflight.",
-                mime_type="application/json",
-            ),
-        )
+        return default_resource_templates()
 
     def _default_prompts(self) -> tuple[McpPrompt, ...]:
-        return (
-            McpPrompt(
-                "diagnose-desktop",
-                "Diagnose the current desktop/capture/input/OCR environment.",
-                (
-                    McpPromptArgument("problem", "Observed failure or symptom.", False),
-                    McpPromptArgument("strict", "Whether the caller wants release-blocking checks.", False),
-                ),
-            ),
-            McpPrompt(
-                "safe-desktop-action",
-                "Plan a gated desktop action using preflight, capability, and confirmation checks.",
-                (
-                    McpPromptArgument("goal", "The user-visible desktop goal.", True),
-                    McpPromptArgument("app", "Optional desktop app profile.", False),
-                    McpPromptArgument("target", "Optional app target name.", False),
-                ),
-            ),
-            McpPrompt(
-                "inspect-window",
-                "Inspect a visible window before choosing capture, OCR, elements, or input tools.",
-                (
-                    McpPromptArgument("app", "Optional app id/name filter.", False),
-                    McpPromptArgument("title", "Optional title substring or regex.", False),
-                    McpPromptArgument("window_id", "Optional exact window id.", False),
-                ),
-            ),
-            McpPrompt(
-                "build-workflow",
-                "Create an editable PeekabooX workflow plan from a goal.",
-                (
-                    McpPromptArgument("goal", "The workflow goal.", True),
-                    McpPromptArgument("format", "json or yaml.", False),
-                ),
-            ),
-            McpPrompt(
-                "recover-from-tool-error",
-                "Recover from a structured MCP tool error without parsing prose.",
-                (
-                    McpPromptArgument("error_json", "The MCP structuredContent error object.", True),
-                ),
-            ),
-            McpPrompt(
-                "plugin-development",
-                "Design or validate a PeekabooX plugin SDK package.",
-                (
-                    McpPromptArgument("plugin_id", "Optional plugin id.", False),
-                    McpPromptArgument("tool", "Optional plugin tool name.", False),
-                ),
-            ),
-            McpPrompt(
-                "ocr-visible-text",
-                "Extract and verify visible text from a screen, window, or image.",
-                (
-                    McpPromptArgument("text_goal", "Text to find or verify.", False),
-                    McpPromptArgument("app", "Optional desktop app scope.", False),
-                ),
-            ),
-            McpPrompt(
-                "semantic-click-plan",
-                "Plan a semantic click using accessibility, graph cache, and vision fallback.",
-                (
-                    McpPromptArgument("selector", "Optional semantic selector.", False),
-                    McpPromptArgument("app", "Optional app scope.", False),
-                    McpPromptArgument("target", "Optional desktop helper target.", False),
-                ),
-            ),
-        )
+        return default_prompts()
 
     def _prompt_by_name(self, name: str) -> McpPrompt:
         for prompt in self._default_prompts():
@@ -851,7 +477,7 @@ class McpServer:
             self._tool(
                 "capture_screen",
                 "Capture the current screen and optionally include semantic UI elements.",
-                _schema(
+                schema(
                     {
                         "include_semantic_tree": {"type": "boolean", "default": False},
                         "region": RECT_SCHEMA,
@@ -866,7 +492,7 @@ class McpServer:
             self._tool(
                 "capture_delta",
                 "Capture a low-bandwidth screen delta for a persistent stream.",
-                _schema(
+                schema(
                     {
                         "stream_id": {"type": "string", "default": "default"},
                         "reset": {"type": "boolean", "default": False},
@@ -881,7 +507,7 @@ class McpServer:
             self._tool(
                 "capture_backends",
                 "Inspect and optionally probe screenshot and zero-copy capture backends.",
-                _schema(
+                schema(
                     {
                         "output": {"type": "string", "default": "screenshot.png"},
                         "region": RECT_SCHEMA,
@@ -898,7 +524,7 @@ class McpServer:
             self._tool(
                 "doctor",
                 "Run PeekabooX environment diagnostics and return structured health checks.",
-                _schema(
+                schema(
                     {
                         "strict": {"type": "boolean", "default": False},
                         "timeout_seconds": {"type": "number", "minimum": 0.1, "default": 30.0},
@@ -909,7 +535,7 @@ class McpServer:
             self._tool(
                 "preflight",
                 "Check required Doctor categories before a live automation action.",
-                _schema(
+                schema(
                     {
                         "categories": {
                             "type": "array",
@@ -931,7 +557,7 @@ class McpServer:
             self._tool(
                 "probe_dmabuf",
                 "Probe the optional DMA-BUF capture/import path.",
-                _schema(
+                schema(
                     {
                         "import_target": {
                             "type": "string",
@@ -945,7 +571,7 @@ class McpServer:
             self._tool(
                 "click",
                 "Click screen coordinates or a semantic selector.",
-                _schema(
+                schema(
                     {
                         "x": {"type": "integer"},
                         "y": {"type": "integer"},
@@ -985,7 +611,7 @@ class McpServer:
             self._tool(
                 "move_mouse",
                 "Move the pointer through the daemon input backend.",
-                _schema(
+                schema(
                     {
                         "x": {"type": "integer"},
                         "y": {"type": "integer"},
@@ -1024,7 +650,7 @@ class McpServer:
             self._tool(
                 "drag",
                 "Drag from one absolute, current, or scoped-ratio endpoint to another through the daemon input backend.",
-                _schema(
+                schema(
                     {
                         "from_x": {"type": "integer"},
                         "from_y": {"type": "integer"},
@@ -1073,7 +699,7 @@ class McpServer:
             self._tool(
                 "type_text",
                 "Type text through the daemon input backend.",
-                _schema(
+                schema(
                     {
                         "text": {"type": "string"},
                         "typing_speed_chars_per_second": {"type": "integer", "minimum": 1},
@@ -1089,7 +715,7 @@ class McpServer:
             self._tool(
                 "paste_text",
                 "Paste text through the daemon clipboard backend.",
-                _schema(
+                schema(
                     {
                         "text": {"type": "string"},
                         "preserve_clipboard": {"type": "boolean", "default": False},
@@ -1116,7 +742,7 @@ class McpServer:
             self._tool(
                 "hotkey",
                 "Press a keyboard shortcut through the daemon input backend.",
-                _schema(
+                schema(
                     {
                         "keys": {
                             "type": "array",
@@ -1139,7 +765,7 @@ class McpServer:
             self._tool(
                 "find_element",
                 "Find semantic UI elements by selector, optionally using vision fallback.",
-                _schema(
+                schema(
                     {
                         "selector": {"type": "string"},
                         "vision_fallback": {"type": "boolean", "default": False},
@@ -1161,7 +787,7 @@ class McpServer:
             self._tool(
                 "list_windows",
                 "List, filter, and optionally diagnose visible desktop windows.",
-                _schema(
+                schema(
                     {
                         "id": {"type": "string"},
                         "app": {"type": "string"},
@@ -1179,7 +805,7 @@ class McpServer:
             self._tool(
                 "desktop_focus",
                 "Focus or launch a supported desktop application.",
-                _schema(
+                schema(
                     {
                         "app": {"type": "string"},
                         "use_gnome_overview": {"type": "boolean", "default": True},
@@ -1197,7 +823,7 @@ class McpServer:
             self._tool(
                 "desktop_locate",
                 "Resolve a named app target to screen coordinates.",
-                _schema(
+                schema(
                     {
                         "app": {"type": "string"},
                         "target": {"type": "string"},
@@ -1213,7 +839,7 @@ class McpServer:
             self._tool(
                 "desktop_click",
                 "Click a named target inside a supported desktop application.",
-                _schema(
+                schema(
                     {
                         "app": {"type": "string"},
                         "target": {"type": "string"},
@@ -1232,7 +858,7 @@ class McpServer:
             self._tool(
                 "desktop_drag",
                 "Drag inside a named app target using rectangle-relative ratios.",
-                _schema(
+                schema(
                     {
                         "app": {"type": "string"},
                         "target": {"type": "string"},
@@ -1264,7 +890,7 @@ class McpServer:
             self._tool(
                 "desktop_type_into",
                 "Type text into a named target inside a supported desktop application.",
-                _schema(
+                schema(
                     {
                         "app": {"type": "string"},
                         "target": {"type": "string"},
@@ -1284,7 +910,7 @@ class McpServer:
             self._tool(
                 "desktop_assert",
                 "Assert that a named target is present, active, or contains text.",
-                _schema(
+                schema(
                     {
                         "app": {"type": "string"},
                         "target": {"type": "string"},
@@ -1313,7 +939,7 @@ class McpServer:
             self._tool(
                 "list_plugins",
                 "List installed PeekabooX plugins and declared tools.",
-                _schema(
+                schema(
                     {
                         "paths": {
                             "type": "array",
@@ -1326,7 +952,7 @@ class McpServer:
             self._tool(
                 "call_plugin_tool",
                 "Execute a declared PeekabooX process plugin tool.",
-                _schema(
+                schema(
                     {
                         "plugin_id": {"type": "string"},
                         "tool": {"type": "string"},
@@ -1347,13 +973,13 @@ class McpServer:
             self._tool(
                 "get_desktop_state",
                 "Return active window, windows, and semantic UI elements.",
-                _schema({}),
+                schema({}),
                 self._get_desktop_state,
             ),
             self._tool(
                 "ingest_desktop_snapshot",
                 "Sample current desktop state and store it in the semantic desktop graph.",
-                _schema(
+                schema(
                     {
                         "snapshot_id": {"type": "string"},
                     }
@@ -1363,13 +989,13 @@ class McpServer:
             self._tool(
                 "latest_desktop_snapshot",
                 "Return the latest semantic desktop graph snapshot, if one exists.",
-                _schema({}),
+                schema({}),
                 self._latest_desktop_snapshot,
             ),
             self._tool(
                 "record_desktop_event",
                 "Record a desktop event and invalidate the semantic desktop graph.",
-                _schema(
+                schema(
                     {
                         "kind": {"type": "string"},
                         "source": {"type": "string"},
@@ -1384,13 +1010,13 @@ class McpServer:
             self._tool(
                 "desktop_graph_status",
                 "Return semantic desktop graph cache status and invalidation metadata.",
-                _schema({}),
+                schema({}),
                 self._desktop_graph_status,
             ),
             self._tool(
                 "refresh_desktop_graph",
                 "Sample current desktop state and refresh the semantic desktop graph.",
-                _schema(
+                schema(
                     {
                         "snapshot_id": {"type": "string"},
                     }
@@ -1400,7 +1026,7 @@ class McpServer:
             self._tool(
                 "query_desktop_graph",
                 "Query nodes from the runtime semantic desktop graph.",
-                _schema(
+                schema(
                     {
                         "kind": {"type": "string"},
                         "label_contains": {"type": "string"},
@@ -1416,7 +1042,7 @@ class McpServer:
             self._tool(
                 "execute_goal",
                 "Plan and execute a goal through the AgentRuntime retry/verification loop.",
-                _schema(
+                schema(
                     {
                         "goal": {"type": "string"},
                         "replan_on_failure": {"type": "boolean", "default": True},
@@ -1432,7 +1058,7 @@ class McpServer:
                     "Generate an editable workflow draft from a goal and optional "
                     "desktop graph context."
                 ),
-                _schema(
+                schema(
                     {
                         "goal": {"type": "string"},
                         "refresh_desktop_graph": {"type": "boolean", "default": False},
@@ -1445,7 +1071,7 @@ class McpServer:
             self._tool(
                 "save_generated_workflow",
                 "Generate and save an editable workflow draft as JSON or YAML.",
-                _schema(
+                schema(
                     {
                         "goal": {"type": "string"},
                         "path": {"type": "string"},
@@ -1459,7 +1085,7 @@ class McpServer:
             self._tool(
                 "refine_workflow",
                 "Refine a workflow draft through the configured structured workflow provider.",
-                _schema(
+                schema(
                     {
                         "goal": {"type": "string"},
                         "workflow": {
@@ -1485,7 +1111,7 @@ class McpServer:
             self._tool(
                 "save_refined_workflow",
                 "Refine and save a workflow draft as JSON or YAML.",
-                _schema(
+                schema(
                     {
                         "goal": {"type": "string"},
                         "path": {"type": "string"},
@@ -1515,7 +1141,7 @@ class McpServer:
                     "Execute explicit workflow steps with retries, verification, "
                     "and recovery metadata."
                 ),
-                _schema(
+                schema(
                     {
                         "name": {"type": "string"},
                         "steps": {
@@ -1531,7 +1157,7 @@ class McpServer:
             self._tool(
                 "execute_workflow_file",
                 "Load and execute a JSON or YAML workflow file.",
-                _schema(
+                schema(
                     {
                         "path": {"type": "string"},
                     },
@@ -1542,7 +1168,7 @@ class McpServer:
             self._tool(
                 "start_workflow_recording",
                 "Start recording subsequent runtime actions as workflow steps.",
-                _schema(
+                schema(
                     {
                         "name": {"type": "string"},
                     }
@@ -1552,19 +1178,19 @@ class McpServer:
             self._tool(
                 "stop_workflow_recording",
                 "Stop the active workflow recording and return the recorded workflow.",
-                _schema({}),
+                schema({}),
                 self._stop_workflow_recording,
             ),
             self._tool(
                 "get_recorded_workflow",
                 "Return the active or most recently completed workflow recording.",
-                _schema({}),
+                schema({}),
                 self._get_recorded_workflow,
             ),
             self._tool(
                 "save_recorded_workflow",
                 "Save the active or most recently completed workflow recording as JSON or YAML.",
-                _schema(
+                schema(
                     {
                         "path": {"type": "string"},
                         "format": {"type": "string", "enum": ["json", "yaml"]},
@@ -1576,7 +1202,7 @@ class McpServer:
             self._tool(
                 "ocr_screen",
                 "Run OCR on the full screen or a region.",
-                _schema(
+                schema(
                     {
                         "region": RECT_SCHEMA,
                         "language": {"type": "string"},
@@ -1618,7 +1244,7 @@ class McpServer:
             self._tool(
                 "compare_images",
                 "Compare two image files and return visual diff metadata.",
-                _schema(
+                schema(
                     {
                         "expected_path": {"type": "string"},
                         "actual_path": {"type": "string"},
@@ -1655,7 +1281,7 @@ class McpServer:
             self._tool(
                 "detect_ui_state",
                 "Classify an image sequence as stable, loading, or changing.",
-                _schema(
+                schema(
                     {
                         "image_paths": {
                             "type": "array",
@@ -1702,7 +1328,7 @@ class McpServer:
             self._tool(
                 "detect_ui_elements",
                 "Detect visible UI-like regions in an image file.",
-                _schema(
+                schema(
                     {
                         "image_path": {"type": "string"},
                         "region": RECT_SCHEMA,
@@ -1741,7 +1367,7 @@ class McpServer:
             self._tool(
                 "find_elements",
                 "Find semantic UI elements by selector and optionally limit the result count.",
-                _schema(
+                schema(
                     {
                         "selector": {"type": "string"},
                         "limit": {"type": "integer", "minimum": 1},
@@ -1764,7 +1390,7 @@ class McpServer:
             self._tool(
                 "elements",
                 "CLI-compatible alias for find_elements.",
-                _schema(
+                schema(
                     {
                         "selector": {"type": "string"},
                         "limit": {"type": "integer", "minimum": 1},
@@ -1780,7 +1406,7 @@ class McpServer:
             self._tool(
                 "vision_elements",
                 "CLI-compatible alias for detect_ui_elements.",
-                _schema(
+                schema(
                     {
                         "image_path": {"type": "string"},
                         "region": RECT_SCHEMA,
@@ -1819,19 +1445,19 @@ class McpServer:
             self._tool(
                 "ocr",
                 "CLI-compatible OCR alias for screen, window, region, or image OCR.",
-                _ocr_input_schema(),
+                ocr_input_schema(),
                 self._ocr_screen,
             ),
             self._tool(
                 "ocr_image",
                 "Run OCR over an existing image file.",
-                _ocr_input_schema(),
+                ocr_input_schema(),
                 self._ocr_screen,
             ),
             self._tool(
                 "capture_dmabuf",
                 "CLI-compatible alias for the DMA-BUF capture/import probe.",
-                _schema(
+                schema(
                     {
                         "import_target": {
                             "type": "string",
@@ -1845,7 +1471,7 @@ class McpServer:
             self._tool(
                 "desktop_profiles",
                 "List supported desktop helper app profiles, launch commands, target metadata, and availability.",
-                _schema(
+                schema(
                     {
                         "app": {"type": "string"},
                         "target": {"type": "string"},
@@ -1862,13 +1488,13 @@ class McpServer:
             self._tool(
                 "plan",
                 "Decompose a goal into high-level planning steps.",
-                _schema({"goal": {"type": "string"}}, required=["goal"]),
+                schema({"goal": {"type": "string"}}, required=["goal"]),
                 self._plan,
             ),
             self._tool(
                 "plan_workflow",
                 "Create a simple workflow draft from a goal.",
-                _schema(
+                schema(
                     {
                         "goal": {"type": "string"},
                         "format": {"type": "string", "enum": ["json", "yaml"]},
@@ -1880,7 +1506,7 @@ class McpServer:
             self._tool(
                 "replan_workflow",
                 "Generate a replacement workflow after a failed workflow result.",
-                _schema(
+                schema(
                     {
                         "goal": {"type": "string"},
                         "failed_workflow": {
@@ -1907,13 +1533,13 @@ class McpServer:
             self._tool(
                 "load_workflow_file",
                 "Load a JSON or YAML workflow file without executing it.",
-                _schema({"path": {"type": "string"}}, required=["path"]),
+                schema({"path": {"type": "string"}}, required=["path"]),
                 self._load_workflow_file,
             ),
             self._tool(
                 "query_desktop_edges",
                 "Query edges from the runtime semantic desktop graph.",
-                _schema(
+                schema(
                     {
                         "source": {"type": "string"},
                         "target": {"type": "string"},
@@ -1926,19 +1552,19 @@ class McpServer:
             self._tool(
                 "capability_audit",
                 "Return in-memory runtime capability audit events.",
-                _schema({}),
+                schema({}),
                 self._capability_audit,
             ),
             self._tool(
                 "confirmation_audit",
                 "Return in-memory runtime confirmation audit events.",
-                _schema({}),
+                schema({}),
                 self._confirmation_audit,
             ),
             self._tool(
                 "preflight_audit",
                 "Return in-memory runtime preflight audit events.",
-                _schema({}),
+                schema({}),
                 self._preflight_audit,
             ),
         ]
@@ -1950,14 +1576,11 @@ class McpServer:
         input_schema: dict[str, Any],
         handler: Callable[[dict[str, Any]], Any],
     ) -> McpTool:
-        return McpTool(
-            name=name,
-            description=description,
-            input_schema=input_schema,
-            handler=handler if self.runtime is not None else None,
-            title=_tool_title(name),
-            output_schema=_tool_output_schema(name),
-            annotations=_tool_annotations(name),
+        return build_tool(
+            name,
+            description,
+            input_schema,
+            handler if self.runtime is not None else None,
         )
 
     def _require_runtime(self) -> AgentRuntime:
@@ -2730,166 +2353,6 @@ class McpServer:
 
     def _preflight_audit(self, _arguments: dict[str, Any]) -> dict[str, Any]:
         return {"events": _to_mcp_value(self._require_runtime().preflight_audit())}
-
-
-def _schema(
-    properties: dict[str, Any],
-    required: list[str] | None = None,
-    any_of: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": properties,
-        "additionalProperties": False,
-    }
-    if required:
-        schema["required"] = required
-    if any_of:
-        schema["anyOf"] = any_of
-    return schema
-
-
-def _ocr_input_schema() -> dict[str, Any]:
-    return _schema(
-        {
-            "region": RECT_SCHEMA,
-            "language": {"type": "string"},
-            "image_path": {"type": "string"},
-            "window_id": {"type": "string"},
-            "window_title": {"type": "string"},
-            "app": {"type": "string"},
-            "page_segmentation_mode": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 13,
-            },
-            "engine_mode": {"type": "integer", "minimum": 0, "maximum": 3},
-            "dpi": {"type": "integer", "minimum": 1},
-            "min_confidence": {
-                "type": "number",
-                "minimum": 0.0,
-                "maximum": 1.0,
-            },
-            "whitelist": {"type": "string"},
-            "config": {
-                "type": "array",
-                "items": {"type": "string"},
-            },
-            "scale": {"type": "number", "minimum": 0.1, "maximum": 8.0},
-            "grayscale": {"type": "boolean", "default": False},
-            "threshold": {"type": "integer", "minimum": 0, "maximum": 255},
-            "invert": {"type": "boolean", "default": False},
-            "contrast": {
-                "type": "number",
-                "minimum": -255.0,
-                "maximum": 255.0,
-            },
-            "deskew": {"type": "boolean", "default": False},
-        }
-    )
-
-
-
-def _tool_title(name: str) -> str:
-    return name.replace("_", " ").title()
-
-
-def _tool_annotations(name: str) -> dict[str, Any]:
-    mutating = {
-        "call_plugin_tool",
-        "capture_backends",
-        "click",
-        "move_mouse",
-        "drag",
-        "type_text",
-        "paste_text",
-        "hotkey",
-        "desktop_focus",
-        "desktop_click",
-        "desktop_drag",
-        "desktop_type_into",
-        "execute_goal",
-        "execute_workflow",
-        "execute_workflow_file",
-    }
-    stateful = {
-        "ingest_desktop_snapshot",
-        "record_desktop_event",
-        "refresh_desktop_graph",
-        "start_workflow_recording",
-        "stop_workflow_recording",
-        "save_generated_workflow",
-        "save_refined_workflow",
-        "save_recorded_workflow",
-    }
-    generating = {
-        "generate_workflow",
-        "refine_workflow",
-        "replan_workflow",
-    }
-    read_only = name not in mutating and name not in stateful and name not in generating
-    return {
-        "readOnlyHint": read_only,
-        "destructiveHint": name in mutating,
-        "idempotentHint": read_only,
-        "openWorldHint": name not in {"compare_images", "detect_ui_state", "detect_ui_elements", "vision_elements"},
-    }
-
-
-def _tool_output_schema(name: str) -> dict[str, Any]:
-    object_schema = {"type": "object", "additionalProperties": True}
-    array_schema = {"type": "array", "items": {"type": "object", "additionalProperties": True}}
-    desktop_action_schema = {
-        "type": "object",
-        "properties": {
-            "app": {"type": "string"},
-            "action": {"type": "string"},
-            "detail": {"type": "string"},
-            "backend_name": {"type": "string"},
-            "verified": {"type": "boolean"},
-            "verification_detail": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-            "focus_diagnostics": {
-                "type": "array",
-                "items": {"type": "string"},
-            },
-        },
-        "required": ["app", "action", "detail", "backend_name", "verified", "focus_diagnostics"],
-        "additionalProperties": True,
-    }
-    if name == "capture_screen":
-        return {
-            "type": "object",
-            "properties": {
-                "image_base64": {"type": "string"},
-                "mime_type": {"type": "string"},
-                "semantic_tree": array_schema,
-                "metadata": object_schema,
-            },
-            "required": ["image_base64", "mime_type", "metadata"],
-            "additionalProperties": True,
-        }
-    if name in {"find_element", "find_elements", "elements", "list_windows", "query_desktop_graph", "query_desktop_edges"}:
-        return {"oneOf": [array_schema, object_schema]}
-    if name in {"click", "move_mouse", "drag", "type_text", "paste_text", "hotkey"}:
-        return {
-            "type": "object",
-            "properties": {
-                "ok": {"type": "boolean"},
-                "message": {"type": "string"},
-            },
-            "required": ["ok", "message"],
-            "additionalProperties": True,
-        }
-    if name in {
-        "desktop_focus",
-        "desktop_click",
-        "desktop_drag",
-        "desktop_type_into",
-        "desktop_assert",
-    }:
-        return desktop_action_schema
-    return object_schema
-
 
 
 def create_server(

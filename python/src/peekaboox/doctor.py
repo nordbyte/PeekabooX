@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_DOCTOR_TIMEOUT_SECONDS = 30.0
 
 

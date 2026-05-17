@@ -190,13 +190,18 @@ Workflow files can be validated, replayed, and exported as reproducible bundles
 through the Python CLI:
 
 ```bash
+peekaboox-agent workflow schema
 peekaboox-agent workflow validate examples/workflow.yaml
 peekaboox-agent workflow replay examples/workflow.yaml
 peekaboox-agent workflow bundle examples/workflow.yaml --out target/workflow-bundle
 peekaboox-agent workflow bundle examples/workflow.yaml --execute
 ```
 
-A bundle contains normalized JSON/YAML workflow files, metadata, optional
+Workflow files are versioned with `schema_version: peekaboox.workflow.v1`.
+Missing legacy versions are migrated on load, while unknown top-level or step
+keys and unsupported actions are rejected before replay. `workflow schema`
+prints the JSON Schema used by examples, agents, and CI. A bundle contains
+normalized JSON/YAML workflow files, `workflow.schema.json`, metadata, optional
 `doctor.json`, and optional `replay-result.json`. This gives examples and bug
 reports a stable artifact without requiring prose log parsing.
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any
 
 from peekaboox.memory.graph import DesktopGraphSnapshot
 
@@ -24,7 +23,7 @@ class DesktopStateEvent:
         occurred_at_unix_ms: int | None = None,
         target_id: str | None = None,
         payload: dict[str, object] | None = None,
-    ) -> "DesktopStateEvent":
+    ) -> DesktopStateEvent:
         if not kind:
             raise ValueError("desktop event kind must not be empty")
         if not source:
@@ -47,7 +46,7 @@ class DesktopStateEvent:
         }
 
     @classmethod
-    def from_dict(cls, value: dict[str, object]) -> "DesktopStateEvent":
+    def from_dict(cls, value: dict[str, object]) -> DesktopStateEvent:
         payload = value.get("payload", {})
         if not isinstance(payload, dict):
             raise ValueError("event payload must be an object")
@@ -63,7 +62,7 @@ class DesktopStateEvent:
         return json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
 
     @classmethod
-    def from_json(cls, value: str) -> "DesktopStateEvent":
+    def from_json(cls, value: str) -> DesktopStateEvent:
         decoded = json.loads(value)
         if not isinstance(decoded, dict):
             raise ValueError("desktop event JSON must decode to an object")
@@ -88,7 +87,7 @@ class DesktopGraphInvalidation:
         }
 
     @classmethod
-    def from_dict(cls, value: dict[str, object]) -> "DesktopGraphInvalidation":
+    def from_dict(cls, value: dict[str, object]) -> DesktopGraphInvalidation:
         event = value.get("event")
         affected_node_ids = value.get("affected_node_ids", [])
         if not isinstance(event, dict):
@@ -111,7 +110,7 @@ class DesktopGraphInvalidation:
         return json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
 
     @classmethod
-    def from_json(cls, value: str) -> "DesktopGraphInvalidation":
+    def from_json(cls, value: str) -> DesktopGraphInvalidation:
         decoded = json.loads(value)
         if not isinstance(decoded, dict):
             raise ValueError("desktop graph invalidation JSON must decode to an object")

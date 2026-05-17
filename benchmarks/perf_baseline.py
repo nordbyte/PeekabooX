@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_SRC = REPO_ROOT / "python" / "src"
 DEFAULT_BUDGETS = REPO_ROOT / "benchmarks" / "perf_budgets.json"
@@ -39,7 +38,6 @@ from peekaboox.memory import MemoryStore  # noqa: E402
 from peekaboox.plugins import PLUGIN_MANIFEST_FILE, PLUGIN_SDK_VERSION  # noqa: E402
 from peekaboox.security import JsonlAuditLogger  # noqa: E402
 from peekaboox.workflows import dump_workflow_text, load_workflow_text  # noqa: E402
-
 
 Runner = Callable[[], None]
 

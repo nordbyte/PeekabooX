@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -115,7 +116,7 @@ pub(crate) fn diagnose(args: Vec<String>) -> Result<(), CliError> {
         print_diagnose_usage();
         return Err(CliError::HelpRequested);
     };
-    let bundle = write_diagnose_bundle(args.output.as_deref())?;
+    let bundle = write_diagnose_bundle(&args)?;
     if args.json {
         println!(
             "{}",
@@ -132,7 +133,9 @@ pub(crate) fn diagnose(args: Vec<String>) -> Result<(), CliError> {
 }
 
 pub(crate) fn print_diagnose_usage() {
-    println!("Usage: peekaboox diagnose bundle [--output <dir>] [--json]");
+    println!(
+        "Usage: peekaboox diagnose bundle [--output <dir>] [--include-screenshot-redacted] [--daemon-log <path>] [--mcp-log <path>] [--json]"
+    );
 }
 
 fn parse_args(args: Vec<String>) -> Result<DoctorArgs, CliError> {
@@ -168,6 +171,9 @@ enum DiagnoseCommand {
 struct DiagnoseBundleArgs {
     output: Option<PathBuf>,
     json: bool,
+    include_screenshot_redacted: bool,
+    daemon_log: Option<PathBuf>,
+    mcp_log: Option<PathBuf>,
 }
 
 fn parse_diagnose_args(args: Vec<String>) -> Result<DiagnoseCommand, CliError> {
@@ -184,6 +190,9 @@ fn parse_diagnose_args(args: Vec<String>) -> Result<DiagnoseCommand, CliError> {
     }
     let mut output = None;
     let mut json = false;
+    let mut include_screenshot_redacted = false;
+    let mut daemon_log = None;
+    let mut mcp_log = None;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -193,6 +202,23 @@ fn parse_diagnose_args(args: Vec<String>) -> Result<DiagnoseCommand, CliError> {
                     return Err(CliError::Failure("missing value for --output".to_owned()));
                 };
                 output = Some(PathBuf::from(value));
+            }
+            "--include-screenshot-redacted" => include_screenshot_redacted = true,
+            "--daemon-log" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure(
+                        "missing value for --daemon-log".to_owned(),
+                    ));
+                };
+                daemon_log = Some(PathBuf::from(value));
+            }
+            "--mcp-log" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliError::Failure("missing value for --mcp-log".to_owned()));
+                };
+                mcp_log = Some(PathBuf::from(value));
             }
             "--json" => json = true,
             "--help" | "-h" => return Ok(DiagnoseCommand::Help),
@@ -204,16 +230,30 @@ fn parse_diagnose_args(args: Vec<String>) -> Result<DiagnoseCommand, CliError> {
         }
         index += 1;
     }
-    Ok(DiagnoseCommand::Bundle(DiagnoseBundleArgs { output, json }))
+    Ok(DiagnoseCommand::Bundle(DiagnoseBundleArgs {
+        output,
+        json,
+        include_screenshot_redacted,
+        daemon_log,
+        mcp_log,
+    }))
 }
 
-fn write_diagnose_bundle(output: Option<&Path>) -> Result<PathBuf, CliError> {
-    let bundle = output
+fn write_diagnose_bundle(args: &DiagnoseBundleArgs) -> Result<PathBuf, CliError> {
+    let bundle = args
+        .output
+        .as_deref()
         .map(Path::to_path_buf)
         .unwrap_or_else(default_diagnose_bundle_path);
     std::fs::create_dir_all(&bundle).map_err(|error| {
         CliError::Failure(format!("failed to create {}: {error}", bundle.display()))
     })?;
+    let mut files = vec![
+        "doctor.json".to_owned(),
+        "versions.json".to_owned(),
+        "environment.json".to_owned(),
+        "capture-backends.json".to_owned(),
+    ];
     write_json_file(&bundle.join("doctor.json"), &doctor_json(&collect_checks()))?;
     write_json_file(&bundle.join("versions.json"), &versions_json())?;
     write_json_file(&bundle.join("environment.json"), &environment_json())?;
@@ -221,21 +261,85 @@ fn write_diagnose_bundle(output: Option<&Path>) -> Result<PathBuf, CliError> {
         &bundle.join("capture-backends.json"),
         &capture_backends_json(),
     )?;
+    if args.include_screenshot_redacted {
+        write_redacted_screenshot(&bundle.join("screenshot-redacted.ppm"))?;
+        files.push("screenshot-redacted.ppm".to_owned());
+    }
+    if let Some(path) = args.daemon_log.as_deref() {
+        write_sanitized_log_file(path, &bundle.join("daemon.log"))?;
+        files.push("daemon.log".to_owned());
+    }
+    if let Some(path) = args.mcp_log.as_deref() {
+        write_sanitized_log_file(path, &bundle.join("mcp.log"))?;
+        files.push("mcp.log".to_owned());
+    }
+    files.push("manifest.json".to_owned());
     write_json_file(
         &bundle.join("manifest.json"),
-        &diagnose_manifest_json(&bundle),
+        &diagnose_manifest_json(&bundle, &files),
     )?;
     Ok(bundle)
 }
 
 fn write_json_file(path: &Path, value: &Value) -> Result<(), CliError> {
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(value)
-            .map_err(|error| CliError::Failure(error.to_string()))?
-            + "\n",
-    )
-    .map_err(|error| CliError::Failure(format!("failed to write {}: {error}", path.display())))
+    let payload = serde_json::to_string_pretty(value)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    std::fs::write(path, sanitize_text(&(payload + "\n")))
+        .map_err(|error| CliError::Failure(format!("failed to write {}: {error}", path.display())))
+}
+
+fn write_sanitized_log_file(source: &Path, output: &Path) -> Result<(), CliError> {
+    let bytes = std::fs::read(source).map_err(|error| {
+        CliError::Failure(format!("failed to read log {}: {error}", source.display()))
+    })?;
+    let text = String::from_utf8_lossy(&bytes);
+    std::fs::write(output, sanitize_text(&text)).map_err(|error| {
+        CliError::Failure(format!("failed to write {}: {error}", output.display()))
+    })
+}
+
+fn write_redacted_screenshot(output: &Path) -> Result<(), CliError> {
+    let frame = peekaboox_capture::capture_screen_frame()
+        .map_err(|error| {
+            CliError::Failure(format!("failed to capture redacted screenshot: {error}"))
+        })?
+        .frame;
+    let mut file = std::fs::File::create(output).map_err(|error| {
+        CliError::Failure(format!("failed to create {}: {error}", output.display()))
+    })?;
+    write!(file, "P6\n{} {}\n255\n", frame.width, frame.height).map_err(|error| {
+        CliError::Failure(format!("failed to write {}: {error}", output.display()))
+    })?;
+    let row = vec![0x66_u8; usize::try_from(frame.width).unwrap_or(0).saturating_mul(3)];
+    for _ in 0..frame.height {
+        file.write_all(&row).map_err(|error| {
+            CliError::Failure(format!("failed to write {}: {error}", output.display()))
+        })?;
+    }
+    Ok(())
+}
+
+fn sanitize_text(text: &str) -> String {
+    let mut sanitized = text.to_owned();
+    for (needle, replacement) in sanitize_replacements() {
+        if needle.len() > 1 {
+            sanitized = sanitized.replace(&needle, &replacement);
+        }
+    }
+    sanitized
+}
+
+fn sanitize_replacements() -> Vec<(String, String)> {
+    let mut replacements = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").and_then(|value| value.into_string().ok()) {
+        replacements.push((home, "~".to_owned()));
+    }
+    for key in ["USER", "LOGNAME"] {
+        if let Some(value) = std::env::var_os(key).and_then(|value| value.into_string().ok()) {
+            replacements.push((value, "<user>".to_owned()));
+        }
+    }
+    replacements
 }
 
 fn default_diagnose_bundle_path() -> PathBuf {
@@ -345,18 +449,17 @@ fn capture_backends_json() -> Value {
     })
 }
 
-fn diagnose_manifest_json(bundle: &Path) -> Value {
+fn diagnose_manifest_json(bundle: &Path, files: &[String]) -> Value {
     json!({
         "schema_version": 1,
         "created_at_unix_ms": unix_time_ms(),
         "bundle": bundle.display().to_string(),
-        "files": [
-            "doctor.json",
-            "versions.json",
-            "environment.json",
-            "capture-backends.json",
-            "manifest.json"
-        ],
+        "files": files,
+        "redaction": {
+            "paths": "HOME is replaced with ~",
+            "usernames": "USER and LOGNAME are replaced with <user>",
+            "screenshot": "optional screenshot-redacted.ppm stores dimensions only with solid pixels"
+        },
     })
 }
 
@@ -769,6 +872,33 @@ mod tests {
             DiagnoseCommand::Bundle(DiagnoseBundleArgs {
                 output: Some(PathBuf::from("target/diagnose-test")),
                 json: true,
+                include_screenshot_redacted: false,
+                daemon_log: None,
+                mcp_log: None,
+            })
+        );
+    }
+
+    #[test]
+    fn diagnose_bundle_accepts_optional_artifacts() {
+        let command = parse_diagnose_args(vec![
+            "bundle".to_owned(),
+            "--include-screenshot-redacted".to_owned(),
+            "--daemon-log".to_owned(),
+            "target/daemon.log".to_owned(),
+            "--mcp-log".to_owned(),
+            "target/mcp.log".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            DiagnoseCommand::Bundle(DiagnoseBundleArgs {
+                output: None,
+                json: false,
+                include_screenshot_redacted: true,
+                daemon_log: Some(PathBuf::from("target/daemon.log")),
+                mcp_log: Some(PathBuf::from("target/mcp.log")),
             })
         );
     }

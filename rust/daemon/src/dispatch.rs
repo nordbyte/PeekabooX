@@ -313,6 +313,8 @@ pub(super) fn dispatch_request(
             paths,
             timeout_ms,
             max_output_bytes,
+            require_trusted,
+            trust_policy,
         } => {
             ensure_plugin_execution_allowed(config)?;
             if !paths.is_empty() {
@@ -339,6 +341,10 @@ pub(super) fn dispatch_request(
                 .iter()
                 .find(|plugin| plugin.manifest.id == plugin_id)
                 .ok_or_else(|| format!("unknown plugin: {plugin_id}"))?;
+            if require_trusted {
+                let trust_policy = trust_policy.as_deref().map(PathBuf::from);
+                peekaboox_plugins::require_plugin_trust(plugin, trust_policy.as_deref())?;
+            }
             let arguments = if arguments.is_null() {
                 serde_json::json!({})
             } else {

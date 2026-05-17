@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from peekaboox.workflows.io import save_workflow_file, workflow_to_dict
-from peekaboox.workflows.model import Workflow
+from peekaboox.workflows.model import Workflow, workflow_json_schema
 
 
 def create_workflow_bundle(
@@ -30,11 +30,13 @@ def create_workflow_bundle(
             "schema_version": 1,
             "created_at_unix_ms": int(time.time() * 1000),
             "workflow": workflow.name,
+            "workflow_schema_version": workflow.schema_version,
             "steps": len(workflow.steps),
             "source_path": None if source_path is None else str(source_path),
         },
     )
     _write_json(bundle_dir / "workflow.normalized.json", workflow_to_dict(workflow))
+    _write_json(bundle_dir / "workflow.schema.json", workflow_json_schema())
     if doctor_result is not None:
         _write_json(bundle_dir / "doctor.json", _to_json_value(doctor_result))
     if replay_result is not None:

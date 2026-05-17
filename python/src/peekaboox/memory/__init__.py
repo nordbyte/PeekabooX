@@ -5,8 +5,8 @@ from .events import (
     DesktopStateEvent,
 )
 from .graph import DesktopGraphSnapshot, GraphEdge, GraphNode, GraphQuery, SemanticDesktopGraph
-from .store import MemoryStore
 from .sqlite import SQLiteMemoryStore
+from .store import MemoryStore
 
 __all__ = [
     "DesktopGraphInvalidation",

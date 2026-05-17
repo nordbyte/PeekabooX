@@ -4,7 +4,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from peekaboox.workflows.model import Workflow, WorkflowStep
+from peekaboox.workflows.model import (
+    Workflow,
+    WorkflowStep,
+    normalize_workflow_schema_version,
+    validate_workflow,
+    validate_workflow_step,
+    workflow_step_fields,
+)
 
 
 def load_workflow_file(path: str | Path) -> Workflow:
@@ -56,20 +63,29 @@ def dump_workflow_text(workflow: Workflow, format_name: str = "json") -> str:
 
 
 def workflow_from_dict(value: dict[str, object], default_name: str = "workflow") -> Workflow:
+    unknown = set(value) - {"schema_version", "name", "steps"}
+    if unknown:
+        raise ValueError(f"workflow has unsupported top-level keys: {', '.join(sorted(unknown))}")
+    schema_version = normalize_workflow_schema_version(value.get("schema_version"))
     name = value.get("name", default_name)
     if not isinstance(name, str) or not name.strip():
         raise ValueError("workflow name must be a non-empty string")
     steps = value.get("steps")
     if not isinstance(steps, list) or not steps:
         raise ValueError("workflow steps must be a non-empty list")
-    return Workflow(
+    workflow = Workflow(
         name=name,
         steps=[workflow_step_from_dict(step, index) for index, step in enumerate(steps)],
+        schema_version=schema_version,
     )
+    validate_workflow(workflow)
+    return workflow
 
 
 def workflow_to_dict(workflow: Workflow) -> dict[str, object]:
+    validate_workflow(workflow)
     return {
+        "schema_version": workflow.schema_version,
         "name": workflow.name,
         "steps": [workflow_step_to_dict(step) for step in workflow.steps],
     }
@@ -78,10 +94,13 @@ def workflow_to_dict(workflow: Workflow) -> dict[str, object]:
 def workflow_step_from_dict(value: Any, index: int = 0) -> WorkflowStep:
     if not isinstance(value, dict):
         raise ValueError(f"steps[{index}] must be an object")
+    unknown = set(value) - workflow_step_fields()
+    if unknown:
+        raise ValueError(f"steps[{index}] has unsupported keys: {', '.join(sorted(unknown))}")
     action = value.get("action")
     if not isinstance(action, str) or not action.strip():
         raise ValueError(f"steps[{index}].action must be a non-empty string")
-    return WorkflowStep(
+    step = WorkflowStep(
         action=action,
         selector=_optional_string(value, "selector"),
         value=_optional_string(value, "value"),
@@ -129,6 +148,8 @@ def workflow_step_from_dict(value: Any, index: int = 0) -> WorkflowStep:
         vision_fallback=_optional_bool(value, "vision_fallback", default=False),
         verify=_optional_bool(value, "verify", default=True),
     )
+    validate_workflow_step(step, index=index)
+    return step
 
 
 def workflow_step_to_dict(step: WorkflowStep) -> dict[str, object]:
@@ -243,7 +264,12 @@ def _detect_format(text: str, format_name: str | None) -> str:
 
 
 def _dump_simple_yaml(workflow: Workflow) -> str:
-    lines = [f"name: {_format_yaml_scalar(workflow.name)}", "steps:"]
+    validate_workflow(workflow)
+    lines = [
+        f"schema_version: {_format_yaml_scalar(workflow.schema_version)}",
+        f"name: {_format_yaml_scalar(workflow.name)}",
+        "steps:",
+    ]
     for step in workflow.steps:
         step_value = workflow_step_to_dict(step)
         action = step_value.pop("action")

@@ -149,6 +149,10 @@ pub enum ApiRequest {
         timeout_ms: u64,
         #[serde(default = "default_plugin_max_output_bytes")]
         max_output_bytes: usize,
+        #[serde(default)]
+        require_trusted: bool,
+        #[serde(default)]
+        trust_policy: Option<String>,
     },
     Click {
         x: i32,
@@ -1605,6 +1609,8 @@ mod tests {
                 paths: Vec::new(),
                 timeout_ms: 10_000,
                 max_output_bytes: 1_048_576,
+                require_trusted: false,
+                trust_policy: None,
             })
         );
     }

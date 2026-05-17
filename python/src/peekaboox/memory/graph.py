@@ -39,14 +39,14 @@ class DesktopGraphSnapshot:
         return _snapshot_to_dict(self)
 
     @classmethod
-    def from_dict(cls, value: dict[str, object]) -> "DesktopGraphSnapshot":
+    def from_dict(cls, value: dict[str, object]) -> DesktopGraphSnapshot:
         return _snapshot_from_dict(value)
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
 
     @classmethod
-    def from_json(cls, value: str) -> "DesktopGraphSnapshot":
+    def from_json(cls, value: str) -> DesktopGraphSnapshot:
         decoded = json.loads(value)
         if not isinstance(decoded, dict):
             raise ValueError("desktop graph snapshot JSON must decode to an object")
@@ -215,7 +215,7 @@ class SemanticDesktopGraph:
         }
 
     @classmethod
-    def from_dict(cls, value: dict[str, object]) -> "SemanticDesktopGraph":
+    def from_dict(cls, value: dict[str, object]) -> SemanticDesktopGraph:
         snapshots = value.get("snapshots", [])
         if not isinstance(snapshots, list):
             raise ValueError("graph snapshots must be a list")
@@ -225,7 +225,7 @@ class SemanticDesktopGraph:
         return json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
 
     @classmethod
-    def from_json(cls, value: str) -> "SemanticDesktopGraph":
+    def from_json(cls, value: str) -> SemanticDesktopGraph:
         decoded = json.loads(value)
         if not isinstance(decoded, dict):
             raise ValueError("desktop graph JSON must decode to an object")

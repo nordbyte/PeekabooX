@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from importlib import import_module
 from os import PathLike
 from types import ModuleType
-from typing import Any, Iterable, Sequence
-
+from typing import Any
 
 DEFAULT_GRPC_TARGET = "127.0.0.1:47777"
 DEFAULT_GRPC_TIMEOUT_SECONDS = 15.0
@@ -1611,6 +1611,8 @@ class PeekabooXClient:
         paths: Sequence[str | PathLike[str]] = (),
         timeout_seconds: float = 10.0,
         max_output_bytes: int = 1_048_576,
+        require_trusted: bool = False,
+        trust_policy: str | PathLike[str] | None = None,
     ) -> PluginToolExecutionResult:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
@@ -1623,7 +1625,10 @@ class PeekabooXClient:
             paths=[str(path) for path in paths],
             timeout_ms=max(1, int(timeout_seconds * 1000)),
             max_output_bytes=max_output_bytes,
+            require_trusted=require_trusted,
         )
+        if trust_policy is not None:
+            request.trust_policy = str(trust_policy)
         return _plugin_execution_from_proto(self._call("CallPluginTool", request))
 
     def _call(self, method_name: str, request: Any) -> Any:

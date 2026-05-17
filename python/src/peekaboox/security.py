@@ -216,7 +216,7 @@ class CapabilityPolicy:
     def allow_all(
         cls,
         audit_logger: JsonlAuditLogger | None = None,
-    ) -> "CapabilityPolicy":
+    ) -> CapabilityPolicy:
         return cls(allowed_capabilities=ALL_CAPABILITIES, audit_logger=audit_logger)
 
     @classmethod
@@ -224,7 +224,7 @@ class CapabilityPolicy:
         cls,
         capabilities: Iterable[str],
         audit_logger: JsonlAuditLogger | None = None,
-    ) -> "CapabilityPolicy":
+    ) -> CapabilityPolicy:
         return cls(allowed_capabilities=capabilities, audit_logger=audit_logger)
 
     @classmethod
@@ -232,7 +232,7 @@ class CapabilityPolicy:
         cls,
         capabilities: Iterable[str],
         audit_logger: JsonlAuditLogger | None = None,
-    ) -> "CapabilityPolicy":
+    ) -> CapabilityPolicy:
         denied = frozenset(capabilities)
         return cls(
             allowed_capabilities=ALL_CAPABILITIES - denied,
@@ -244,7 +244,7 @@ class CapabilityPolicy:
         cls,
         profile: str,
         audit_logger: JsonlAuditLogger | None = None,
-    ) -> "CapabilityPolicy":
+    ) -> CapabilityPolicy:
         return cls(
             allowed_capabilities=capability_profile(profile).capabilities,
             audit_logger=audit_logger,
@@ -255,7 +255,7 @@ class CapabilityPolicy:
         cls,
         variable: str = "PEEKABOOX_CAPABILITY_PROFILE",
         audit_logger: JsonlAuditLogger | None = None,
-    ) -> "CapabilityPolicy":
+    ) -> CapabilityPolicy:
         profile = os.environ.get(variable)
         if profile is None:
             return cls.allow_all(audit_logger=audit_logger)
@@ -328,7 +328,7 @@ class ConfirmationPolicy:
     def disabled(
         cls,
         audit_logger: JsonlAuditLogger | None = None,
-    ) -> "ConfirmationPolicy":
+    ) -> ConfirmationPolicy:
         return cls(audit_logger=audit_logger)
 
     @classmethod
@@ -337,7 +337,7 @@ class ConfirmationPolicy:
         actions: Iterable[str],
         confirmer: Confirmer | None = None,
         audit_logger: JsonlAuditLogger | None = None,
-    ) -> "ConfirmationPolicy":
+    ) -> ConfirmationPolicy:
         return cls(
             required_actions=actions,
             confirmer=confirmer,
@@ -349,7 +349,7 @@ class ConfirmationPolicy:
         cls,
         confirmer: Confirmer | None = None,
         audit_logger: JsonlAuditLogger | None = None,
-    ) -> "ConfirmationPolicy":
+    ) -> ConfirmationPolicy:
         return cls(
             required_actions=ALL_DANGEROUS_ACTIONS,
             confirmer=confirmer,

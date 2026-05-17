@@ -7,7 +7,6 @@ from pathlib import Path
 from peekaboox.agent import AgentRuntime
 from peekaboox.plugins import PLUGIN_SDK_VERSION
 
-
 PLUGIN_ID = "org.peekaboox.examples.system-info"
 PLUGIN_TOOL = "system_info.uname"
 

@@ -16,7 +16,7 @@ class SemanticSelector:
     min_confidence: float | None = None
 
     @classmethod
-    def parse(cls, selector: str) -> "SemanticSelector":
+    def parse(cls, selector: str) -> SemanticSelector:
         selector = selector.strip()
         if not selector:
             raise ValueError("semantic selector must not be empty")

@@ -225,6 +225,11 @@ pub(super) fn grpc_call_plugin_tool(
         .iter()
         .find(|plugin| plugin.manifest.id == request.plugin_id)
         .ok_or_else(|| Status::not_found(format!("unknown plugin: {}", request.plugin_id)))?;
+    if request.require_trusted {
+        let trust_policy = request.trust_policy.as_deref().map(PathBuf::from);
+        peekaboox_plugins::require_plugin_trust(plugin, trust_policy.as_deref())
+            .map_err(Status::permission_denied)?;
+    }
     let policy = peekaboox_plugins::PluginExecutionPolicy {
         timeout: Duration::from_millis(u64::from(request.timeout_ms.unwrap_or(10_000))),
         max_output_bytes: request

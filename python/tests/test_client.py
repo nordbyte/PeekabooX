@@ -744,6 +744,8 @@ class ClientTests(unittest.TestCase):
             {"value": "ok"},
             paths=["examples/plugins"],
             timeout_seconds=1.5,
+            require_trusted=True,
+            trust_policy="trusted_plugins.json",
         )
 
         self.assertEqual(paste.backend_name, "clipboard")
@@ -763,6 +765,8 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(plugins.plugins[0].tools[0].name, "demo.echo")
         self.assertEqual(json.loads(stub.requests[3][1].arguments_json)["value"], "ok")
         self.assertEqual(stub.requests[3][1].timeout_ms, 1500)
+        self.assertTrue(stub.requests[3][1].require_trusted)
+        self.assertEqual(stub.requests[3][1].trust_policy, "trusted_plugins.json")
         self.assertEqual(executed.result["ok"], True)
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")

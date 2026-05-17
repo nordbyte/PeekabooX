@@ -105,13 +105,6 @@ pub(super) fn plugin_call(args: Vec<String>, context: &CliContext) -> Result<(),
         return Err(CliError::HelpRequested);
     };
 
-    if context.use_daemon && args.require_trusted {
-        return Err(CliError::Failure(
-            "--require-trusted is enforced by the local plugin runner; run without --daemon"
-                .to_owned(),
-        ));
-    }
-
     let result = if context.use_daemon {
         let result = daemon_request(
             context,
@@ -126,6 +119,12 @@ pub(super) fn plugin_call(args: Vec<String>, context: &CliContext) -> Result<(),
                     .collect::<Result<Vec<_>, _>>()?,
                 timeout_ms: args.timeout_ms,
                 max_output_bytes: args.max_output_bytes,
+                require_trusted: args.require_trusted,
+                trust_policy: args
+                    .trust_policy
+                    .as_ref()
+                    .map(path_to_daemon_string)
+                    .transpose()?,
             },
         )?;
         let ApiResult::PluginToolExecution(result) = result else {

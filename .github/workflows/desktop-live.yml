@@ -1,0 +1,29 @@
+name: Desktop Live Examples
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+jobs:
+  desktop-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config xvfb xdotool gnome-calculator gnome-text-editor
+      - run: bash examples/desktop/run_all.sh --syntax-only
+      - run: cargo build -p peekaboox-cli -p peekabooxd
+      - name: Run non-destructive desktop smoke examples under Xvfb
+        run: |
+          PEEKABOOX_BIN=target/debug/peekaboox \
+          PEEKABOOXD_BIN=target/debug/peekabooxd \
+          xvfb-run -a bash examples/desktop/run_all.sh --smoke --strict --no-close
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: desktop-live-example-output
+          path: target/examples/desktop-harness

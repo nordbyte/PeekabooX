@@ -27,6 +27,7 @@ jobs:
       - run: python -m compileall python/src
       - run: PYTHONPATH=python/src python -m pytest python/tests -q
       - run: PYTHONPATH=python/src python tests/api_surface_check.py
+      - run: PYTHONPATH=python/src python tests/proto_sync_check.py
       - run: PYTHONPATH=python/src python examples/python/runtime_smoke.py
       - run: PYTHONPATH=python/src bash examples/mcp/jsonrpc_list_tools.sh
       - name: Validate live desktop example syntax

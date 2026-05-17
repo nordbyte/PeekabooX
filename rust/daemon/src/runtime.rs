@@ -243,13 +243,17 @@ pub(super) fn audit_details(request: &ApiRequest) -> serde_json::Value {
             paths,
             timeout_ms,
             max_output_bytes,
+            require_trusted,
+            trust_policy,
         } => json!({
             "plugin_id": plugin_id,
             "tool": tool,
             "argument_keys": arguments.as_object().map(|object| object.len()).unwrap_or_default(),
             "path_count": paths.len(),
             "timeout_ms": timeout_ms,
-            "max_output_bytes": max_output_bytes
+            "max_output_bytes": max_output_bytes,
+            "require_trusted": require_trusted,
+            "has_trust_policy": trust_policy.is_some()
         }),
         ApiRequest::Click {
             x,

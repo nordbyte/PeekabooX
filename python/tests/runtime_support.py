@@ -1,8 +1,10 @@
+# ruff: noqa: F401
+
 import json
 import sys
 import unittest
-from io import StringIO
 from importlib.util import find_spec
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from textwrap import dedent
@@ -19,7 +21,6 @@ from peekaboox.client import (
     CaptureDeltaResult,
     CaptureMetadata,
     CaptureScreenResult,
-    DetectUiElementsResult,
     DesktopActionResult,
     DesktopLocateResult,
     DesktopProfile,
@@ -28,6 +29,7 @@ from peekaboox.client import (
     DesktopProfilesResult,
     DesktopProfileTarget,
     DesktopState,
+    DetectUiElementsResult,
     DmaBufProbeResult,
     OcrBlock,
     OcrResult,
@@ -42,9 +44,9 @@ from peekaboox.client import (
     ZeroCopyBackend,
 )
 from peekaboox.doctor import DoctorCategory, DoctorCheck, DoctorResult, run_doctor
-from peekaboox.memory import MemoryStore, SQLiteMemoryStore, SemanticDesktopGraph
 from peekaboox.mcp import McpServer
 from peekaboox.mcp.server import create_server
+from peekaboox.memory import MemoryStore, SemanticDesktopGraph, SQLiteMemoryStore
 from peekaboox.planning import PlanningEngine, WorkflowRefinementRequest, WorkflowReplanningRequest
 from peekaboox.plugins import (
     PLUGIN_MANIFEST_FILE,
@@ -57,8 +59,8 @@ from peekaboox.plugins import (
 from peekaboox.security import (
     Capability,
     CapabilityDeniedError,
-    CapabilityProfile,
     CapabilityPolicy,
+    CapabilityProfile,
     ConfirmationDeniedError,
     ConfirmationPolicy,
     ConfirmationRequiredError,
@@ -67,6 +69,7 @@ from peekaboox.security import (
     capability_profile,
 )
 from peekaboox.workflows import (
+    WORKFLOW_SCHEMA_VERSION,
     Workflow,
     WorkflowRecorder,
     WorkflowStep,
@@ -74,6 +77,7 @@ from peekaboox.workflows import (
     dump_workflow_text,
     load_workflow_file,
     load_workflow_text,
+    workflow_json_schema,
 )
 
 

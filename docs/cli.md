@@ -260,8 +260,25 @@ use `kind: "generic"` for window-relative targets:
         "x": 0.08,
         "y": 0.08,
         "width": 0.84,
-        "height": 0.24
+        "height": 0.24,
+        "point_x": 0.5,
+        "point_y": 0.65
       }
+    },
+    {
+      "name": "display-text",
+      "supports": ["assert-contains"],
+      "text_anchor": "0",
+      "visual": {
+        "type": "ocr-text",
+        "region": {
+          "x": 0.08,
+          "y": 0.08,
+          "width": 0.84,
+          "height": 0.24
+        }
+      },
+      "wait": {"before_ms": 100}
     }
   ]
 }
@@ -271,6 +288,11 @@ Generic profiles automatically get a `window` target if none is declared.
 External profiles with the same `id` as a built-in profile override the built-in
 entry, which allows downstream packages to tune launch commands or aliases
 without recompiling PeekabooX.
+External targets can combine window-relative rectangles, `ocr-text` targets,
+`text_anchor`/`ocr.text` hints, RGB `color_anchor` checks with `tolerance`, and
+simple `wait.before_ms` rules. These anchors are reflected in the target
+`sources`/`supports` metadata (`ocr`, `text-anchor`, `color-anchor`, `wait`) and
+are used by custom-target location where possible.
 
 The same desktop-helper surface is exposed through daemon JSON IPC, gRPC,
 `PeekabooXClient`, `AgentRuntime`, and MCP tools: `desktop_focus`,
@@ -458,6 +480,7 @@ cargo run -q -p peekaboox-cli -- doctor --json
 cargo run -q -p peekaboox-cli -- doctor --strict
 cargo run -q -p peekaboox-cli -- diagnose bundle --json
 cargo run -q -p peekaboox-cli -- diagnose bundle --output target/diagnose-local
+cargo run -q -p peekaboox-cli -- diagnose bundle --include-screenshot-redacted --daemon-log target/peekabooxd.log --mcp-log target/mcp.log
 ```
 
 `doctor` reports display/session state, helper commands, capture, DMA-BUF,
@@ -468,8 +491,12 @@ desktop, or Python runtime support is currently usable.
 
 `diagnose bundle` writes a redacted local diagnostics directory with
 `doctor.json`, `versions.json`, `environment.json`, `capture-backends.json`,
-and `manifest.json`. It is intended for bug reports and release triage; it does
-not inject input or close windows.
+and `manifest.json`. Optional `--daemon-log` and `--mcp-log` copy sanitized log
+text into the bundle, replacing `$HOME`, `USER`, and `LOGNAME` values.
+`--include-screenshot-redacted` captures only screen dimensions and writes a
+solid-color `screenshot-redacted.ppm` so layout-sensitive bug reports can carry
+display size without leaking visible content. It is intended for bug reports and
+release triage; it does not inject input or close windows.
 
 ## Daemon Routing
 

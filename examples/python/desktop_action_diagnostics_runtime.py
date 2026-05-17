@@ -3,17 +3,17 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
 from desktop_focus_diagnostics_runtime import (  # noqa: E402
+    ROOT,
     AgentRuntime,
     DesktopActionResult,
     MissingGrpcDependencyError,
-    ROOT,
     env_bool,
     env_float,
     env_int,

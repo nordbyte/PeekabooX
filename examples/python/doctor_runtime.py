@@ -18,7 +18,7 @@ ROOT = repo_root()
 sys.path.insert(0, str(ROOT / "python" / "src"))
 
 from peekaboox.agent import AgentRuntime  # noqa: E402
-from peekaboox.security import CapabilityProfile, CapabilityPolicy  # noqa: E402
+from peekaboox.security import CapabilityPolicy, CapabilityProfile  # noqa: E402
 
 
 def json_value(value: Any) -> Any:

@@ -626,10 +626,13 @@ Text Editor's `document`. Additional profiles can be supplied through
 documented in the CLI guide. `desktop_profiles` supports `app`, `target`,
 `command`, `desktop_id`, `supports`, `check`, `installed`, and `available`
 filters and is the discovery surface for command arguments, target capability
-metadata, external generic targets, and installation checks. Use `window_id`
-for exact-window targeting when multiple windows share an app profile; use
-`verify: true` on focus, click, drag, or type-into calls when the caller needs
-an immediate postcondition check.
+metadata, external generic targets, and installation checks. External target
+metadata can advertise and use OCR/text anchors, RGB color anchors, and wait
+rules through `sources`/`supports` values such as `ocr`, `text-anchor`,
+`color-anchor`, and `wait`. Use `window_id` for exact-window targeting when
+multiple windows share an app profile; use `verify: true` on focus, click,
+drag, or type-into calls when the caller needs an immediate postcondition
+check.
 `desktop_focus`, `desktop_click`, `desktop_drag`, and `desktop_type_into` return
 `focus_diagnostics` when they focus an app or window before the requested
 action; the field is also present as an empty list when no focus path ran.

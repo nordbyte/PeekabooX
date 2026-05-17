@@ -1,3 +1,4 @@
+schema_version: peekaboox.workflow.v1
 name: input-actions-live
 steps:
   - action: move_mouse
