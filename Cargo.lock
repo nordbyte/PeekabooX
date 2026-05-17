@@ -796,6 +796,8 @@ dependencies = [
  "peekaboox-input",
  "peekaboox-vision",
  "peekaboox-windows",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

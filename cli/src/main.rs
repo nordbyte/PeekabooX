@@ -10457,6 +10457,9 @@ fn print_desktop_usage() {
         "Usage: peekaboox desktop profiles [--app <app>] [--target <target>] [--command <name>] [--desktop-id <id>] [--supports <capability>] [--check|--availability] [--installed|--available] [--json]"
     );
     println!(
+        "       External desktop profiles: set PEEKABOOX_DESKTOP_PROFILE_PATH to JSON files or directories"
+    );
+    println!(
         "Usage: peekaboox desktop focus --app <app> [--window-id <id>|--window-title <text>] [--verify] [--json] [--no-overview] [--no-launch] [--wait-ms <ms>] [--overview-wait-ms <ms>]"
     );
     println!(

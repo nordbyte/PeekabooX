@@ -1,6 +1,7 @@
 use std::cmp::{max, min};
+use std::collections::HashSet;
 use std::env;
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -13,11 +14,14 @@ use peekaboox_core::{
     CaptureFrame, PeekabooXError, PixelFormat, Point, Rect, Result, UiElement, WindowInfo,
 };
 use peekaboox_input::MouseButton;
+use serde::Deserialize;
 
 const DEFAULT_FOCUS_WAIT_MS: u64 = 1_000;
 const DEFAULT_OVERVIEW_WAIT_MS: u64 = 800;
 const ACTION_FOCUS_OVERVIEW_WAIT_MS: u64 = 1_000;
 static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
+const DESKTOP_PROFILE_FILE_SCHEMA_VERSION: &str = "desktop-profile.v1";
+const DESKTOP_PROFILE_PATH_ENV: &str = "PEEKABOOX_DESKTOP_PROFILE_PATH";
 const TELEGRAM_PROFILE_ID: &str = "telegram";
 const TELEGRAM_SEARCH_NAME: &str = "Telegram";
 const TELEGRAM_DESKTOP_IDS: &[&str] = &[
@@ -26,22 +30,6 @@ const TELEGRAM_DESKTOP_IDS: &[&str] = &[
     "telegram-desktop_telegram-desktop",
 ];
 const TELEGRAM_ALIASES: &[&str] = &["telegram", "telegram-desktop", "org.telegram.desktop"];
-const NO_ARGS: &[&str] = &[];
-const FLATPAK_TELEGRAM_ARGS: &[&str] = &["run", "org.telegram.desktop"];
-const TELEGRAM_COMMANDS: &[CommandSpec] = &[
-    CommandSpec {
-        program: "telegram-desktop",
-        args: NO_ARGS,
-    },
-    CommandSpec {
-        program: "telegram",
-        args: NO_ARGS,
-    },
-    CommandSpec {
-        program: "flatpak",
-        args: FLATPAK_TELEGRAM_ARGS,
-    },
-];
 const PAINT_PROFILE_ID: &str = "paint";
 const DRAWING_PROFILE_ID: &str = "drawing";
 const PINTA_PROFILE_ID: &str = "pinta";
@@ -75,40 +63,10 @@ const DRAWING_ALIASES: &[&str] = &[
 ];
 const PINTA_ALIASES: &[&str] = &["pinta", "com.github.PintaProject.Pinta"];
 const KOLOURPAINT_ALIASES: &[&str] = &["kolourpaint", "org.kde.kolourpaint"];
-const DRAWING_COMMANDS: &[CommandSpec] = &[CommandSpec {
-    program: "drawing",
-    args: NO_ARGS,
-}];
-const PINTA_COMMANDS: &[CommandSpec] = &[CommandSpec {
-    program: "pinta",
-    args: NO_ARGS,
-}];
-const KOLOURPAINT_COMMANDS: &[CommandSpec] = &[CommandSpec {
-    program: "kolourpaint",
-    args: NO_ARGS,
-}];
-const PAINT_COMMANDS: &[CommandSpec] = &[
-    CommandSpec {
-        program: "drawing",
-        args: NO_ARGS,
-    },
-    CommandSpec {
-        program: "pinta",
-        args: NO_ARGS,
-    },
-    CommandSpec {
-        program: "kolourpaint",
-        args: NO_ARGS,
-    },
-];
 const TEXT_EDITOR_PROFILE_ID: &str = "text-editor";
 const TEXT_EDITOR_SEARCH_NAME: &str = "Text Editor";
 const TEXT_EDITOR_DESKTOP_IDS: &[&str] = &["org.gnome.TextEditor", "gnome-text-editor"];
 const TEXT_EDITOR_ALIASES: &[&str] = &["text-editor", "gnome-text-editor", "org.gnome.TextEditor"];
-const TEXT_EDITOR_COMMANDS: &[CommandSpec] = &[CommandSpec {
-    program: "gnome-text-editor",
-    args: NO_ARGS,
-}];
 const SUPPORTED_APPS: &[&str] = &[
     TELEGRAM_PROFILE_ID,
     PAINT_PROFILE_ID,
@@ -343,6 +301,13 @@ pub fn desktop_profiles() -> Vec<DesktopProfileInfo> {
 }
 
 pub fn desktop_profiles_with_query(query: &DesktopProfileQuery) -> Result<DesktopProfileList> {
+    desktop_profiles_with_query_and_paths(query, &desktop_profile_search_paths())
+}
+
+fn desktop_profiles_with_query_and_paths(
+    query: &DesktopProfileQuery,
+    profile_paths: &[PathBuf],
+) -> Result<DesktopProfileList> {
     let check_availability =
         query.check_availability || query.installed_only || query.available_only;
     let app = query
@@ -350,17 +315,18 @@ pub fn desktop_profiles_with_query(query: &DesktopProfileQuery) -> Result<Deskto
         .as_deref()
         .map(str::trim)
         .filter(|app| !app.is_empty());
+    let profiles = profile_catalog_from_paths(profile_paths)?;
     let profiles = if let Some(app) = app {
-        let matches = matching_profiles_for_app(app);
+        let matches = matching_profiles_for_app(&profiles, app);
         if matches.is_empty() {
             return Err(PeekabooXError::new(format!(
                 "unsupported desktop app {app:?}; supported apps: {}",
-                SUPPORTED_APPS.join(", ")
+                profile_ids_text(&profiles)
             )));
         }
         matches
     } else {
-        all_desktop_profiles().to_vec()
+        profiles.iter().collect::<Vec<_>>()
     }
     .into_iter()
     .map(|profile| profile_info(profile, check_availability))
@@ -375,22 +341,17 @@ pub fn desktop_profiles_with_query(query: &DesktopProfileQuery) -> Result<Deskto
     })
 }
 
-fn all_desktop_profiles() -> [&'static AppProfile; 6] {
-    [
-        &TELEGRAM_PROFILE,
-        &PAINT_PROFILE,
-        &DRAWING_PROFILE,
-        &PINTA_PROFILE,
-        &KOLOURPAINT_PROFILE,
-        &TEXT_EDITOR_PROFILE,
-    ]
+fn profile_catalog_from_paths(profile_paths: &[PathBuf]) -> Result<Vec<AppProfile>> {
+    let mut profiles = builtin_profiles();
+    for profile in load_external_profiles(profile_paths)? {
+        upsert_profile(&mut profiles, profile);
+    }
+    Ok(profiles)
 }
 
-fn matching_profiles_for_app(app: &str) -> Vec<&'static AppProfile> {
-    let profiles = all_desktop_profiles();
+fn matching_profiles_for_app<'a>(profiles: &'a [AppProfile], app: &str) -> Vec<&'a AppProfile> {
     let id_matches = profiles
         .iter()
-        .copied()
         .filter(|profile| profile.id.eq_ignore_ascii_case(app))
         .collect::<Vec<_>>();
     if !id_matches.is_empty() {
@@ -399,7 +360,6 @@ fn matching_profiles_for_app(app: &str) -> Vec<&'static AppProfile> {
 
     let specific_matches = profiles
         .iter()
-        .copied()
         .filter(|profile| profile.id != PAINT_PROFILE_ID && profile.matches_registry_filter(app))
         .collect::<Vec<_>>();
     if !specific_matches.is_empty() {
@@ -408,7 +368,6 @@ fn matching_profiles_for_app(app: &str) -> Vec<&'static AppProfile> {
 
     profiles
         .iter()
-        .copied()
         .filter(|profile| profile.matches_registry_filter(app))
         .collect()
 }
@@ -491,46 +450,42 @@ fn normalized_support_filter(value: Option<&str>) -> Option<String> {
 fn profile_info(profile: &AppProfile, check_availability: bool) -> DesktopProfileInfo {
     let availability = profile_availability(profile, check_availability);
     DesktopProfileInfo {
-        id: profile.id.to_owned(),
-        aliases: profile
-            .aliases
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect(),
-        search_name: profile.search_name.to_owned(),
-        desktop_ids: profile
-            .desktop_ids
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect(),
+        id: profile.id.clone(),
+        aliases: profile.aliases.clone(),
+        search_name: profile.search_name.clone(),
+        desktop_ids: profile.desktop_ids.clone(),
         commands: profile
             .commands
             .iter()
             .map(|command| command_info(command, check_availability))
             .collect(),
-        targets: profile
-            .supported_targets()
-            .iter()
-            .map(|target| target_info(profile, target))
-            .collect(),
+        targets: profile_target_infos(profile),
         availability,
     }
 }
 
 fn command_info(command: &CommandSpec, check_availability: bool) -> DesktopProfileCommandInfo {
     DesktopProfileCommandInfo {
-        program: command.program.to_owned(),
-        args: command
-            .args
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect(),
+        program: command.program.clone(),
+        args: command.args.clone(),
         display: command.display(),
         available: check_availability.then(|| command_available(command)),
     }
 }
 
+fn profile_target_infos(profile: &AppProfile) -> Vec<DesktopProfileTargetInfo> {
+    profile
+        .supported_targets()
+        .iter()
+        .map(|target| target_info(profile, target))
+        .collect()
+}
+
 fn target_info(profile: &AppProfile, target: &str) -> DesktopProfileTargetInfo {
+    if let Some(custom) = profile.custom_target(target) {
+        return custom_target_info(custom);
+    }
+
     let accessibility_selector = profile.accessibility_selector(target);
     let visual_rect = target_has_visual_rect(profile.kind, target);
     let can_type = target_accepts_text(profile.kind, target);
@@ -607,7 +562,7 @@ fn profile_availability(
         .desktop_ids
         .iter()
         .filter(|desktop_id| desktop_entry_exists(desktop_id))
-        .map(|desktop_id| (*desktop_id).to_owned())
+        .cloned()
         .collect::<Vec<_>>();
     let command_available = !available_commands.is_empty();
     let desktop_entry_available = !available_desktop_ids.is_empty();
@@ -705,7 +660,8 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                 metadata.backend_name
             ));
 
-            if let Some(window) = preferred_profile_window(profile, &metadata.windows, window_scope)
+            if let Some(window) =
+                preferred_profile_window(&profile, &metadata.windows, window_scope)
             {
                 diagnostics.push(format!(
                     "windows: selected {} title {:?} focused={}",
@@ -725,7 +681,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                         focus_diagnostics: focus_diagnostics_snapshot(&diagnostics),
                     };
                     return maybe_verify_action(result, options.verify, || {
-                        verify_focused_window(profile, window_scope)
+                        verify_focused_window(&profile, window_scope)
                     });
                 }
 
@@ -747,7 +703,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                         if let Some(result) = confirmed_focus_result(
                             &result,
                             options,
-                            profile,
+                            &profile,
                             window_scope,
                             &mut diagnostics,
                         ) {
@@ -773,7 +729,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                         if let Some(result) = confirmed_focus_result(
                             &result,
                             options,
-                            profile,
+                            &profile,
                             window_scope,
                             &mut diagnostics,
                         ) {
@@ -784,7 +740,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                     Err(error) => diagnostics.push(format!("at-spi: {error}")),
                 }
 
-                match focus_from_gnome_dock(profile) {
+                match focus_from_gnome_dock(&profile) {
                     Ok(detail) => {
                         diagnostics.push(format!("gnome-dock: {detail}"));
                         let result = DesktopActionResult {
@@ -799,7 +755,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                         if let Some(result) = confirmed_focus_result(
                             &result,
                             options,
-                            profile,
+                            &profile,
                             window_scope,
                             &mut diagnostics,
                         ) {
@@ -811,7 +767,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                 }
 
                 if options.use_gnome_overview {
-                    match focus_from_gnome_overview(profile, options) {
+                    match focus_from_gnome_overview(&profile, options) {
                         Ok(()) => {
                             diagnostics.push("gnome-overview: requested activation".to_owned());
                             let result = DesktopActionResult {
@@ -826,7 +782,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                             if let Some(result) = confirmed_focus_result(
                                 &result,
                                 options,
-                                profile,
+                                &profile,
                                 window_scope,
                                 &mut diagnostics,
                             ) {
@@ -866,7 +822,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                             if let Some(result) = confirmed_focus_result(
                                 &result,
                                 options,
-                                profile,
+                                &profile,
                                 window_scope,
                                 &mut diagnostics,
                             ) {
@@ -913,7 +869,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
     }
 
     if options.use_gnome_overview {
-        match focus_from_gnome_overview(profile, options) {
+        match focus_from_gnome_overview(&profile, options) {
             Ok(()) => {
                 diagnostics.push("gnome-overview: requested activation".to_owned());
                 sleep_after_focus(options);
@@ -927,7 +883,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                     focus_diagnostics: focus_diagnostics_snapshot(&diagnostics),
                 };
                 return maybe_verify_action(result, options.verify, || {
-                    verify_focused_window(profile, window_scope)
+                    verify_focused_window(&profile, window_scope)
                 });
             }
             Err(error) => diagnostics.push(format!("gnome-overview: {error}")),
@@ -937,7 +893,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
     }
 
     if options.launch_if_needed {
-        if let Some(desktop_id) = launch_desktop_entry(profile) {
+        if let Some(desktop_id) = launch_desktop_entry(&profile) {
             diagnostics.push(format!("gtk-launch: launched desktop entry {desktop_id}"));
             sleep_after_focus(options);
             let result = DesktopActionResult {
@@ -950,11 +906,11 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                 focus_diagnostics: focus_diagnostics_snapshot(&diagnostics),
             };
             return maybe_verify_action(result, options.verify, || {
-                verify_focused_window(profile, window_scope)
+                verify_focused_window(&profile, window_scope)
             });
         }
 
-        if let Some(command) = launch_command(profile) {
+        if let Some(command) = launch_command(&profile) {
             diagnostics.push(format!("command: launched {}", command.program));
             sleep_after_focus(options);
             let result = DesktopActionResult {
@@ -967,7 +923,7 @@ pub fn focus_app(app: &str, options: &FocusOptions) -> Result<DesktopActionResul
                 focus_diagnostics: focus_diagnostics_snapshot(&diagnostics),
             };
             return maybe_verify_action(result, options.verify, || {
-                verify_focused_window(profile, window_scope)
+                verify_focused_window(&profile, window_scope)
             });
         }
     } else {
@@ -1072,7 +1028,7 @@ pub fn drag_target(
     options: &DesktopDragOptions,
 ) -> Result<DesktopActionResult> {
     let profile = resolve_profile(app)?;
-    ensure_target_capability(profile, target, "drag")?;
+    ensure_target_capability(&profile, target, "drag")?;
     let focus = focus_before_live_action(app, &options.locate, options.dry_run)?;
     let resolved = locate_target(app, target, &options.locate)?;
     let rect = resolved.rect.ok_or_else(|| {
@@ -1144,7 +1100,7 @@ pub fn type_into_target(
     options: &TypeIntoOptions,
 ) -> Result<DesktopActionResult> {
     let profile = resolve_profile(app)?;
-    ensure_target_capability(profile, target, "type-into")?;
+    ensure_target_capability(&profile, target, "type-into")?;
     let focus = focus_before_live_action(app, &options.locate, options.dry_run)?;
     let resolved = locate_target(app, target, &options.locate)?;
     if options.dry_run {
@@ -1168,7 +1124,7 @@ pub fn type_into_target(
     peekaboox_input::click(resolved.point, MouseButton::Left)?;
     sleep(Duration::from_millis(250));
     if options.clear {
-        clear_target(profile, target)?;
+        clear_target(&profile, target)?;
     }
     let metadata = peekaboox_input::type_text(text.to_owned())?;
 
@@ -1187,7 +1143,7 @@ pub fn type_into_target(
                 .map(|_| "target still present after typing".to_owned());
         }
         if target_text_contains(
-            profile,
+            &profile,
             target,
             text,
             options.locate.image.as_deref(),
@@ -1228,7 +1184,7 @@ pub fn assert_target(
             Err(error) => return Err(error),
         },
         DesktopAssertion::Active => {
-            ensure_target_capability(profile, target, "assert-active")?;
+            ensure_target_capability(&profile, target, "assert-active")?;
             if !profile.target_active(
                 target,
                 &load_or_capture_frame(options.locate.image.as_deref())?,
@@ -1243,7 +1199,7 @@ pub fn assert_target(
             }
         }
         DesktopAssertion::NotActive => {
-            ensure_target_capability(profile, target, "assert-active")?;
+            ensure_target_capability(&profile, target, "assert-active")?;
             if profile.target_active(
                 target,
                 &load_or_capture_frame(options.locate.image.as_deref())?,
@@ -1258,9 +1214,9 @@ pub fn assert_target(
             }
         }
         DesktopAssertion::Contains(expected) => {
-            ensure_target_capability(profile, target, "assert-contains")?;
+            ensure_target_capability(&profile, target, "assert-contains")?;
             if !target_text_contains(
-                profile,
+                &profile,
                 target,
                 expected,
                 options.locate.image.as_deref(),
@@ -1275,9 +1231,9 @@ pub fn assert_target(
             }
         }
         DesktopAssertion::NotContains(expected) => {
-            ensure_target_capability(profile, target, "assert-contains")?;
+            ensure_target_capability(&profile, target, "assert-contains")?;
             if target_text_contains(
-                profile,
+                &profile,
                 target,
                 expected,
                 options.locate.image.as_deref(),
@@ -1439,16 +1395,17 @@ fn focus_diagnostics_snapshot(diagnostics: &[String]) -> Vec<String> {
 }
 
 fn ensure_target_capability(profile: &AppProfile, target: &str, capability: &str) -> Result<()> {
-    let supported = match capability {
-        "drag" => target_accepts_drag(profile.kind, target),
-        "type-into" => target_accepts_text(profile.kind, target),
-        "assert-active" => target_exposes_active_state(profile.kind, target),
-        "assert-contains" => {
-            target_has_visual_rect(profile.kind, target)
-                && target_can_contain_text(profile.kind, target)
-        }
-        _ => false,
-    };
+    let supported = profile
+        .supported_targets()
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(target))
+        && match capability {
+            "drag" => target_info(profile, target).can_drag,
+            "type-into" => target_info(profile, target).can_type,
+            "assert-active" => target_info(profile, target).can_assert_active,
+            "assert-contains" => target_info(profile, target).can_assert_contains,
+            _ => false,
+        };
     if supported {
         Ok(())
     } else {
@@ -1582,7 +1539,7 @@ fn gnome_dock_focus_candidate(
 }
 
 fn profile_matches_dock_label(profile: &AppProfile, label: &str) -> bool {
-    contains_case_insensitive(label, profile.search_name)
+    contains_case_insensitive(label, &profile.search_name)
         || profile
             .aliases
             .iter()
@@ -1716,35 +1673,36 @@ fn focus_hotkey<const N: usize>(keys: [&str; N]) -> Result<()> {
     .map(|_| ())
 }
 
-fn launch_desktop_entry(profile: &AppProfile) -> Option<&'static str> {
+fn launch_desktop_entry(profile: &AppProfile) -> Option<String> {
     if !command_exists("gtk-launch") {
         return None;
     }
 
-    profile.desktop_ids.iter().copied().find(|id| {
+    profile.desktop_ids.iter().find_map(|id| {
         Command::new("gtk-launch")
             .arg(id)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
             .is_ok_and(|status| status.success())
+            .then(|| id.clone())
     })
 }
 
-fn launch_command(profile: &AppProfile) -> Option<&'static CommandSpec> {
-    for command in profile.commands {
-        if !command_exists(command.program) {
+fn launch_command(profile: &AppProfile) -> Option<CommandSpec> {
+    for command in &profile.commands {
+        if !command_exists(&command.program) {
             continue;
         }
 
-        if Command::new(command.program)
-            .args(command.args)
+        if Command::new(&command.program)
+            .args(&command.args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .is_ok()
         {
-            return Some(command);
+            return Some(command.clone());
         }
     }
 
@@ -1858,39 +1816,29 @@ fn capture_temp_path() -> Result<PathBuf> {
     ))
 }
 
-fn resolve_profile(app: &str) -> Result<&'static AppProfile> {
+fn resolve_profile(app: &str) -> Result<AppProfile> {
     let app = app.trim();
-    if TELEGRAM_PROFILE.matches_id(app) {
-        return Ok(&TELEGRAM_PROFILE);
-    }
-    for profile in [
-        &DRAWING_PROFILE,
-        &PINTA_PROFILE,
-        &KOLOURPAINT_PROFILE,
-        &PAINT_PROFILE,
-        &TEXT_EDITOR_PROFILE,
-    ] {
-        if profile.matches_id(app) {
-            return Ok(profile);
-        }
+    let profiles = profile_catalog_from_paths(&desktop_profile_search_paths())?;
+    if let Some(profile) = matching_profiles_for_app(&profiles, app).into_iter().next() {
+        return Ok(profile.clone());
     }
 
     Err(PeekabooXError::new(format!(
         "unsupported desktop app {app:?}; supported apps: {}",
-        SUPPORTED_APPS.join(", ")
+        profile_ids_text(&profiles)
     )))
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CommandSpec {
-    program: &'static str,
-    args: &'static [&'static str],
+    program: String,
+    args: Vec<String>,
 }
 
 impl CommandSpec {
     fn display(&self) -> String {
         if self.args.is_empty() {
-            self.program.to_owned()
+            self.program.clone()
         } else {
             format!("{} {}", self.program, self.args.join(" "))
         }
@@ -1902,20 +1850,22 @@ enum ProfileKind {
     Telegram,
     Paint,
     TextEditor,
+    Generic,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq)]
 struct AppProfile {
-    id: &'static str,
-    aliases: &'static [&'static str],
-    search_name: &'static str,
-    desktop_ids: &'static [&'static str],
-    commands: &'static [CommandSpec],
+    id: String,
+    aliases: Vec<String>,
+    search_name: String,
+    desktop_ids: Vec<String>,
+    commands: Vec<CommandSpec>,
     kind: ProfileKind,
+    targets: Vec<CustomTarget>,
 }
 
 impl AppProfile {
-    fn matches_id(self, value: &str) -> bool {
+    fn matches_id(&self, value: &str) -> bool {
         self.id.eq_ignore_ascii_case(value)
             || self
                 .aliases
@@ -1927,20 +1877,26 @@ impl AppProfile {
                 .any(|desktop_id| desktop_id.eq_ignore_ascii_case(value))
     }
 
-    fn matches_registry_filter(self, value: &str) -> bool {
+    fn matches_registry_filter(&self, value: &str) -> bool {
         self.matches_id(value)
     }
 
-    fn matches_window(self, window: &peekaboox_core::WindowInfo) -> bool {
+    fn matches_window(&self, window: &peekaboox_core::WindowInfo) -> bool {
         let title = window.title.as_str();
         let app_id = window.app_id.as_deref().unwrap_or_default();
         self.aliases.iter().any(|alias| {
             contains_case_insensitive(title, alias) || contains_case_insensitive(app_id, alias)
-        }) || contains_case_insensitive(title, self.search_name)
-            || contains_case_insensitive(app_id, self.search_name)
+        }) || contains_case_insensitive(title, &self.search_name)
+            || contains_case_insensitive(app_id, &self.search_name)
     }
 
-    fn accessibility_selector(self, target: &str) -> Option<&'static str> {
+    fn accessibility_selector(&self, target: &str) -> Option<&str> {
+        if let Some(target) = self.custom_target(target)
+            && let Some(selector) = target.accessibility_selector.as_deref()
+        {
+            return Some(selector);
+        }
+
         match (self.kind, target) {
             (ProfileKind::Paint, "save-button") => Some("Save"),
             (ProfileKind::TextEditor, "save-button") => Some("Save"),
@@ -1949,12 +1905,16 @@ impl AppProfile {
     }
 
     fn resolve_visual_target(
-        self,
+        &self,
         target: &str,
         frame: &CaptureFrame,
         window_scope: WindowScope<'_>,
     ) -> Result<ResolvedDesktopTarget> {
-        let scoped = scoped_visual_frame(&self, frame, window_scope)?;
+        if let Some(custom) = self.custom_target(target) {
+            return self.resolve_custom_visual_target(custom, frame, window_scope);
+        }
+
+        let scoped = scoped_visual_frame(self, frame, window_scope)?;
         let visual = match (self.kind, target) {
             (ProfileKind::Telegram, "overview-icon") => locate_overview_icon(&scoped.frame)?,
             (ProfileKind::Telegram, "search-input") => locate_search_input(&scoped.frame)?,
@@ -1976,11 +1936,7 @@ impl AppProfile {
                 (!window_scope.has_constraints()).then_some(window_scope),
             )?,
             _ => {
-                let supported_targets = match self.kind {
-                    ProfileKind::Telegram => telegram_supported_targets(),
-                    ProfileKind::Paint => paint_supported_targets(),
-                    ProfileKind::TextEditor => text_editor_supported_targets(),
-                };
+                let supported_targets = self.supported_targets();
                 return Err(PeekabooXError::new(format!(
                     "unsupported target {target:?} for app {}; supported targets: {}",
                     self.id,
@@ -2000,12 +1956,12 @@ impl AppProfile {
     }
 
     fn target_active(
-        self,
+        &self,
         target: &str,
         frame: &CaptureFrame,
         window_scope: WindowScope<'_>,
     ) -> Result<bool> {
-        let scoped = scoped_visual_frame(&self, frame, window_scope)?;
+        let scoped = scoped_visual_frame(self, frame, window_scope)?;
         match (self.kind, target) {
             (ProfileKind::Telegram, "send-button") => Ok(draft_send_button_active(&scoped.frame)?),
             _ => Err(PeekabooXError::new(format!(
@@ -2014,68 +1970,693 @@ impl AppProfile {
         }
     }
 
-    fn supported_targets(self) -> &'static [&'static str] {
-        match self.kind {
+    fn supported_targets(&self) -> Vec<String> {
+        let mut targets = match self.kind {
             ProfileKind::Telegram => telegram_supported_targets(),
             ProfileKind::Paint => paint_supported_targets(),
             ProfileKind::TextEditor => text_editor_supported_targets(),
+            ProfileKind::Generic => &[],
+        }
+        .iter()
+        .map(|target| (*target).to_owned())
+        .collect::<Vec<_>>();
+
+        for target in &self.targets {
+            if !targets
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(&target.name))
+            {
+                targets.push(target.name.clone());
+            }
+        }
+
+        targets
+    }
+
+    fn custom_target(&self, target: &str) -> Option<&CustomTarget> {
+        self.targets
+            .iter()
+            .find(|candidate| candidate.name.eq_ignore_ascii_case(target))
+    }
+
+    fn resolve_custom_visual_target(
+        &self,
+        target: &CustomTarget,
+        frame: &CaptureFrame,
+        window_scope: WindowScope<'_>,
+    ) -> Result<ResolvedDesktopTarget> {
+        let base = custom_visual_frame(self, frame, window_scope)?;
+        let rect = match target.visual {
+            CustomTargetVisual::Window => Rect::new(0, 0, base.frame.width, base.frame.height),
+            CustomTargetVisual::RelativeRect {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => relative_rect(&base.frame, x, y, width, height)?,
+        };
+        let point = match target.visual {
+            CustomTargetVisual::Window => point_in_rect_ratio(rect, (0.5, 0.5))?,
+            CustomTargetVisual::RelativeRect {
+                point_x, point_y, ..
+            } => point_in_rect_ratio(rect, (point_x, point_y))?,
+        };
+        let rect = translate_rect(rect, base.offset);
+        let point = Point::new(point.x + base.offset.x, point.y + base.offset.y);
+
+        Ok(ResolvedDesktopTarget {
+            app: self.id.clone(),
+            target: target.name.clone(),
+            point,
+            rect: Some(rect),
+            source: DesktopTargetSource::VisualLayout,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CustomTarget {
+    name: String,
+    supports: Vec<String>,
+    accessibility_selector: Option<String>,
+    visual: CustomTargetVisual,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CustomTargetVisual {
+    Window,
+    RelativeRect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        point_x: f32,
+        point_y: f32,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum DesktopProfileDocument {
+    Bundle {
+        schema_version: String,
+        profiles: Vec<ExternalProfileDefinition>,
+    },
+    Single(ExternalProfileDefinition),
+}
+
+#[derive(Debug, Deserialize)]
+struct ExternalProfileDefinition {
+    #[serde(default)]
+    schema_version: Option<String>,
+    id: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    aliases: Vec<String>,
+    search_name: String,
+    #[serde(default)]
+    desktop_ids: Vec<String>,
+    #[serde(default)]
+    commands: Vec<ExternalCommandDefinition>,
+    #[serde(default)]
+    targets: Vec<ExternalTargetDefinition>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExternalCommandDefinition {
+    program: String,
+    #[serde(default)]
+    args: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExternalTargetDefinition {
+    name: String,
+    #[serde(default)]
+    supports: Vec<String>,
+    #[serde(default)]
+    accessibility_selector: Option<String>,
+    #[serde(default)]
+    visual: Option<ExternalVisualTargetDefinition>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+enum ExternalVisualTargetDefinition {
+    Window,
+    RelativeRect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        #[serde(default = "default_target_center")]
+        point_x: f32,
+        #[serde(default = "default_target_center")]
+        point_y: f32,
+    },
+}
+
+const fn default_target_center() -> f32 {
+    0.5
+}
+
+fn builtin_profiles() -> Vec<AppProfile> {
+    vec![
+        builtin_profile(
+            TELEGRAM_PROFILE_ID,
+            TELEGRAM_ALIASES,
+            TELEGRAM_SEARCH_NAME,
+            TELEGRAM_DESKTOP_IDS,
+            &[
+                ("telegram-desktop", &[] as &[&str]),
+                ("telegram", &[]),
+                ("flatpak", &["run", "org.telegram.desktop"]),
+            ],
+            ProfileKind::Telegram,
+        ),
+        builtin_profile(
+            PAINT_PROFILE_ID,
+            PAINT_ALIASES,
+            DRAWING_SEARCH_NAME,
+            PAINT_DESKTOP_IDS,
+            &[
+                ("drawing", &[] as &[&str]),
+                ("pinta", &[]),
+                ("kolourpaint", &[]),
+            ],
+            ProfileKind::Paint,
+        ),
+        builtin_profile(
+            DRAWING_PROFILE_ID,
+            DRAWING_ALIASES,
+            DRAWING_SEARCH_NAME,
+            DRAWING_DESKTOP_IDS,
+            &[("drawing", &[] as &[&str])],
+            ProfileKind::Paint,
+        ),
+        builtin_profile(
+            PINTA_PROFILE_ID,
+            PINTA_ALIASES,
+            PINTA_SEARCH_NAME,
+            PINTA_DESKTOP_IDS,
+            &[("pinta", &[] as &[&str])],
+            ProfileKind::Paint,
+        ),
+        builtin_profile(
+            KOLOURPAINT_PROFILE_ID,
+            KOLOURPAINT_ALIASES,
+            KOLOURPAINT_SEARCH_NAME,
+            KOLOURPAINT_DESKTOP_IDS,
+            &[("kolourpaint", &[] as &[&str])],
+            ProfileKind::Paint,
+        ),
+        builtin_profile(
+            TEXT_EDITOR_PROFILE_ID,
+            TEXT_EDITOR_ALIASES,
+            TEXT_EDITOR_SEARCH_NAME,
+            TEXT_EDITOR_DESKTOP_IDS,
+            &[("gnome-text-editor", &[] as &[&str])],
+            ProfileKind::TextEditor,
+        ),
+    ]
+}
+
+fn builtin_profile(
+    id: &str,
+    aliases: &[&str],
+    search_name: &str,
+    desktop_ids: &[&str],
+    commands: &[(&str, &[&str])],
+    kind: ProfileKind,
+) -> AppProfile {
+    AppProfile {
+        id: id.to_owned(),
+        aliases: string_vec(aliases),
+        search_name: search_name.to_owned(),
+        desktop_ids: string_vec(desktop_ids),
+        commands: commands
+            .iter()
+            .map(|(program, args)| CommandSpec {
+                program: (*program).to_owned(),
+                args: string_vec(args),
+            })
+            .collect(),
+        kind,
+        targets: Vec::new(),
+    }
+}
+
+fn string_vec(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+fn desktop_profile_search_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(value) = env::var_os(DESKTOP_PROFILE_PATH_ENV) {
+        paths.extend(env::split_paths(&value));
+    }
+    if let Some(value) = env::var_os("XDG_CONFIG_HOME") {
+        paths.push(PathBuf::from(value).join("peekaboox/desktop-profiles"));
+    } else if let Some(home) = env::var_os("HOME") {
+        paths.push(
+            PathBuf::from(home)
+                .join(".config")
+                .join("peekaboox/desktop-profiles"),
+        );
+    }
+    paths.push(PathBuf::from("/etc/peekaboox/desktop-profiles"));
+    paths.push(PathBuf::from("/usr/share/peekaboox/desktop-profiles"));
+    dedupe_paths(paths)
+}
+
+fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for path in paths {
+        if seen.insert(path.clone()) {
+            deduped.push(path);
+        }
+    }
+    deduped
+}
+
+fn load_external_profiles(paths: &[PathBuf]) -> Result<Vec<AppProfile>> {
+    let mut profiles = Vec::new();
+    for path in expand_profile_paths(paths)? {
+        profiles.extend(load_profile_document(&path)?);
+    }
+    Ok(profiles)
+}
+
+fn expand_profile_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut expanded = Vec::new();
+    for path in paths {
+        if path.is_dir() {
+            let mut files = fs::read_dir(path)
+                .map_err(|error| {
+                    PeekabooXError::new(format!(
+                        "failed to read desktop profile directory {}: {error}",
+                        path.display()
+                    ))
+                })?
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|candidate| {
+                    candidate
+                        .extension()
+                        .is_some_and(|extension| extension == "json")
+                })
+                .collect::<Vec<_>>();
+            files.sort();
+            expanded.extend(files);
+        } else if path.is_file() {
+            expanded.push(path.clone());
+        }
+    }
+    Ok(expanded)
+}
+
+fn load_profile_document(path: &Path) -> Result<Vec<AppProfile>> {
+    let data = fs::read_to_string(path).map_err(|error| {
+        PeekabooXError::new(format!(
+            "failed to read desktop profile file {}: {error}",
+            path.display()
+        ))
+    })?;
+    let document = serde_json::from_str::<DesktopProfileDocument>(&data).map_err(|error| {
+        PeekabooXError::new(format!(
+            "failed to parse desktop profile file {}: {error}",
+            path.display()
+        ))
+    })?;
+
+    match document {
+        DesktopProfileDocument::Bundle {
+            schema_version,
+            profiles,
+        } => {
+            validate_profile_schema(path, Some(&schema_version))?;
+            profiles
+                .into_iter()
+                .map(|profile| external_profile(path, profile))
+                .collect()
+        }
+        DesktopProfileDocument::Single(profile) => {
+            validate_profile_schema(path, profile.schema_version.as_deref())?;
+            Ok(vec![external_profile(path, profile)?])
         }
     }
 }
 
-static TELEGRAM_PROFILE: AppProfile = AppProfile {
-    id: TELEGRAM_PROFILE_ID,
-    aliases: TELEGRAM_ALIASES,
-    search_name: TELEGRAM_SEARCH_NAME,
-    desktop_ids: TELEGRAM_DESKTOP_IDS,
-    commands: TELEGRAM_COMMANDS,
-    kind: ProfileKind::Telegram,
-};
+fn validate_profile_schema(path: &Path, schema_version: Option<&str>) -> Result<()> {
+    match schema_version {
+        Some(DESKTOP_PROFILE_FILE_SCHEMA_VERSION) => Ok(()),
+        Some(version) => Err(PeekabooXError::new(format!(
+            "unsupported desktop profile schema_version {version:?} in {}; expected {DESKTOP_PROFILE_FILE_SCHEMA_VERSION}",
+            path.display()
+        ))),
+        None => Err(PeekabooXError::new(format!(
+            "missing desktop profile schema_version in {}; expected {DESKTOP_PROFILE_FILE_SCHEMA_VERSION}",
+            path.display()
+        ))),
+    }
+}
 
-static PAINT_PROFILE: AppProfile = AppProfile {
-    id: PAINT_PROFILE_ID,
-    aliases: PAINT_ALIASES,
-    search_name: DRAWING_SEARCH_NAME,
-    desktop_ids: PAINT_DESKTOP_IDS,
-    commands: PAINT_COMMANDS,
-    kind: ProfileKind::Paint,
-};
+fn external_profile(path: &Path, definition: ExternalProfileDefinition) -> Result<AppProfile> {
+    validate_profile_id(path, &definition.id)?;
+    let kind = parse_profile_kind(path, definition.kind.as_deref())?;
+    let mut targets = definition
+        .targets
+        .into_iter()
+        .map(|target| external_target(path, target))
+        .collect::<Result<Vec<_>>>()?;
+    if kind == ProfileKind::Generic
+        && !targets
+            .iter()
+            .any(|target| target.name.eq_ignore_ascii_case("window"))
+    {
+        targets.push(CustomTarget {
+            name: "window".to_owned(),
+            supports: vec![
+                "locate".to_owned(),
+                "click".to_owned(),
+                "drag".to_owned(),
+                "assert-present".to_owned(),
+            ],
+            accessibility_selector: None,
+            visual: CustomTargetVisual::Window,
+        });
+    }
 
-static DRAWING_PROFILE: AppProfile = AppProfile {
-    id: DRAWING_PROFILE_ID,
-    aliases: DRAWING_ALIASES,
-    search_name: DRAWING_SEARCH_NAME,
-    desktop_ids: DRAWING_DESKTOP_IDS,
-    commands: DRAWING_COMMANDS,
-    kind: ProfileKind::Paint,
-};
+    Ok(AppProfile {
+        id: definition.id.trim().to_owned(),
+        aliases: normalized_string_list(definition.aliases),
+        search_name: definition.search_name.trim().to_owned(),
+        desktop_ids: normalized_string_list(definition.desktop_ids),
+        commands: definition
+            .commands
+            .into_iter()
+            .map(|command| external_command(path, command))
+            .collect::<Result<Vec<_>>>()?,
+        kind,
+        targets,
+    })
+}
 
-static PINTA_PROFILE: AppProfile = AppProfile {
-    id: PINTA_PROFILE_ID,
-    aliases: PINTA_ALIASES,
-    search_name: PINTA_SEARCH_NAME,
-    desktop_ids: PINTA_DESKTOP_IDS,
-    commands: PINTA_COMMANDS,
-    kind: ProfileKind::Paint,
-};
+fn validate_profile_id(path: &Path, id: &str) -> Result<()> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err(PeekabooXError::new(format!(
+            "desktop profile in {} has an empty id",
+            path.display()
+        )));
+    }
+    if id.contains(char::is_whitespace) {
+        return Err(PeekabooXError::new(format!(
+            "desktop profile id {id:?} in {} must not contain whitespace",
+            path.display()
+        )));
+    }
+    Ok(())
+}
 
-static KOLOURPAINT_PROFILE: AppProfile = AppProfile {
-    id: KOLOURPAINT_PROFILE_ID,
-    aliases: KOLOURPAINT_ALIASES,
-    search_name: KOLOURPAINT_SEARCH_NAME,
-    desktop_ids: KOLOURPAINT_DESKTOP_IDS,
-    commands: KOLOURPAINT_COMMANDS,
-    kind: ProfileKind::Paint,
-};
+fn parse_profile_kind(path: &Path, kind: Option<&str>) -> Result<ProfileKind> {
+    match kind
+        .map(str::trim)
+        .filter(|kind| !kind.is_empty())
+        .unwrap_or("generic")
+        .replace('_', "-")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "telegram" => Ok(ProfileKind::Telegram),
+        "paint" | "drawing" | "pinta" | "kolourpaint" => Ok(ProfileKind::Paint),
+        "text-editor" | "texteditor" | "gnome-text-editor" => Ok(ProfileKind::TextEditor),
+        "generic" | "window" => Ok(ProfileKind::Generic),
+        other => Err(PeekabooXError::new(format!(
+            "unsupported desktop profile kind {other:?} in {}; expected generic, telegram, paint, or text-editor",
+            path.display()
+        ))),
+    }
+}
 
-static TEXT_EDITOR_PROFILE: AppProfile = AppProfile {
-    id: TEXT_EDITOR_PROFILE_ID,
-    aliases: TEXT_EDITOR_ALIASES,
-    search_name: TEXT_EDITOR_SEARCH_NAME,
-    desktop_ids: TEXT_EDITOR_DESKTOP_IDS,
-    commands: TEXT_EDITOR_COMMANDS,
-    kind: ProfileKind::TextEditor,
-};
+fn external_command(path: &Path, command: ExternalCommandDefinition) -> Result<CommandSpec> {
+    let program = command.program.trim();
+    if program.is_empty() {
+        return Err(PeekabooXError::new(format!(
+            "desktop profile command in {} has an empty program",
+            path.display()
+        )));
+    }
+    Ok(CommandSpec {
+        program: program.to_owned(),
+        args: normalized_string_list(command.args),
+    })
+}
+
+fn external_target(path: &Path, target: ExternalTargetDefinition) -> Result<CustomTarget> {
+    let name = target.name.trim();
+    if name.is_empty() {
+        return Err(PeekabooXError::new(format!(
+            "desktop profile target in {} has an empty name",
+            path.display()
+        )));
+    }
+    let visual = match target.visual {
+        Some(ExternalVisualTargetDefinition::Window) | None => CustomTargetVisual::Window,
+        Some(ExternalVisualTargetDefinition::RelativeRect {
+            x,
+            y,
+            width,
+            height,
+            point_x,
+            point_y,
+        }) => {
+            validate_relative_rect(path, name, x, y, width, height, point_x, point_y)?;
+            CustomTargetVisual::RelativeRect {
+                x,
+                y,
+                width,
+                height,
+                point_x,
+                point_y,
+            }
+        }
+    };
+    Ok(CustomTarget {
+        name: name.to_owned(),
+        supports: normalized_supports(target.supports),
+        accessibility_selector: target
+            .accessibility_selector
+            .map(|selector| selector.trim().to_owned())
+            .filter(|selector| !selector.is_empty()),
+        visual,
+    })
+}
+
+fn validate_relative_rect(
+    path: &Path,
+    target: &str,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    point_x: f32,
+    point_y: f32,
+) -> Result<()> {
+    for (name, value) in [
+        ("x", x),
+        ("y", y),
+        ("width", width),
+        ("height", height),
+        ("point_x", point_x),
+        ("point_y", point_y),
+    ] {
+        if !value.is_finite() {
+            return Err(PeekabooXError::new(format!(
+                "desktop profile target {target:?} in {} has non-finite {name}",
+                path.display()
+            )));
+        }
+    }
+    if x < 0.0
+        || y < 0.0
+        || width <= 0.0
+        || height <= 0.0
+        || x + width > 1.0
+        || y + height > 1.0
+        || !(0.0..=1.0).contains(&point_x)
+        || !(0.0..=1.0).contains(&point_y)
+    {
+        return Err(PeekabooXError::new(format!(
+            "desktop profile target {target:?} in {} has invalid relative rectangle; values must stay within 0.0..1.0",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn normalized_string_list(values: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let value = value.trim();
+        if !value.is_empty()
+            && !normalized
+                .iter()
+                .any(|candidate: &String| candidate.eq_ignore_ascii_case(value))
+        {
+            normalized.push(value.to_owned());
+        }
+    }
+    normalized
+}
+
+fn normalized_supports(values: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let value = value.trim().replace('_', "-").to_ascii_lowercase();
+        if !value.is_empty()
+            && !normalized
+                .iter()
+                .any(|candidate: &String| candidate.eq_ignore_ascii_case(&value))
+        {
+            normalized.push(value);
+        }
+    }
+    normalized
+}
+
+fn upsert_profile(profiles: &mut Vec<AppProfile>, profile: AppProfile) {
+    if let Some(existing) = profiles
+        .iter_mut()
+        .find(|candidate| candidate.id.eq_ignore_ascii_case(&profile.id))
+    {
+        *existing = profile;
+    } else {
+        profiles.push(profile);
+    }
+}
+
+fn profile_ids_text(profiles: &[AppProfile]) -> String {
+    profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn custom_target_info(target: &CustomTarget) -> DesktopProfileTargetInfo {
+    let visual_rect = true;
+    let mut supports = vec![
+        "locate".to_owned(),
+        "click".to_owned(),
+        "assert-present".to_owned(),
+        "visual-layout".to_owned(),
+    ];
+    if target.accessibility_selector.is_some() {
+        supports.push("accessibility".to_owned());
+    }
+    for support in &target.supports {
+        if !supports
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(support))
+        {
+            supports.push(support.clone());
+        }
+    }
+
+    let can_drag = supports_contains(&supports, "drag");
+    let can_type = supports_contains(&supports, "type-into");
+    let can_assert_active = false;
+    let can_assert_contains = supports_contains(&supports, "assert-contains");
+
+    let mut sources = vec!["visual-layout".to_owned()];
+    if target.accessibility_selector.is_some() {
+        sources.push("accessibility".to_owned());
+    }
+
+    DesktopProfileTargetInfo {
+        name: target.name.clone(),
+        supports,
+        sources,
+        can_locate: true,
+        can_click: true,
+        can_drag,
+        can_type,
+        can_assert_present: true,
+        can_assert_active,
+        can_assert_contains,
+        accessibility_selector: target.accessibility_selector.clone(),
+        visual_layout: true,
+        visual_rect,
+    }
+}
+
+fn supports_contains(supports: &[String], expected: &str) -> bool {
+    supports
+        .iter()
+        .any(|support| support.eq_ignore_ascii_case(expected))
+}
+
+fn custom_visual_frame(
+    profile: &AppProfile,
+    frame: &CaptureFrame,
+    scope: WindowScope<'_>,
+) -> Result<ScopedFrame> {
+    if let Some(rect) = profile_window_rect(profile, scope) {
+        return Ok(ScopedFrame {
+            frame: crop_frame(frame, rect)?,
+            offset: Point::new(max(0, rect.x), max(0, rect.y)),
+        });
+    }
+    if scope.has_constraints() {
+        return Err(PeekabooXError::new(format!(
+            "could not locate visible {} window matching {}",
+            profile.id,
+            scope.description()
+        )));
+    }
+    Ok(ScopedFrame {
+        frame: frame.clone(),
+        offset: Point::new(0, 0),
+    })
+}
+
+fn relative_rect(frame: &CaptureFrame, x: f32, y: f32, width: f32, height: f32) -> Result<Rect> {
+    validate_runtime_ratio(x, "x")?;
+    validate_runtime_ratio(y, "y")?;
+    validate_runtime_ratio(width, "width")?;
+    validate_runtime_ratio(height, "height")?;
+    if width <= 0.0 || height <= 0.0 || x + width > 1.0 || y + height > 1.0 {
+        return Err(PeekabooXError::new(
+            "relative target rectangle must be positive and contained in the base frame",
+        ));
+    }
+
+    let frame_width = frame.width as f32;
+    let frame_height = frame.height as f32;
+    let left = (frame_width * x).round() as i32;
+    let top = (frame_height * y).round() as i32;
+    let right = (frame_width * (x + width)).round() as i32;
+    let bottom = (frame_height * (y + height)).round() as i32;
+    Ok(Rect::new(
+        left,
+        top,
+        positive_extent(right - left),
+        positive_extent(bottom - top),
+    ))
+}
+
+fn validate_runtime_ratio(value: f32, name: &str) -> Result<()> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        Err(PeekabooXError::new(format!(
+            "relative target {name} must be finite and between 0.0 and 1.0"
+        )))
+    }
+}
 
 fn telegram_supported_targets() -> &'static [&'static str] {
     &[
@@ -2478,11 +3059,11 @@ fn locate_paint_save_button(frame: &CaptureFrame) -> Result<VisualTarget> {
 }
 
 fn locate_text_editor_document(
-    profile: AppProfile,
+    profile: &AppProfile,
     frame: &CaptureFrame,
     window_scope: Option<WindowScope<'_>>,
 ) -> Result<VisualTarget> {
-    let rect = match window_scope.and_then(|scope| profile_window_rect(&profile, scope)) {
+    let rect = match window_scope.and_then(|scope| profile_window_rect(profile, scope)) {
         Some(window) => text_editor_document_rect(window),
         None if window_scope.is_some_and(WindowScope::has_constraints) => {
             return Err(PeekabooXError::new(format!(
@@ -2510,11 +3091,11 @@ fn locate_text_editor_document(
 }
 
 fn locate_text_editor_save_button(
-    profile: AppProfile,
+    profile: &AppProfile,
     frame: &CaptureFrame,
     window_scope: Option<WindowScope<'_>>,
 ) -> Result<VisualTarget> {
-    let rect = match window_scope.and_then(|scope| profile_window_rect(&profile, scope)) {
+    let rect = match window_scope.and_then(|scope| profile_window_rect(profile, scope)) {
         Some(window) => window,
         None if window_scope.is_some_and(WindowScope::has_constraints) => {
             return Err(PeekabooXError::new(format!(
@@ -2837,7 +3418,7 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
 
 fn command_available(command: &CommandSpec) -> bool {
     if command.program == "flatpak"
-        && command.args.first().copied() == Some("run")
+        && command.args.first().is_some_and(|arg| arg == "run")
         && let Some(app_id) = command.args.get(1)
     {
         return command_exists("flatpak")
@@ -2850,7 +3431,7 @@ fn command_available(command: &CommandSpec) -> bool {
                 .is_ok_and(|status| status.success());
     }
 
-    command_exists(command.program)
+    command_exists(&command.program)
 }
 
 fn command_exists(command: &str) -> bool {
@@ -2912,6 +3493,101 @@ mod tests {
         .unwrap();
         assert_eq!(paint.count, 1);
         assert_eq!(paint.profiles[0].id, "paint");
+    }
+
+    #[test]
+    fn desktop_profile_query_loads_external_profile_files() {
+        let dir = temp_profile_dir("external-profile");
+        let path = dir.join("calculator.json");
+        fs::write(
+            &path,
+            r#"{
+  "schema_version": "desktop-profile.v1",
+  "id": "calculator",
+  "kind": "generic",
+  "aliases": ["calc", "org.gnome.Calculator"],
+  "search_name": "Calculator",
+  "desktop_ids": ["org.gnome.Calculator"],
+  "commands": [{"program": "gnome-calculator"}],
+  "targets": [
+    {
+      "name": "display",
+      "supports": ["type-into", "drag", "assert-contains"],
+      "visual": {
+        "type": "relative-rect",
+        "x": 0.1,
+        "y": 0.1,
+        "width": 0.8,
+        "height": 0.2,
+        "point_x": 0.75,
+        "point_y": 0.5
+      }
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let result = desktop_profiles_with_query_and_paths(
+            &DesktopProfileQuery {
+                app: Some("calc".to_owned()),
+                target: Some("display".to_owned()),
+                supports: Some("assert_contains".to_owned()),
+                ..Default::default()
+            },
+            std::slice::from_ref(&dir),
+        )
+        .unwrap();
+
+        assert_eq!(result.count, 1);
+        let profile = &result.profiles[0];
+        assert_eq!(profile.id, "calculator");
+        assert_eq!(profile.commands[0].display, "gnome-calculator");
+        let display = profile
+            .targets
+            .iter()
+            .find(|target| target.name == "display")
+            .unwrap();
+        assert!(display.can_type);
+        assert!(display.can_drag);
+        assert!(display.can_assert_contains);
+
+        let catalog = profile_catalog_from_paths(std::slice::from_ref(&dir)).unwrap();
+        let profile = catalog
+            .iter()
+            .find(|profile| profile.id == "calculator")
+            .unwrap();
+        let frame = blank_frame(1_000, 800, (20, 20, 20));
+        let resolved = profile
+            .resolve_visual_target("display", &frame, WindowScope::default())
+            .unwrap();
+
+        assert_eq!(resolved.point, Point::new(699, 160));
+        assert_eq!(resolved.rect, Some(Rect::new(100, 80, 800, 160)));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn desktop_profile_loader_rejects_invalid_schema() {
+        let dir = temp_profile_dir("invalid-schema");
+        let path = dir.join("bad.json");
+        fs::write(
+            &path,
+            r#"{
+  "schema_version": "desktop-profile.v0",
+  "id": "bad",
+  "search_name": "Bad"
+}"#,
+        )
+        .unwrap();
+
+        let error = profile_catalog_from_paths(std::slice::from_ref(&dir))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unsupported desktop profile schema_version"));
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -2986,6 +3662,7 @@ mod tests {
 
     #[test]
     fn preferred_profile_window_respects_title_hint() {
+        let profile = text_editor_profile();
         let windows = vec![
             peekaboox_core::WindowInfo {
                 id: "focused-user-doc".to_owned(),
@@ -3006,7 +3683,7 @@ mod tests {
         ];
 
         let selected = preferred_profile_window(
-            &TEXT_EDITOR_PROFILE,
+            &profile,
             &windows,
             WindowScope {
                 title_hint: Some("peekaboox-draft"),
@@ -3020,6 +3697,7 @@ mod tests {
 
     #[test]
     fn preferred_profile_window_respects_window_id() {
+        let profile = text_editor_profile();
         let windows = vec![
             peekaboox_core::WindowInfo {
                 id: "first".to_owned(),
@@ -3040,7 +3718,7 @@ mod tests {
         ];
 
         let selected = preferred_profile_window(
-            &TEXT_EDITOR_PROFILE,
+            &profile,
             &windows,
             WindowScope {
                 title_hint: None,
@@ -3135,6 +3813,7 @@ mod tests {
 
     #[test]
     fn gnome_dock_focus_candidate_maps_left_dock_label_to_icon_center() {
+        let profile = text_editor_profile();
         let elements = vec![
             UiElement {
                 id: "chrome-label".to_owned(),
@@ -3181,7 +3860,7 @@ mod tests {
         ];
 
         assert_eq!(
-            gnome_dock_focus_candidate(&TEXT_EDITOR_PROFILE, &elements),
+            gnome_dock_focus_candidate(&profile, &elements),
             Some(("Text Editor".to_owned(), Point::new(34, 589)))
         );
     }
@@ -3245,6 +3924,26 @@ mod tests {
             accessibility_focus_candidate_ids(&window, &elements),
             vec!["window-1".to_owned(), "document".to_owned()]
         );
+    }
+
+    fn temp_profile_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "peekaboox-desktop-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn text_editor_profile() -> AppProfile {
+        builtin_profiles()
+            .into_iter()
+            .find(|profile| profile.id == TEXT_EDITOR_PROFILE_ID)
+            .unwrap()
     }
 
     fn synthetic_telegram_frame(active_send: bool) -> CaptureFrame {

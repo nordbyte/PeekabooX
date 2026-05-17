@@ -291,8 +291,10 @@ custom desktops.
 registry without opening applications. It checks JSON schema/count fields,
 filters by app, target, command, and target capability, verifies that launch
 command arguments such as `flatpak run org.telegram.desktop` are preserved, and
-exercises `--availability` metadata. It writes JSON reports under
-`target/examples/desktop-profiles`.
+exercises `--availability` metadata. It also loads the checked-in external
+profile from `examples/desktop/profiles/calculator.json` through
+`PEEKABOOX_DESKTOP_PROFILE_PATH` and verifies the generic `display` target. It
+writes JSON reports under `target/examples/desktop-profiles`.
 
 `examples/desktop/desktop_profiles_daemon_parity.sh` starts a temporary
 observe-only daemon with a short Unix socket path and gRPC enabled, then checks

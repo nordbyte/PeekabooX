@@ -1,0 +1,39 @@
+{
+  "schema_version": "desktop-profile.v1",
+  "id": "calculator",
+  "kind": "generic",
+  "aliases": ["calc", "gnome-calculator", "org.gnome.Calculator"],
+  "search_name": "Calculator",
+  "desktop_ids": ["org.gnome.Calculator"],
+  "commands": [
+    {
+      "program": "gnome-calculator"
+    },
+    {
+      "program": "flatpak",
+      "args": ["run", "org.gnome.Calculator"]
+    }
+  ],
+  "targets": [
+    {
+      "name": "display",
+      "supports": ["assert-contains"],
+      "visual": {
+        "type": "relative-rect",
+        "x": 0.08,
+        "y": 0.08,
+        "width": 0.84,
+        "height": 0.24,
+        "point_x": 0.5,
+        "point_y": 0.65
+      }
+    },
+    {
+      "name": "window",
+      "supports": ["drag"],
+      "visual": {
+        "type": "window"
+      }
+    }
+  ]
+}

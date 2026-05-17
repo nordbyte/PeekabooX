@@ -232,6 +232,46 @@ checks. Filter it with `--app`, `--target`, `--command`, `--desktop-id`,
 `--supports`, `--installed`, or `--available`; use `--availability`/`--check` to
 annotate commands and desktop ids without filtering.
 
+Additional JSON profiles are loaded from `PEEKABOOX_DESKTOP_PROFILE_PATH`
+using colon-separated files or directories, then from
+`$XDG_CONFIG_HOME/peekaboox/desktop-profiles`,
+`~/.config/peekaboox/desktop-profiles`, `/etc/peekaboox/desktop-profiles`, and
+`/usr/share/peekaboox/desktop-profiles`. A profile file uses
+`"schema_version": "desktop-profile.v1"` and may contain either one profile or
+a top-level `profiles` array. External profiles can reuse built-in target
+layouts with `kind: "telegram"`, `kind: "paint"`, or `kind: "text-editor"`, or
+use `kind: "generic"` for window-relative targets:
+
+```json
+{
+  "schema_version": "desktop-profile.v1",
+  "id": "calculator",
+  "kind": "generic",
+  "aliases": ["calc", "gnome-calculator"],
+  "search_name": "Calculator",
+  "desktop_ids": ["org.gnome.Calculator"],
+  "commands": [{"program": "gnome-calculator"}],
+  "targets": [
+    {
+      "name": "display",
+      "supports": ["assert-contains"],
+      "visual": {
+        "type": "relative-rect",
+        "x": 0.08,
+        "y": 0.08,
+        "width": 0.84,
+        "height": 0.24
+      }
+    }
+  ]
+}
+```
+
+Generic profiles automatically get a `window` target if none is declared.
+External profiles with the same `id` as a built-in profile override the built-in
+entry, which allows downstream packages to tune launch commands or aliases
+without recompiling PeekabooX.
+
 The same desktop-helper surface is exposed through daemon JSON IPC, gRPC,
 `PeekabooXClient`, `AgentRuntime`, and MCP tools: `desktop_focus`,
 `desktop_profiles`, `desktop_locate`, `desktop_click`, `desktop_drag`,
