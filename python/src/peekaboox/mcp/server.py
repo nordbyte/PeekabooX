@@ -3300,6 +3300,7 @@ def create_server(
     preflight_mode: str | None = None,
     preflight_timeout_seconds: float = 30.0,
     client_timeout_seconds: float | None = None,
+    grpc_token: str | None = None,
 ) -> McpServer:
     runtime = None
     if connect:
@@ -3314,6 +3315,7 @@ def create_server(
             preflight_mode=preflight_mode,
             preflight_timeout_seconds=preflight_timeout_seconds,
             client_timeout_seconds=client_timeout_seconds,
+            grpc_token=grpc_token,
         )
     else:
         audit_logger = (
@@ -3401,6 +3403,11 @@ def main() -> None:
         help="maximum seconds to wait for each daemon gRPC call",
     )
     parser.add_argument(
+        "--grpc-token",
+        default=os.environ.get("PEEKABOOX_GRPC_TOKEN"),
+        help="PeekabooX daemon gRPC bearer token; defaults to PEEKABOOX_GRPC_TOKEN",
+    )
+    parser.add_argument(
         "--plugin-path",
         action="append",
         default=[],
@@ -3418,6 +3425,7 @@ def main() -> None:
             preflight_mode=args.preflight_mode,
             preflight_timeout_seconds=args.preflight_timeout,
             client_timeout_seconds=args.grpc_timeout,
+            grpc_token=args.grpc_token,
         )
     except ImportError:
         server = create_server(
@@ -3429,6 +3437,7 @@ def main() -> None:
             preflight_mode=args.preflight_mode,
             preflight_timeout_seconds=args.preflight_timeout,
             client_timeout_seconds=args.grpc_timeout,
+            grpc_token=args.grpc_token,
         )
     if args.list_tools:
         print("peekaboox-mcp tools:", ", ".join(tool["name"] for tool in server.list_tools()))

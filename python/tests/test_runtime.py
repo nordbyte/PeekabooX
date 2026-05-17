@@ -1646,6 +1646,27 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(connect.call_args.kwargs["preflight_mode"], "strict")
         self.assertEqual(connect.call_args.kwargs["preflight_timeout_seconds"], 2.5)
 
+    def test_agent_cli_passes_grpc_token_to_runtime(self) -> None:
+        fake_client = FakeClient()
+        output = StringIO()
+        with (
+            patch("sys.stdout", output),
+            patch(
+                "peekaboox.agent.runtime.AgentRuntime.connect",
+                return_value=AgentRuntime(client=fake_client),
+            ) as connect,
+        ):
+            exit_code = agent_runtime_module.main(
+                [
+                    "--grpc-token",
+                    "secret-token",
+                    "windows",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(connect.call_args.kwargs["grpc_token"], "secret-token")
+
     def test_agent_cli_preflight_prints_json_result(self) -> None:
         output = StringIO()
         doctor = DoctorResult(
@@ -3987,6 +4008,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertIs(server.runtime, runtime)
         self.assertEqual(connect.call_args.kwargs["client_timeout_seconds"], 12.5)
 
+    def test_mcp_create_server_passes_grpc_token_to_runtime(self) -> None:
+        runtime = AgentRuntime(client=FakeClient())
+        with patch(
+            "peekaboox.mcp.server.AgentRuntime.connect",
+            return_value=runtime,
+        ) as connect:
+            server = create_server(
+                "127.0.0.1:47777",
+                grpc_token="secret-token",
+            )
+
+        self.assertIs(server.runtime, runtime)
+        self.assertEqual(connect.call_args.kwargs["grpc_token"], "secret-token")
+
     def test_mcp_server_reports_confirmation_requirements_as_tool_errors(self) -> None:
         runtime = AgentRuntime(
             client=FakeClient(),
@@ -4170,6 +4205,55 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.backend_name, "test")
         self.assertEqual(result.warnings, ("fallback used",))
         self.assertTrue(result.backend_reports[0].selected)
+
+    @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
+    def test_python_client_sends_grpc_token_metadata(self) -> None:
+        from peekaboox.v1 import peekaboox_pb2
+
+        class Stub:
+            def __init__(self) -> None:
+                self.metadata = None
+
+            def ListWindows(self, request, timeout, metadata=None):
+                self.metadata = metadata
+                return peekaboox_pb2.ListWindowsResponse(
+                    backend_name="test",
+                    backend_kind="x11",
+                )
+
+        stub = Stub()
+        client = PeekabooXClient(
+            stub=stub,
+            messages=peekaboox_pb2,
+            grpc_token=" secret-token ",
+        )
+
+        client.list_windows()
+
+        self.assertEqual(stub.metadata, (("x-peekaboox-token", "secret-token"),))
+
+    @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
+    def test_python_client_loads_grpc_token_from_env(self) -> None:
+        from peekaboox.v1 import peekaboox_pb2
+
+        class Stub:
+            def __init__(self) -> None:
+                self.metadata = None
+
+            def ListWindows(self, request, timeout, metadata=None):
+                self.metadata = metadata
+                return peekaboox_pb2.ListWindowsResponse(
+                    backend_name="test",
+                    backend_kind="x11",
+                )
+
+        stub = Stub()
+        with patch.dict("os.environ", {"PEEKABOOX_GRPC_TOKEN": "env-token"}):
+            client = PeekabooXClient(stub=stub, messages=peekaboox_pb2)
+
+        client.list_windows()
+
+        self.assertEqual(stub.metadata, (("x-peekaboox-token", "env-token"),))
 
     @unittest.skipUnless(_protobuf_available(), "protobuf runtime dependencies are not installed")
     def test_python_client_maps_generated_capture_delta_response(self) -> None:

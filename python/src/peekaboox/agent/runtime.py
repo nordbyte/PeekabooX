@@ -186,6 +186,7 @@ class AgentRuntime:
         preflight_mode: str | None = None,
         preflight_timeout_seconds: float = 30.0,
         client_timeout_seconds: float | None = None,
+        grpc_token: str | None = None,
     ) -> "AgentRuntime":
         if capability_policy is not None and capability_profile is not None:
             raise ValueError("use either capability_policy or capability_profile, not both")
@@ -211,6 +212,7 @@ class AgentRuntime:
                     if client_timeout_seconds is not None
                     else DEFAULT_GRPC_TIMEOUT_SECONDS
                 ),
+                grpc_token=grpc_token,
             ),
             memory=memory,
             capability_policy=capability_policy,
@@ -2905,6 +2907,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=f"daemon gRPC target, default: {DEFAULT_GRPC_TARGET}",
     )
     parser.add_argument(
+        "--grpc-token",
+        default=os.environ.get("PEEKABOOX_GRPC_TOKEN"),
+        help="PeekabooX daemon gRPC bearer token; defaults to PEEKABOOX_GRPC_TOKEN",
+    )
+    parser.add_argument(
         "--profile",
         choices=KNOWN_CAPABILITY_PROFILES,
         default="observe",
@@ -3049,6 +3056,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             plugin_paths=tuple(Path(path) for path in args.plugin_path),
             preflight_mode=args.preflight_mode,
             preflight_timeout_seconds=args.preflight_timeout,
+            grpc_token=args.grpc_token,
         )
         if args.command == "windows":
             query = _window_query_kwargs(

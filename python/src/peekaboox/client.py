@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from importlib import import_module
 from os import PathLike
@@ -387,6 +388,7 @@ class PeekabooXClient:
 
     target: str = DEFAULT_GRPC_TARGET
     timeout_seconds: float = DEFAULT_GRPC_TIMEOUT_SECONDS
+    grpc_token: str | None = None
     max_receive_message_bytes: int = 64 * 1024 * 1024
     max_send_message_bytes: int = 64 * 1024 * 1024
     stub: Any | None = field(default=None, repr=False)
@@ -397,6 +399,7 @@ class PeekabooXClient:
     def __post_init__(self) -> None:
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        self.grpc_token = _normalize_grpc_token(self.grpc_token)
         if self.stub is not None and self.messages is not None:
             return
 
@@ -1625,7 +1628,10 @@ class PeekabooXClient:
 
     def _call(self, method_name: str, request: Any) -> Any:
         method = getattr(self.stub, method_name)
+        metadata = _grpc_auth_metadata(self.grpc_token)
         try:
+            if metadata is not None:
+                return method(request, timeout=self.timeout_seconds, metadata=metadata)
             return method(request, timeout=self.timeout_seconds)
         except Exception as error:
             if self._grpc is not None and isinstance(error, self._grpc.RpcError):
@@ -1648,6 +1654,24 @@ def _load_grpc_modules() -> tuple[ModuleType, ModuleType, ModuleType]:
             "PeekabooXClient requires grpcio and protobuf; install the Python package with its runtime dependencies"
         ) from error
     return grpc_module, messages, services
+
+
+def _normalize_grpc_token(token: str | None) -> str | None:
+    value = token
+    if value is None:
+        value = os.environ.get("PEEKABOOX_GRPC_TOKEN")
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    return value
+
+
+def _grpc_auth_metadata(token: str | None) -> tuple[tuple[str, str], ...] | None:
+    if token is None:
+        return None
+    return (("x-peekaboox-token", token),)
 
 
 def _capture_target(messages: Any, region: Rect | None = None, window_id: str | None = None) -> Any:

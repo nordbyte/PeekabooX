@@ -70,6 +70,17 @@ cargo run -q -p peekabooxd -- run --grpc-addr 127.0.0.1:47778
 cargo run -q -p peekabooxd -- run --no-grpc
 ```
 
+Protect the gRPC API with a shared token:
+
+```bash
+PEEKABOOX_GRPC_TOKEN=secret cargo run -q -p peekabooxd -- run
+PEEKABOOX_GRPC_TOKEN=secret python3 -m peekaboox.mcp.server
+```
+
+The daemon rejects non-loopback `--grpc-addr` values unless `--grpc-token` or
+`PEEKABOOX_GRPC_TOKEN` is configured. Python clients, `AgentRuntime.connect()`,
+and `peekaboox-mcp` forward the token as `x-peekaboox-token` metadata.
+
 The daemon starts a best-effort `CTRL + ALT + ESC` emergency hotkey listener by
 default. It reads Linux `/dev/input/event*` devices and shuts the daemon down
 while releasing common modifiers when the hotkey is pressed. Disable it with:
@@ -458,6 +469,7 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server --audit-log runtime-audit.
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --capability-profile observe
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --preflight-mode strict
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --grpc-timeout 15
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --grpc-token secret
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport http --port 47778
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport sse --port 47778
 ```

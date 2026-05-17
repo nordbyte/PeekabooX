@@ -90,6 +90,7 @@ peekaboox desktop click --app telegram --target search-input --dry-run --verify 
 # Start the local daemon for agent-facing APIs.
 peekabooxd run --profile operator
 peekaboox --daemon capture-delta --stream agent-loop --low-bandwidth
+# Add --grpc-token or PEEKABOOX_GRPC_TOKEN when exposing authenticated gRPC.
 
 # Run the MCP server from a checkout.
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --list-tools

@@ -449,6 +449,11 @@ detector when accessibility returns no match. Real daemon-routed input requires
 `peekabooxd run --profile operator`, `--allow-input`, or
 `PEEKABOOX_ALLOW_INPUT=1`; see [docs/security.md](security.md).
 
+For Python, MCP, or other gRPC clients, protect the daemon with `--grpc-token`
+or `PEEKABOOX_GRPC_TOKEN`. Python clients, `peekaboox-agent`, and
+`peekaboox-mcp` read the same environment variable and expose explicit
+`grpc_token` or `--grpc-token` options.
+
 ## Plugins
 
 Plugins use the declarative SDK manifest `peekaboox.plugin.json`:

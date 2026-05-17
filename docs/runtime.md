@@ -21,6 +21,7 @@ runtime = AgentRuntime.connect(
     confirmation_policy=ConfirmationPolicy.require_for([DangerousAction.CLICK]),
     audit_log_path="peekaboox-runtime-audit.jsonl",
     preflight_mode="strict",
+    grpc_token="secret",
 )
 print(runtime.list_windows())
 print(runtime.list_windows(focused=True, limit=1, sort="focused"))
@@ -246,6 +247,7 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --audit-log runtime-audit.jsonl
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --capability-profile observe
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --preflight-mode strict
+PYTHONPATH=python/src python3 -m peekaboox.mcp.server --grpc-token secret
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport http --host 127.0.0.1 --port 47778
 PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport sse --host 127.0.0.1 --port 47778
 ```
@@ -253,6 +255,9 @@ PYTHONPATH=python/src python3 -m peekaboox.mcp.server --transport sse --host 127
 Tool execution through MCP requires Python runtime dependencies and a running
 `peekabooxd` reachable at `PEEKABOOX_GRPC_TARGET` or `--target`. Without those
 dependencies, the server can still list tool descriptors for inspection.
+When the daemon is started with `--grpc-token`, set the same token through
+`--grpc-token` or `PEEKABOOX_GRPC_TOKEN`; the runtime sends it as gRPC metadata
+on every daemon call.
 The server also exposes MCP resources, resource templates, prompts, completion,
 and logging level negotiation alongside the tool registry. `--transport stdio`
 is the default for MCP clients; `--transport http` serves JSON-RPC POST requests

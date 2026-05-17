@@ -37,6 +37,27 @@ and gRPC input requests including semantic selectors. Direct local CLI
 execution remains available for development, but agent-facing integrations
 should route through the daemon policy.
 
+## gRPC Authentication
+
+The daemon can require a shared token for every gRPC request:
+
+```bash
+peekabooxd run --grpc-token secret
+```
+
+or:
+
+```bash
+PEEKABOOX_GRPC_TOKEN=secret peekabooxd run
+```
+
+Non-loopback gRPC bindings are rejected unless a token is configured. Python
+clients, `AgentRuntime.connect(grpc_token=...)`, `peekaboox-agent --grpc-token`,
+and `peekaboox-mcp --grpc-token` send the token as `x-peekaboox-token` metadata.
+They also read `PEEKABOOX_GRPC_TOKEN` by default. Bearer tokens in the standard
+`authorization` metadata header are accepted by the daemon for non-Python
+clients.
+
 ## Audit Logs
 
 The daemon writes newline-delimited JSON audit records.
