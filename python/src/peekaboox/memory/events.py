@@ -131,6 +131,9 @@ class DesktopGraphStatus:
     latest_snapshot_id: str | None
     event_count: int
     invalidation_count: int
+    snapshot_count: int = 0
+    node_count: int = 0
+    edge_count: int = 0
     last_event: DesktopStateEvent | None = None
     last_invalidation: DesktopGraphInvalidation | None = None
 

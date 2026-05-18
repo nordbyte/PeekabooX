@@ -76,6 +76,54 @@ const CALENDAR_ALIASES: &[&str] = &[
     "org.gnome.Calendar",
     "org.gnome.Calendar.desktop",
 ];
+const BROWSER_PROFILE_ID: &str = "browser";
+const BROWSER_SEARCH_NAME: &str = "Web";
+const BROWSER_DESKTOP_IDS: &[&str] = &[
+    "org.gnome.Epiphany",
+    "firefox",
+    "google-chrome",
+    "chromium",
+    "brave-browser",
+];
+const BROWSER_ALIASES: &[&str] = &[
+    "browser",
+    "web",
+    "firefox",
+    "chrome",
+    "chromium",
+    "brave-browser",
+    "org.gnome.Epiphany",
+];
+const FILES_PROFILE_ID: &str = "files";
+const FILES_SEARCH_NAME: &str = "Files";
+const FILES_DESKTOP_IDS: &[&str] = &["org.gnome.Nautilus", "nautilus", "thunar", "dolphin"];
+const FILES_ALIASES: &[&str] = &["files", "file-manager", "nautilus", "thunar", "dolphin"];
+const TERMINAL_PROFILE_ID: &str = "terminal";
+const TERMINAL_SEARCH_NAME: &str = "Terminal";
+const TERMINAL_DESKTOP_IDS: &[&str] = &[
+    "org.gnome.Terminal",
+    "org.gnome.Console",
+    "kgx",
+    "konsole",
+    "xfce4-terminal",
+];
+const TERMINAL_ALIASES: &[&str] = &[
+    "terminal",
+    "console",
+    "gnome-terminal",
+    "kgx",
+    "konsole",
+    "xfce4-terminal",
+];
+const OFFICE_PROFILE_ID: &str = "libreoffice";
+const OFFICE_SEARCH_NAME: &str = "LibreOffice";
+const OFFICE_DESKTOP_IDS: &[&str] = &[
+    "libreoffice-startcenter",
+    "libreoffice-writer",
+    "libreoffice-calc",
+    "org.libreoffice.LibreOffice",
+];
+const OFFICE_ALIASES: &[&str] = &["libreoffice", "writer", "calc", "office"];
 const SUPPORTED_APPS: &[&str] = &[
     TELEGRAM_PROFILE_ID,
     PAINT_PROFILE_ID,
@@ -84,6 +132,10 @@ const SUPPORTED_APPS: &[&str] = &[
     KOLOURPAINT_PROFILE_ID,
     TEXT_EDITOR_PROFILE_ID,
     CALENDAR_PROFILE_ID,
+    BROWSER_PROFILE_ID,
+    FILES_PROFILE_ID,
+    TERMINAL_PROFILE_ID,
+    OFFICE_PROFILE_ID,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2377,6 +2429,52 @@ fn builtin_profiles() -> Vec<AppProfile> {
             ProfileKind::TextEditor,
         ),
         calendar_profile(),
+        generic_builtin_profile(
+            BROWSER_PROFILE_ID,
+            BROWSER_ALIASES,
+            BROWSER_SEARCH_NAME,
+            BROWSER_DESKTOP_IDS,
+            &[
+                ("xdg-open", &["about:blank"] as &[&str]),
+                ("firefox", &[]),
+                ("google-chrome", &[]),
+                ("chromium", &[]),
+            ],
+        ),
+        generic_builtin_profile(
+            FILES_PROFILE_ID,
+            FILES_ALIASES,
+            FILES_SEARCH_NAME,
+            FILES_DESKTOP_IDS,
+            &[
+                ("nautilus", &[] as &[&str]),
+                ("thunar", &[]),
+                ("dolphin", &[]),
+            ],
+        ),
+        generic_builtin_profile(
+            TERMINAL_PROFILE_ID,
+            TERMINAL_ALIASES,
+            TERMINAL_SEARCH_NAME,
+            TERMINAL_DESKTOP_IDS,
+            &[
+                ("gnome-terminal", &[] as &[&str]),
+                ("kgx", &[]),
+                ("konsole", &[]),
+                ("x-terminal-emulator", &[]),
+            ],
+        ),
+        generic_builtin_profile(
+            OFFICE_PROFILE_ID,
+            OFFICE_ALIASES,
+            OFFICE_SEARCH_NAME,
+            OFFICE_DESKTOP_IDS,
+            &[
+                ("libreoffice", &[] as &[&str]),
+                ("libreoffice", &["--writer"]),
+                ("libreoffice", &["--calc"]),
+            ],
+        ),
     ]
 }
 
@@ -2407,6 +2505,25 @@ fn builtin_profile(
 
 fn string_vec(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+fn generic_builtin_profile(
+    id: &str,
+    aliases: &[&str],
+    search_name: &str,
+    desktop_ids: &[&str],
+    commands: &[(&str, &[&str])],
+) -> AppProfile {
+    let mut profile = builtin_profile(
+        id,
+        aliases,
+        search_name,
+        desktop_ids,
+        commands,
+        ProfileKind::Generic,
+    );
+    profile.targets.push(default_window_target());
+    profile
 }
 
 fn calendar_profile() -> AppProfile {

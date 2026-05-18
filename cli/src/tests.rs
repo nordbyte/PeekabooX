@@ -1239,7 +1239,8 @@ fn desktop_profiles_accepts_no_arguments() {
             supports: None,
             check: false,
             installed: false,
-            available: false
+            available: false,
+            lint: false
         })
     );
 }
@@ -1275,9 +1276,20 @@ fn desktop_profiles_accepts_json_and_filters() {
             supports: Some("type-into".to_owned()),
             check: true,
             installed: true,
-            available: false
+            available: false,
+            lint: false
         })
     );
+}
+
+#[test]
+fn desktop_profiles_accepts_lint_alias() {
+    let command = parse_desktop_args(vec!["profiles".to_owned(), "--lint".to_owned()]).unwrap();
+
+    assert!(matches!(
+        command,
+        DesktopCommand::Profiles(DesktopProfilesArgs { lint: true, .. })
+    ));
 }
 
 #[test]

@@ -11,6 +11,7 @@ pub(super) struct DesktopProfilesArgs {
     pub(super) check: bool,
     pub(super) installed: bool,
     pub(super) available: bool,
+    pub(super) lint: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +116,13 @@ pub(super) fn desktop(args: Vec<String>, context: &CliContext) -> Result<(), Cli
 
     match command {
         DesktopCommand::Profiles(args) => {
+            if args.lint && !args.json {
+                let result =
+                    peekaboox_desktop::desktop_profiles_with_query(&desktop_profile_query(&args))
+                        .map_err(|error| CliError::Failure(error.to_string()))?;
+                println!("desktop profiles lint ok profiles={}", result.count);
+                return Ok(());
+            }
             print_desktop_profiles(args)?;
             Ok(())
         }
@@ -774,6 +782,7 @@ pub(super) fn parse_desktop_profiles_args(args: Vec<String>) -> Result<DesktopCo
     let mut check = false;
     let mut installed = false;
     let mut available = false;
+    let mut lint = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -795,6 +804,7 @@ pub(super) fn parse_desktop_profiles_args(args: Vec<String>) -> Result<DesktopCo
                 check = true;
                 available = true;
             }
+            "--lint" | "--validate" => lint = true,
             "--help" | "-h" => return Ok(DesktopCommand::Help),
             value if value.starts_with('-') => {
                 return Err(CliError::Failure(format!(
@@ -821,6 +831,7 @@ pub(super) fn parse_desktop_profiles_args(args: Vec<String>) -> Result<DesktopCo
         check,
         installed,
         available,
+        lint,
     }))
 }
 

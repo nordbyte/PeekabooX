@@ -75,6 +75,9 @@ MCP exposes `list_plugins` with an optional `paths` array. It also exposes
 `paths`, optional `timeout_seconds`, optional `max_output_bytes`, optional
 `require_trusted`, and optional `trust_policy`. Python and MCP execution is
 gated by the `plugin_execute` runtime capability.
+Daemon-routed plugin execution is gated separately from input automation; start
+`peekabooxd` with `--profile operator`, `--allow-plugins`, or
+`PEEKABOOX_ALLOW_PLUGINS=1`.
 Use `examples/python/plugins_runtime.py` and `examples/mcp/jsonrpc_plugins.sh`
 to validate the same discovery and execution path through the Python runtime
 and MCP JSON-RPC.

@@ -195,6 +195,7 @@ cargo run -q -p peekaboox-cli -- desktop profiles
 cargo run -q -p peekaboox-cli -- desktop profiles --json
 cargo run -q -p peekaboox-cli -- desktop profiles --app telegram --supports type-into --target message-input --json
 cargo run -q -p peekaboox-cli -- desktop profiles --availability --installed --json
+cargo run -q -p peekaboox-cli -- desktop profiles --lint
 cargo run -q -p peekaboox-cli -- desktop focus --app telegram
 cargo run -q -p peekaboox-cli -- desktop locate --app telegram --target search-input
 cargo run -q -p peekaboox-cli -- desktop type-into --app telegram --target search-input --clear "Saved Messages"
@@ -205,7 +206,8 @@ cargo run -q -p peekaboox-cli -- --daemon desktop click --app telegram --target 
 ```
 
 Built-in profiles include `telegram`, `paint`, `drawing`, `pinta`,
-`kolourpaint`, and `text-editor`. They use the safest available path in order:
+`kolourpaint`, `text-editor`, `calendar`, `browser`, `files`, `terminal`, and
+`libreoffice`. They use the safest available path in order:
 existing window focus through the window manager or AT-SPI, GNOME Overview
 activation, coordinate click only as the last focus fallback, application launch
 when no matching window is available, then app-specific visual layout targets
@@ -231,6 +233,8 @@ with arguments, per-target capability metadata, and optional availability
 checks. Filter it with `--app`, `--target`, `--command`, `--desktop-id`,
 `--supports`, `--installed`, or `--available`; use `--availability`/`--check` to
 annotate commands and desktop ids without filtering.
+`--lint` validates the built-in and external profile catalog and prints a
+compact success line without opening applications.
 
 Additional JSON profiles are loaded from `PEEKABOOX_DESKTOP_PROFILE_PATH`
 using colon-separated files or directories, then from
@@ -521,7 +525,9 @@ Start the daemon with `--vision-fallback` or set `PEEKABOOX_VISION_FALLBACK=1`
 to let semantic element and click requests fall back to a live screenshot-based
 detector when accessibility returns no match. Real daemon-routed input requires
 `peekabooxd run --profile operator`, `--allow-input`, or
-`PEEKABOOX_ALLOW_INPUT=1`; see [docs/security.md](security.md).
+`PEEKABOOX_ALLOW_INPUT=1`. Daemon plugin execution is controlled separately by
+`--allow-plugins` or `PEEKABOOX_ALLOW_PLUGINS=1`; see
+[docs/security.md](security.md).
 
 For Python, MCP, or other gRPC clients, protect the daemon with `--grpc-token`
 or `PEEKABOOX_GRPC_TOKEN`. Python clients, `peekaboox-agent`, and

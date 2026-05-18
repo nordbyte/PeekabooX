@@ -5,6 +5,7 @@ from typing import Any
 
 from peekaboox.memory import GraphNode
 from peekaboox.workflows import (
+    SUPPORTED_WORKFLOW_ACTIONS,
     Workflow,
     WorkflowStep,
     load_workflow_text,
@@ -73,8 +74,43 @@ class PlanningEngine:
         target = _target_selector(normalized, desktop_nodes)
         typed_text = _typed_text(normalized)
         intent = _intent(normalized)
+        desktop_app = _desktop_app(normalized)
+        desktop_target = _desktop_target(normalized)
+        expected_text = _expected_text(normalized)
 
-        if target is not None and (intent in {"click", "type", "paste"} or typed_text is None):
+        if "ocr" in normalized.casefold() or "read text" in normalized.casefold():
+            if expected_text is not None:
+                steps.append(WorkflowStep(action="assert_text", expected_text=expected_text))
+            else:
+                steps.append(WorkflowStep(action="ocr_screen"))
+            return self._validate_workflow(Workflow(name=normalized, steps=steps[: self.max_steps]))
+
+        if desktop_app is not None and intent in {"focus", "open", "click", "type", "paste"}:
+            steps.append(WorkflowStep(action="desktop_focus", app=desktop_app, verify=True))
+            if desktop_target is not None and intent == "click":
+                steps.append(
+                    WorkflowStep(
+                        action="desktop_click",
+                        app=desktop_app,
+                        target=desktop_target,
+                        verify=True,
+                    )
+                )
+            if desktop_target is not None and typed_text is not None:
+                steps.append(
+                    WorkflowStep(
+                        action="desktop_type_into",
+                        app=desktop_app,
+                        target=desktop_target,
+                        value=typed_text,
+                        verify=True,
+                    )
+                )
+            return self._validate_workflow(Workflow(name=normalized, steps=steps[: self.max_steps]))
+
+        if target is not None and (
+            intent in {"click", "type", "paste", "open"} or typed_text is None
+        ):
             steps.append(WorkflowStep(action="find_element", selector=target))
 
         if target is not None and intent in {"click", "type", "paste"}:
@@ -306,31 +342,34 @@ def _validate_step(step: WorkflowStep, index: int) -> None:
             raise ValueError(f"steps[{index}].backend is unsupported")
     if action == "hotkey" and step.value is None:
         raise ValueError(f"steps[{index}].value is required for hotkey")
+    if action in {"wait", "sleep"} and step.sleep_ms is None and step.duration_ms is None:
+        raise ValueError(f"steps[{index}].sleep_ms is required for wait")
+    if action in {"compare", "compare_images"} and (
+        step.expected_path is None or step.actual_path is None
+    ):
+        raise ValueError(f"steps[{index}] compare_images requires expected_path and actual_path")
+    if action in {"detect_ui_state", "state"} and len(step.image_paths) < 2:
+        raise ValueError(f"steps[{index}] detect_ui_state requires at least two image_paths")
+    if action in {"detect_ui_elements", "vision_elements"} and step.image_path is None:
+        raise ValueError(f"steps[{index}].image_path is required for detect_ui_elements")
+    if action.startswith("desktop_"):
+        if action != "desktop_profiles" and not step.app:
+            raise ValueError(f"steps[{index}].app is required for {action}")
+        if action not in {"desktop_profiles", "desktop_focus"} and not step.target:
+            raise ValueError(f"steps[{index}].target is required for {action}")
+    if action in {"plugin_call", "call_plugin_tool"} and not (step.plugin_id and step.tool):
+        raise ValueError(f"steps[{index}] plugin_call requires plugin_id and tool")
 
 
-_SUPPORTED_ACTIONS = {
-    "observe",
-    "capture",
-    "capture_screen",
-    "find_element",
-    "click",
-    "move",
-    "move_mouse",
-    "drag",
-    "type",
-    "type_text",
-    "paste",
-    "paste_text",
-    "hotkey",
-    "list_windows",
-    "get_desktop_state",
-}
+_SUPPORTED_ACTIONS = SUPPORTED_WORKFLOW_ACTIONS
 
 
 def _intent(goal: str) -> str | None:
     normalized = goal.casefold()
     if "paste" in normalized:
         return "paste"
+    if any(word in normalized for word in ("focus", "bring forward", "foreground")):
+        return "focus"
     if any(word in normalized for word in ("type", "enter", "write", "input")):
         return "type"
     if any(word in normalized for word in ("click", "press", "select", "open", "submit")):
@@ -351,6 +390,39 @@ def _typed_text(goal: str) -> str | None:
     if typed is None:
         return None
     value = typed.group(1).strip()
+    return value or None
+
+
+def _expected_text(goal: str) -> str | None:
+    match = re.search(r"\b(?:see|read|contains?|expect)\s+['\"]([^'\"]+)['\"]", goal, re.I)
+    if match:
+        return match.group(1).strip() or None
+    return _typed_text(goal)
+
+
+def _desktop_app(goal: str) -> str | None:
+    match = re.search(
+        r"\b(?:app|application|profile)\s+([a-z0-9_.-]+)|\b(?:focus|open)\s+([a-z0-9_.-]+)",
+        goal,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    value = (match.group(1) or match.group(2) or "").strip()
+    if not value or len(value) > 64:
+        return None
+    return value
+
+
+def _desktop_target(goal: str) -> str | None:
+    match = re.search(
+        r"\b(?:target|field|button|area)\s+([a-z0-9_.-]+)",
+        goal,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    value = match.group(1).strip()
     return value or None
 
 

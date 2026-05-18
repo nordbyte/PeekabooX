@@ -1,0 +1,15 @@
+schema_version: 'peekaboox.workflow.v1'
+name: 'desktop-profile-action'
+steps:
+  - action: 'desktop_focus'
+    app: 'text-editor'
+    verify: true
+  - action: 'desktop_click'
+    app: 'text-editor'
+    target: 'document'
+    verify: true
+  - action: 'desktop_type_into'
+    app: 'text-editor'
+    target: 'document'
+    value: 'PeekabooX workflow example'
+    verify: true

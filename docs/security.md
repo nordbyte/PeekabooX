@@ -16,6 +16,7 @@ Real input injection through the daemon is denied unless explicitly enabled:
 
 ```bash
 peekabooxd run --allow-input
+peekabooxd run --allow-plugins
 ```
 
 Trusted local operator sessions can use the daemon profile preset instead:
@@ -91,7 +92,9 @@ handling.
 
 `AgentRuntime` has an in-process capability policy for Python and MCP callers.
 The default policy allows all runtime capabilities, while the daemon's real
-input gate still applies to daemon-routed input requests.
+input gate still applies to daemon-routed input requests. Daemon plugin tool
+execution has its own gate: use `--profile operator`, `--allow-plugins`, or
+`PEEKABOOX_ALLOW_PLUGINS=1`; it is no longer implied by `--allow-input`.
 
 Available runtime capabilities:
 

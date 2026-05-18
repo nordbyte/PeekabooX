@@ -130,6 +130,43 @@ class SemanticDesktopGraph:
     def latest_snapshot(self) -> DesktopGraphSnapshot | None:
         return self.snapshots[-1] if self.snapshots else None
 
+    def compact(
+        self,
+        *,
+        max_snapshots: int | None = None,
+        max_age_ms: int | None = None,
+        now_unix_ms: int | None = None,
+    ) -> int:
+        if max_snapshots is not None and max_snapshots < 1:
+            raise ValueError("max_snapshots must be greater than zero")
+        if max_age_ms is not None and max_age_ms < 0:
+            raise ValueError("max_age_ms must be non-negative")
+        if not self.snapshots:
+            return 0
+
+        original = list(self.snapshots)
+        kept = list(self.snapshots)
+        if max_age_ms is not None:
+            now = now_unix_ms if now_unix_ms is not None else _unix_ms()
+            cutoff = now - max_age_ms
+            kept = [snapshot for snapshot in kept if snapshot.captured_at_unix_ms >= cutoff]
+            if not kept:
+                kept = [original[-1]]
+        if max_snapshots is not None and len(kept) > max_snapshots:
+            kept = kept[-max_snapshots:]
+        self.snapshots = kept
+        return len(original) - len(kept)
+
+    def stats(self) -> dict[str, int]:
+        snapshot_count = len(self.snapshots)
+        node_count = sum(len(snapshot.nodes) for snapshot in self.snapshots)
+        edge_count = sum(len(snapshot.edges) for snapshot in self.snapshots)
+        return {
+            "snapshot_count": snapshot_count,
+            "node_count": node_count,
+            "edge_count": edge_count,
+        }
+
     def node_by_id(self, node_id: str, *, latest_only: bool = True) -> GraphNode | None:
         snapshots = self._snapshots_for_query(latest_only)
         if not latest_only:

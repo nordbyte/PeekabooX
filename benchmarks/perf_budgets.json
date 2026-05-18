@@ -7,8 +7,20 @@
       "iterations": 200,
       "warmup": 20
     },
+    "python.workflow_template_list": {
+      "description": "List built-in workflow templates including serialized workflow definitions.",
+      "target_ms": 10.0,
+      "iterations": 200,
+      "warmup": 20
+    },
     "python.memory.desktop_graph_ingest": {
       "description": "Ingest a deterministic desktop state with many UI elements into the semantic graph.",
+      "target_ms": 30.0,
+      "iterations": 100,
+      "warmup": 10
+    },
+    "python.memory.desktop_graph_compact": {
+      "description": "Compact repeated desktop graph snapshots down to the latest retained snapshot.",
       "target_ms": 30.0,
       "iterations": 100,
       "warmup": 10

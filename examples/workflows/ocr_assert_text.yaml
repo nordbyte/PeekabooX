@@ -1,0 +1,8 @@
+schema_version: 'peekaboox.workflow.v1'
+name: 'ocr-assert-visible-text'
+steps:
+  - action: 'ocr_screen'
+    language: 'eng'
+  - action: 'assert_text'
+    expected_text: 'PeekabooX'
+    language: 'eng'

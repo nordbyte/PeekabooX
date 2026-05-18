@@ -1,0 +1,14 @@
+{
+  "name": "visual-regression",
+  "schema_version": "peekaboox.workflow.v1",
+  "steps": [
+    {
+      "action": "compare_images",
+      "actual_path": "target/examples/current.png",
+      "alpha": "ignore",
+      "expected_path": "target/examples/baseline.png",
+      "max_changed_ratio": 0.01,
+      "size_policy": "common-region"
+    }
+  ]
+}

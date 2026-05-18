@@ -308,6 +308,8 @@ exercises `--availability` metadata. It also loads the checked-in external
 profile from `examples/desktop/profiles/calculator.json` through
 `PEEKABOOX_DESKTOP_PROFILE_PATH` and verifies the generic `display` target. It
 writes JSON reports under `target/examples/desktop-profiles`.
+`peekaboox desktop profiles --lint` can be used as a compact catalog validation
+step for custom profile directories.
 
 `examples/desktop/desktop_profiles_daemon_parity.sh` starts a temporary
 observe-only daemon with a short Unix socket path and gRPC enabled, then checks
@@ -403,6 +405,8 @@ mutating helper actions support `--verify` for post-action checks. Override
 Messages` header through accessibility or OCR when those desktop capabilities
 are available.
 
-`examples/workflows/desktop_observe.yaml` and
-`examples/workflows/input_actions.yaml` are editable workflow files for
-daemon-backed runtime or MCP execution.
+`examples/workflows/desktop_observe.yaml`, `input_actions.yaml`,
+`ocr_assert_text.yaml`, `visual_regression.json`,
+`desktop_profile_action.yaml`, and `plugin_tool_call.json` are editable
+workflow files for daemon-backed runtime or MCP execution. The same shapes are
+available through `peekaboox-agent workflow templates`.

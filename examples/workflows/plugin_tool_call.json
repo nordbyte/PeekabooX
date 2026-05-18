@@ -1,0 +1,13 @@
+{
+  "name": "plugin-tool-call",
+  "schema_version": "peekaboox.workflow.v1",
+  "steps": [
+    {
+      "action": "plugin_call",
+      "arguments": {},
+      "plugin_id": "system-info",
+      "timeout_seconds": 10,
+      "tool": "system.info"
+    }
+  ]
+}

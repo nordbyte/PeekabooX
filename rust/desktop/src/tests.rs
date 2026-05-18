@@ -11,7 +11,11 @@ fn supported_apps_contains_desktop_profiles() {
             "pinta",
             "kolourpaint",
             "text-editor",
-            "calendar"
+            "calendar",
+            "browser",
+            "files",
+            "terminal",
+            "libreoffice"
         ]
     );
     assert!(resolve_profile("telegram-desktop").is_ok());
@@ -25,6 +29,10 @@ fn supported_apps_contains_desktop_profiles() {
         resolve_profile("org.gnome.Calendar").unwrap().id,
         "calendar"
     );
+    assert_eq!(resolve_profile("firefox").unwrap().id, "browser");
+    assert_eq!(resolve_profile("nautilus").unwrap().id, "files");
+    assert_eq!(resolve_profile("kgx").unwrap().id, "terminal");
+    assert_eq!(resolve_profile("writer").unwrap().id, "libreoffice");
 }
 
 #[test]

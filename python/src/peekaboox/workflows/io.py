@@ -147,6 +147,69 @@ def workflow_step_from_dict(value: Any, index: int = 0) -> WorkflowStep:
         dry_run=_optional_bool(value, "dry_run", default=False),
         vision_fallback=_optional_bool(value, "vision_fallback", default=False),
         verify=_optional_bool(value, "verify", default=True),
+        target=_optional_string(value, "target"),
+        image_path=_optional_string(value, "image_path"),
+        expected_path=_optional_string(value, "expected_path"),
+        actual_path=_optional_string(value, "actual_path"),
+        image_paths=_optional_string_tuple(value, "image_paths"),
+        ignore_regions=_optional_string_tuple(value, "ignore_regions"),
+        language=_optional_string(value, "language"),
+        page_segmentation_mode=_optional_int(value, "page_segmentation_mode"),
+        engine_mode=_optional_int(value, "engine_mode"),
+        dpi=_optional_int(value, "dpi"),
+        min_confidence=_optional_float(value, "min_confidence"),
+        whitelist=_optional_string(value, "whitelist"),
+        config=_optional_string_tuple(value, "config"),
+        scale=_optional_float(value, "scale"),
+        grayscale=_optional_bool(value, "grayscale", default=False),
+        threshold=_optional_int(value, "threshold"),
+        invert=_optional_bool(value, "invert", default=False),
+        contrast=_optional_float(value, "contrast"),
+        deskew=_optional_bool(value, "deskew", default=False),
+        per_channel_threshold=_optional_int(value, "per_channel_threshold"),
+        max_changed_ratio=_optional_float(value, "max_changed_ratio"),
+        max_changed_pixels=_optional_int(value, "max_changed_pixels"),
+        max_mean_absolute_error=_optional_float(value, "max_mean_absolute_error"),
+        max_channel_delta=_optional_int(value, "max_channel_delta"),
+        stable_max_changed_ratio=_optional_float(value, "stable_max_changed_ratio"),
+        stable_max_changed_pixels=_optional_int(value, "stable_max_changed_pixels"),
+        stable_max_mean_absolute_error=_optional_float(value, "stable_max_mean_absolute_error"),
+        stable_max_channel_delta=_optional_int(value, "stable_max_channel_delta"),
+        loading_min_changed_ratio=_optional_float(value, "loading_min_changed_ratio"),
+        loading_min_changed_pixels=_optional_int(value, "loading_min_changed_pixels"),
+        required_stable_transitions=_optional_int(value, "required_stable_transitions"),
+        size_policy=_optional_string(value, "size_policy"),
+        alpha=_optional_string(value, "alpha"),
+        edge_threshold=_optional_int(value, "edge_threshold"),
+        min_width=_optional_int(value, "min_width"),
+        min_height=_optional_int(value, "min_height"),
+        min_component_pixels=_optional_int(value, "min_component_pixels"),
+        max_elements=_optional_int(value, "max_elements"),
+        merge_distance=_optional_int(value, "merge_distance"),
+        max_width=_optional_int(value, "max_width"),
+        max_height=_optional_int(value, "max_height"),
+        min_area=_optional_int(value, "min_area"),
+        max_area=_optional_int(value, "max_area"),
+        padding=_optional_int(value, "padding"),
+        sort=_optional_string(value, "sort"),
+        mask_output_path=_optional_string(value, "mask_output_path"),
+        overlay_output_path=_optional_string(value, "overlay_output_path"),
+        prefer_accessibility=_optional_bool(value, "prefer_accessibility", default=True),
+        use_gnome_overview=_optional_bool(value, "use_gnome_overview", default=True),
+        launch_if_needed=_optional_bool(value, "launch_if_needed", default=True),
+        wait_after_focus_ms=_optional_int(value, "wait_after_focus_ms"),
+        overview_wait_ms=_optional_int(value, "overview_wait_ms"),
+        clear=_optional_bool(value, "clear", default=False),
+        assertion=_optional_string(value, "assertion"),
+        expected_text=_optional_string(value, "expected_text"),
+        plugin_id=_optional_string(value, "plugin_id"),
+        tool=_optional_string(value, "tool"),
+        arguments=_optional_object(value, "arguments"),
+        timeout_seconds=_optional_float(value, "timeout_seconds"),
+        max_output_bytes=_optional_int(value, "max_output_bytes"),
+        require_trusted=_optional_bool_or_none(value, "require_trusted"),
+        trust_policy=_optional_string(value, "trust_policy"),
+        sleep_ms=_optional_int(value, "sleep_ms"),
     )
     validate_workflow_step(step, index=index)
     return step
@@ -240,6 +303,93 @@ def workflow_step_to_dict(step: WorkflowStep) -> dict[str, object]:
         value["vision_fallback"] = step.vision_fallback
     if not step.verify:
         value["verify"] = step.verify
+    for key in (
+        "target",
+        "image_path",
+        "expected_path",
+        "actual_path",
+        "language",
+        "whitelist",
+        "size_policy",
+        "alpha",
+        "sort",
+        "mask_output_path",
+        "overlay_output_path",
+        "assertion",
+        "expected_text",
+        "plugin_id",
+        "tool",
+        "trust_policy",
+    ):
+        item = getattr(step, key)
+        if item is not None:
+            value[key] = item
+    for key in ("image_paths", "ignore_regions", "config"):
+        item = getattr(step, key)
+        if item:
+            value[key] = list(item)
+    for key in (
+        "page_segmentation_mode",
+        "engine_mode",
+        "dpi",
+        "threshold",
+        "per_channel_threshold",
+        "max_changed_pixels",
+        "max_channel_delta",
+        "stable_max_changed_pixels",
+        "stable_max_channel_delta",
+        "loading_min_changed_pixels",
+        "required_stable_transitions",
+        "edge_threshold",
+        "min_width",
+        "min_height",
+        "min_component_pixels",
+        "max_elements",
+        "merge_distance",
+        "max_width",
+        "max_height",
+        "min_area",
+        "max_area",
+        "padding",
+        "wait_after_focus_ms",
+        "overview_wait_ms",
+        "max_output_bytes",
+        "sleep_ms",
+    ):
+        item = getattr(step, key)
+        if item is not None:
+            value[key] = item
+    for key in (
+        "min_confidence",
+        "scale",
+        "contrast",
+        "max_changed_ratio",
+        "max_mean_absolute_error",
+        "stable_max_changed_ratio",
+        "stable_max_mean_absolute_error",
+        "loading_min_changed_ratio",
+        "timeout_seconds",
+    ):
+        item = getattr(step, key)
+        if item is not None:
+            value[key] = item
+    for key in (
+        "grayscale",
+        "invert",
+        "deskew",
+        "prefer_accessibility",
+        "use_gnome_overview",
+        "launch_if_needed",
+        "clear",
+    ):
+        item = getattr(step, key)
+        default = key in {"prefer_accessibility", "use_gnome_overview", "launch_if_needed"}
+        if item != default:
+            value[key] = item
+    if step.arguments is not None:
+        value["arguments"] = dict(step.arguments)
+    if step.require_trusted is not None:
+        value["require_trusted"] = step.require_trusted
     return value
 
 
@@ -366,8 +516,15 @@ def _parse_scalar(value: str) -> object:
         return False
     if normalized in {"null", "none", "~"}:
         return None
+    if value.startswith("[") or value.startswith("{"):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            pass
     if _is_int(value):
         return int(value)
+    if _is_float(value):
+        return float(value)
     return value
 
 
@@ -413,7 +570,42 @@ def _optional_bool(value: dict[str, object], name: str, default: bool) -> bool:
     raise ValueError(f"{name} must be a boolean")
 
 
+def _optional_bool_or_none(value: dict[str, object], name: str) -> bool | None:
+    if name not in value or value.get(name) is None:
+        return None
+    return _optional_bool(value, name, default=False)
+
+
+def _optional_string_tuple(value: dict[str, object], name: str) -> tuple[str, ...]:
+    item = value.get(name)
+    if item is None:
+        return ()
+    if isinstance(item, str):
+        values = [part.strip() for part in item.split(",")]
+        return tuple(part for part in values if part)
+    if isinstance(item, list) and all(isinstance(part, str) for part in item):
+        return tuple(part for part in item if part)
+    raise ValueError(f"{name} must be a string or list of strings")
+
+
+def _optional_object(value: dict[str, object], name: str) -> dict[str, object] | None:
+    item = value.get(name)
+    if item is None:
+        return None
+    if not isinstance(item, dict):
+        raise ValueError(f"{name} must be an object")
+    return dict(item)
+
+
 def _is_int(value: str) -> bool:
     if value.startswith("-"):
         return value[1:].isdigit()
     return value.isdigit()
+
+
+def _is_float(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return any(character in value for character in ".eE")

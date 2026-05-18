@@ -62,9 +62,12 @@ from peekaboox.workflows import (
     WorkflowRecorder,
     WorkflowStep,
     create_workflow_bundle,
+    dump_workflow_text,
+    get_workflow_template,
     load_workflow_file,
     save_workflow_file,
     workflow_json_schema,
+    workflow_template_dicts,
 )
 
 WINDOW_SORT_CHOICES = ("backend", "focused", "title", "app", "area", "id", "state")
@@ -277,6 +280,35 @@ class AgentRuntime:
     def plan_workflow(self, goal: str) -> Workflow:
         self._require_capability(Capability.WORKFLOW_GENERATE, "plan_workflow")
         return self.planner.plan_workflow(goal)
+
+    def list_workflow_templates(
+        self,
+        *,
+        category: str | None = None,
+        capability: str | None = None,
+        tag: str | None = None,
+        include_workflows: bool = False,
+    ) -> list[dict[str, object]]:
+        self._require_capability(Capability.OBSERVE, "list_workflow_templates")
+        return workflow_template_dicts(
+            include_workflow=include_workflows,
+            category=category,
+            capability=capability,
+            tag=tag,
+        )
+
+    def workflow_template(self, template_id: str) -> Workflow:
+        self._require_capability(Capability.OBSERVE, "workflow_template", template_id=template_id)
+        return get_workflow_template(template_id).workflow
+
+    def workflow_template_info(
+        self,
+        template_id: str,
+        *,
+        include_workflow: bool = True,
+    ) -> dict[str, object]:
+        self._require_capability(Capability.OBSERVE, "workflow_template_info", template_id=template_id)
+        return get_workflow_template(template_id).as_dict(include_workflow=include_workflow)
 
     def capability_audit(self) -> tuple[CapabilityAuditEvent, ...]:
         return tuple(self.capability_policy.audit_events)
@@ -1222,7 +1254,7 @@ class AgentRuntime:
             has_window_id=bool(window_id),
             verify=verify,
         )
-        return self._require_client().desktop_focus(
+        result = self._require_client().desktop_focus(
             app,
             use_gnome_overview=use_gnome_overview,
             launch_if_needed=launch_if_needed,
@@ -1232,6 +1264,20 @@ class AgentRuntime:
             window_id=window_id,
             verify=verify,
         )
+        self._record_step(
+            WorkflowStep(
+                action="desktop_focus",
+                app=app,
+                use_gnome_overview=use_gnome_overview,
+                launch_if_needed=launch_if_needed,
+                wait_after_focus_ms=wait_after_focus_ms,
+                overview_wait_ms=overview_wait_ms,
+                window_title=window_title,
+                window_id=window_id,
+                verify=verify,
+            )
+        )
+        return result
 
     def desktop_locate(
         self,
@@ -1246,7 +1292,7 @@ class AgentRuntime:
         self._require_capability(Capability.OBSERVE, "desktop_locate", app=app, target=target)
         self._require_capability(Capability.VISION, "desktop_locate", app=app, target=target)
         self._require_preflight("desktop_locate", ("desktop", "capture"))
-        return self._require_client().desktop_locate(
+        result = self._require_client().desktop_locate(
             app,
             target,
             image_path=image_path,
@@ -1254,6 +1300,18 @@ class AgentRuntime:
             window_title=window_title,
             window_id=window_id,
         )
+        self._record_step(
+            WorkflowStep(
+                action="desktop_locate",
+                app=app,
+                target=target,
+                image_path=str(image_path) if image_path is not None else None,
+                prefer_accessibility=prefer_accessibility,
+                window_title=window_title,
+                window_id=window_id,
+            )
+        )
+        return result
 
     def desktop_click(
         self,
@@ -1282,7 +1340,7 @@ class AgentRuntime:
                 has_window_id=bool(window_id),
                 verify=verify,
             )
-        return self._require_client().desktop_click(
+        result = self._require_client().desktop_click(
             app,
             target,
             image_path=image_path,
@@ -1293,6 +1351,21 @@ class AgentRuntime:
             dry_run=dry_run,
             verify=verify,
         )
+        self._record_step(
+            WorkflowStep(
+                action="desktop_click",
+                app=app,
+                target=target,
+                image_path=str(image_path) if image_path is not None else None,
+                prefer_accessibility=prefer_accessibility,
+                window_title=window_title,
+                window_id=window_id,
+                button=button,
+                dry_run=dry_run,
+                verify=verify,
+            )
+        )
+        return result
 
     def desktop_drag(
         self,
@@ -1327,7 +1400,7 @@ class AgentRuntime:
                 has_window_id=bool(window_id),
                 verify=verify,
             )
-        return self._require_client().desktop_drag(
+        result = self._require_client().desktop_drag(
             app,
             target,
             image_path=image_path,
@@ -1341,6 +1414,26 @@ class AgentRuntime:
             dry_run=dry_run,
             verify=verify,
         )
+        self._record_step(
+            WorkflowStep(
+                action="desktop_drag",
+                app=app,
+                target=target,
+                image_path=str(image_path) if image_path is not None else None,
+                prefer_accessibility=prefer_accessibility,
+                window_title=window_title,
+                window_id=window_id,
+                button=button,
+                from_ratio_x=from_ratio[0],
+                from_ratio_y=from_ratio[1],
+                to_ratio_x=to_ratio[0],
+                to_ratio_y=to_ratio[1],
+                duration_ms=duration_ms,
+                dry_run=dry_run,
+                verify=verify,
+            )
+        )
+        return result
 
     def desktop_type_into(
         self,
@@ -1378,7 +1471,7 @@ class AgentRuntime:
                 has_window_id=bool(window_id),
                 verify=verify,
             )
-        return self._require_client().desktop_type_into(
+        result = self._require_client().desktop_type_into(
             app,
             target,
             text,
@@ -1390,6 +1483,22 @@ class AgentRuntime:
             dry_run=dry_run,
             verify=verify,
         )
+        self._record_step(
+            WorkflowStep(
+                action="desktop_type_into",
+                app=app,
+                target=target,
+                value=text,
+                image_path=str(image_path) if image_path is not None else None,
+                prefer_accessibility=prefer_accessibility,
+                window_title=window_title,
+                window_id=window_id,
+                clear=clear,
+                dry_run=dry_run,
+                verify=verify,
+            )
+        )
+        return result
 
     def desktop_assert(
         self,
@@ -1417,7 +1526,7 @@ class AgentRuntime:
             if assertion_name in {"contains", "not_contains"}:
                 required_categories = ("desktop", "capture", "ocr")
         self._require_preflight("desktop_assert", required_categories)
-        return self._require_client().desktop_assert(
+        result = self._require_client().desktop_assert(
             app,
             target,
             assertion=assertion,
@@ -1427,6 +1536,20 @@ class AgentRuntime:
             window_title=window_title,
             window_id=window_id,
         )
+        self._record_step(
+            WorkflowStep(
+                action="desktop_assert",
+                app=app,
+                target=target,
+                assertion=assertion,
+                expected_text=expected_text,
+                image_path=str(image_path) if image_path is not None else None,
+                prefer_accessibility=prefer_accessibility,
+                window_title=window_title,
+                window_id=window_id,
+            )
+        )
+        return result
 
     def ingest_desktop_snapshot(
         self,
@@ -1476,6 +1599,30 @@ class AgentRuntime:
     def desktop_graph_status(self) -> DesktopGraphStatus:
         self._require_capability(Capability.MEMORY_READ, "desktop_graph_status")
         return self.memory.desktop_graph_status()
+
+    def compact_desktop_graph(
+        self,
+        *,
+        max_snapshots: int | None = None,
+        max_age_ms: int | None = None,
+    ) -> dict[str, object]:
+        self._require_capability(
+            Capability.MEMORY_WRITE,
+            "compact_desktop_graph",
+            max_snapshots=max_snapshots,
+            max_age_ms=max_age_ms,
+        )
+        before = self.memory.desktop_graph_status()
+        removed = self.memory.compact_desktop_graph(
+            max_snapshots=max_snapshots,
+            max_age_ms=max_age_ms,
+        )
+        after = self.memory.desktop_graph_status()
+        return {
+            "removed": removed,
+            "before": before,
+            "after": after,
+        }
 
     def refresh_desktop_graph(self, snapshot_id: str | None = None) -> DesktopGraphSnapshot:
         self._require_capability(Capability.MEMORY_WRITE, "refresh_desktop_graph")
@@ -2312,10 +2459,253 @@ class AgentRuntime:
                 release_before=step.release_before,
                 release_after=step.release_after,
             )
+        if action in {"wait", "sleep"}:
+            delay_ms = step.sleep_ms if step.sleep_ms is not None else step.duration_ms
+            if delay_ms is None:
+                raise ValueError("wait step requires sleep_ms or duration_ms")
+            time.sleep(delay_ms / 1000.0)
+            return {"ok": True, "slept_ms": delay_ms}
+        if action in {"assert", "assert_text"}:
+            expected = step.expected_text or step.value
+            if expected is None and step.selector is not None:
+                matches = self.find_element(
+                    step.selector,
+                    vision_fallback=step.vision_fallback,
+                    app=step.app,
+                    window_title=step.window_title,
+                    window_id=step.window_id,
+                )
+                if not matches:
+                    raise AssertionError(f"selector {step.selector!r} did not match")
+                return {"ok": True, "matches": len(matches), "selector": step.selector}
+            if expected is None:
+                raise ValueError("assert_text step requires expected_text, value, or selector")
+            region = _parse_rect(step.region) if step.region is not None else None
+            ocr = self.ocr_screen(
+                region=region,
+                language=step.language,
+                image_path=step.image_path,
+                window_id=step.window_id,
+                window_title=step.window_title,
+                app=step.app,
+                page_segmentation_mode=step.page_segmentation_mode,
+                engine_mode=step.engine_mode,
+                dpi=step.dpi,
+                min_confidence=step.min_confidence,
+                whitelist=step.whitelist,
+                config=list(step.config),
+                scale=step.scale,
+                grayscale=step.grayscale,
+                threshold=step.threshold,
+                invert=step.invert,
+                contrast=step.contrast,
+                deskew=step.deskew,
+            )
+            if expected not in ocr.text:
+                raise AssertionError(f"expected text {expected!r} not found in OCR output")
+            return {"ok": True, "expected_text": expected, "text": ocr.text}
+        if action in {"ocr", "ocr_screen"}:
+            region = _parse_rect(step.region) if step.region is not None else None
+            return self.ocr_screen(
+                region=region,
+                language=step.language,
+                image_path=step.image_path,
+                window_id=step.window_id,
+                window_title=step.window_title,
+                app=step.app,
+                page_segmentation_mode=step.page_segmentation_mode,
+                engine_mode=step.engine_mode,
+                dpi=step.dpi,
+                min_confidence=step.min_confidence,
+                whitelist=step.whitelist,
+                config=list(step.config),
+                scale=step.scale,
+                grayscale=step.grayscale,
+                threshold=step.threshold,
+                invert=step.invert,
+                contrast=step.contrast,
+                deskew=step.deskew,
+            )
+        if action in {"compare", "compare_images"}:
+            if step.expected_path is None or step.actual_path is None:
+                raise ValueError("compare_images step requires expected_path and actual_path")
+            return self.compare_image_files(
+                step.expected_path,
+                step.actual_path,
+                region=_parse_rect(step.region) if step.region is not None else None,
+                ignore_regions=_parse_rects(step.ignore_regions),
+                per_channel_threshold=step.per_channel_threshold,
+                max_changed_ratio=step.max_changed_ratio,
+                max_changed_pixels=step.max_changed_pixels,
+                max_mean_absolute_error=step.max_mean_absolute_error,
+                max_channel_delta=step.max_channel_delta,
+                size_policy=step.size_policy,
+                alpha=step.alpha,
+            )
+        if action in {"detect_ui_state", "state"}:
+            return self.detect_ui_state_from_image_files(
+                list(step.image_paths),
+                region=_parse_rect(step.region) if step.region is not None else None,
+                ignore_regions=_parse_rects(step.ignore_regions),
+                per_channel_threshold=step.per_channel_threshold,
+                stable_max_changed_ratio=step.stable_max_changed_ratio,
+                stable_max_changed_pixels=step.stable_max_changed_pixels,
+                stable_max_mean_absolute_error=step.stable_max_mean_absolute_error,
+                stable_max_channel_delta=step.stable_max_channel_delta,
+                loading_min_changed_ratio=step.loading_min_changed_ratio,
+                loading_min_changed_pixels=step.loading_min_changed_pixels,
+                required_stable_transitions=step.required_stable_transitions,
+                size_policy=step.size_policy,
+                alpha=step.alpha,
+            )
+        if action in {"detect_ui_elements", "vision_elements"}:
+            if step.image_path is None:
+                raise ValueError("detect_ui_elements step requires image_path")
+            return self.detect_ui_elements_from_image_file(
+                step.image_path,
+                region=_parse_rect(step.region) if step.region is not None else None,
+                ignore_regions=_parse_rects(step.ignore_regions),
+                edge_threshold=step.edge_threshold,
+                min_width=step.min_width,
+                min_height=step.min_height,
+                min_component_pixels=step.min_component_pixels,
+                max_elements=step.max_elements,
+                merge_distance=step.merge_distance,
+                min_confidence=step.min_confidence,
+                max_width=step.max_width,
+                max_height=step.max_height,
+                min_area=step.min_area,
+                max_area=step.max_area,
+                padding=step.padding,
+                sort=step.sort,
+                mask_output_path=step.mask_output_path,
+                overlay_output_path=step.overlay_output_path,
+            )
         if action == "list_windows":
             return self.list_windows()
         if action == "get_desktop_state":
             return self.get_desktop_state()
+        if action == "desktop_profiles":
+            return self.desktop_profiles(
+                step.app,
+                target=step.target,
+                command=step.tool,
+                desktop_id=step.value,
+                supports=step.selector,
+            )
+        if action == "desktop_focus":
+            if step.app is None:
+                raise ValueError("desktop_focus step requires app")
+            return self.desktop_focus(
+                step.app,
+                use_gnome_overview=step.use_gnome_overview,
+                launch_if_needed=step.launch_if_needed,
+                wait_after_focus_ms=step.wait_after_focus_ms
+                if step.wait_after_focus_ms is not None
+                else 1_000,
+                overview_wait_ms=step.overview_wait_ms
+                if step.overview_wait_ms is not None
+                else 800,
+                window_title=step.window_title,
+                window_id=step.window_id,
+                verify=step.verify,
+            )
+        if action == "desktop_locate":
+            if step.app is None or step.target is None:
+                raise ValueError("desktop_locate step requires app and target")
+            return self.desktop_locate(
+                step.app,
+                step.target,
+                image_path=step.image_path,
+                prefer_accessibility=step.prefer_accessibility,
+                window_title=step.window_title,
+                window_id=step.window_id,
+            )
+        if action == "desktop_click":
+            if step.app is None or step.target is None:
+                raise ValueError("desktop_click step requires app and target")
+            return self.desktop_click(
+                step.app,
+                step.target,
+                image_path=step.image_path,
+                prefer_accessibility=step.prefer_accessibility,
+                window_title=step.window_title,
+                window_id=step.window_id,
+                button=step.button or "left",
+                dry_run=step.dry_run,
+                verify=step.verify,
+            )
+        if action == "desktop_drag":
+            if step.app is None or step.target is None:
+                raise ValueError("desktop_drag step requires app and target")
+            from_ratio = (
+                (step.from_ratio_x, step.from_ratio_y)
+                if step.from_ratio_x is not None and step.from_ratio_y is not None
+                else (0.5, 0.5)
+            )
+            to_ratio = (
+                (step.to_ratio_x, step.to_ratio_y)
+                if step.to_ratio_x is not None and step.to_ratio_y is not None
+                else (0.5, 0.5)
+            )
+            return self.desktop_drag(
+                step.app,
+                step.target,
+                image_path=step.image_path,
+                prefer_accessibility=step.prefer_accessibility,
+                window_title=step.window_title,
+                window_id=step.window_id,
+                button=step.button or "left",
+                from_ratio=from_ratio,
+                to_ratio=to_ratio,
+                duration_ms=step.duration_ms if step.duration_ms is not None else 250,
+                dry_run=step.dry_run,
+                verify=step.verify,
+            )
+        if action == "desktop_type_into":
+            if step.app is None or step.target is None or step.value is None:
+                raise ValueError("desktop_type_into step requires app, target, and value")
+            return self.desktop_type_into(
+                step.app,
+                step.target,
+                step.value,
+                image_path=step.image_path,
+                prefer_accessibility=step.prefer_accessibility,
+                window_title=step.window_title,
+                window_id=step.window_id,
+                clear=step.clear,
+                dry_run=step.dry_run,
+                verify=step.verify,
+            )
+        if action == "desktop_assert":
+            if step.app is None or step.target is None:
+                raise ValueError("desktop_assert step requires app and target")
+            return self.desktop_assert(
+                step.app,
+                step.target,
+                assertion=step.assertion or "present",
+                expected_text=step.expected_text or step.value,
+                image_path=step.image_path,
+                prefer_accessibility=step.prefer_accessibility,
+                window_title=step.window_title,
+                window_id=step.window_id,
+            )
+        if action in {"plugin_call", "call_plugin_tool"}:
+            if step.plugin_id is None or step.tool is None:
+                raise ValueError("plugin_call step requires plugin_id and tool")
+            return self.call_plugin_tool(
+                step.plugin_id,
+                step.tool,
+                step.arguments or {},
+                timeout_seconds=step.timeout_seconds
+                if step.timeout_seconds is not None
+                else 10.0,
+                max_output_bytes=step.max_output_bytes
+                if step.max_output_bytes is not None
+                else 1_048_576,
+                require_trusted=step.require_trusted,
+                trust_policy_path=step.trust_policy,
+            )
         raise ValueError(f"unsupported workflow action: {step.action}")
 
     def _verify_step(
@@ -2330,6 +2720,35 @@ class AgentRuntime:
                 ok=False,
                 message=result.message or "action returned ok=false",
                 metadata={"action_result": result.message},
+            )
+        if isinstance(result, PluginToolExecutionResult) and not result.ok:
+            return VerificationResult(
+                ok=False,
+                message=result.error or "plugin tool returned ok=false",
+                metadata={"plugin_id": result.plugin_id, "tool": result.tool},
+            )
+        if isinstance(result, VisualDiffResult) and not result.matches:
+            return VerificationResult(
+                ok=False,
+                message="visual comparison did not match",
+                metadata={
+                    "changed_pixels": result.changed_pixels,
+                    "changed_ratio": result.changed_ratio,
+                    "max_channel_delta": result.max_channel_delta,
+                },
+            )
+        if isinstance(result, DetectUiElementsResult) and action in {
+            "detect_ui_elements",
+            "vision_elements",
+        } and not result.elements:
+            return VerificationResult(ok=False, message="detect_ui_elements returned no elements")
+        if isinstance(result, OcrResult) and action in {"ocr", "ocr_screen"} and step.expected_text:
+            return VerificationResult(
+                ok=step.expected_text in result.text,
+                message="OCR expected text found"
+                if step.expected_text in result.text
+                else "OCR expected text missing",
+                metadata={"expected_text": step.expected_text},
             )
 
         if action == "find_element" and not result:
@@ -2361,6 +2780,10 @@ class AgentRuntime:
             "paste",
             "paste_text",
             "hotkey",
+            "desktop_focus",
+            "desktop_click",
+            "desktop_drag",
+            "desktop_type_into",
         }:
             state = self.get_desktop_state()
             self.ingest_desktop_snapshot(state)
@@ -2816,6 +3239,12 @@ def _workflow_preflight_categories(workflow: Workflow) -> tuple[str, ...]:
         action = step.action.strip().lower()
         if action in {"observe", "capture", "capture_screen"}:
             add("desktop", "capture")
+        elif action in {"ocr", "ocr_screen", "assert_text"}:
+            add("desktop", "capture", "ocr")
+        elif action in {"compare", "compare_images", "detect_ui_state", "state"}:
+            add("capture")
+        elif action in {"detect_ui_elements", "vision_elements"}:
+            add("capture")
         elif action == "find_element":
             add("desktop")
             if step.vision_fallback:
@@ -2839,6 +3268,16 @@ def _workflow_preflight_categories(workflow: Workflow) -> tuple[str, ...]:
             add("input")
         elif action in {"list_windows", "get_desktop_state"}:
             add("desktop")
+        elif action == "desktop_profiles":
+            add("desktop")
+        elif action == "desktop_focus":
+            add("desktop", "input")
+        elif action in {"desktop_locate", "desktop_assert"}:
+            add("desktop", "capture")
+            if step.assertion in {"contains", "not_contains"}:
+                add("ocr")
+        elif action in {"desktop_click", "desktop_drag", "desktop_type_into"}:
+            add("desktop", "capture", "input")
     return tuple(categories)
 
 
@@ -3078,6 +3517,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         "schema",
         help="print the PeekabooX workflow JSON schema",
     )
+    workflow_templates_parser = workflow_subparsers.add_parser(
+        "templates",
+        help="list built-in workflow templates",
+    )
+    workflow_templates_parser.add_argument("--category", help="filter by template category")
+    workflow_templates_parser.add_argument("--capability", help="filter by required capability")
+    workflow_templates_parser.add_argument("--tag", help="filter by template tag")
+    workflow_templates_parser.add_argument(
+        "--include-workflows",
+        action="store_true",
+        help="include full workflow definitions in JSON output",
+    )
+    workflow_templates_parser.add_argument("--json", action="store_true", help="print JSON")
+    workflow_template_parser = workflow_subparsers.add_parser(
+        "template",
+        help="print a built-in workflow template",
+    )
+    workflow_template_parser.add_argument("template_id", help="workflow template id")
+    workflow_template_parser.add_argument(
+        "--format",
+        choices=("json", "yaml"),
+        default="yaml",
+        help="template workflow output format",
+    )
+    workflow_template_parser.add_argument(
+        "--metadata",
+        action="store_true",
+        help="print template metadata and both serialized workflow formats as JSON",
+    )
     workflow_replay_parser = workflow_subparsers.add_parser(
         "replay",
         help="execute a workflow file through the daemon",
@@ -3118,6 +3586,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
             if args.workflow_command == "schema":
                 _print_json(workflow_json_schema())
+                return 0
+            if args.workflow_command == "templates":
+                templates = workflow_template_dicts(
+                    include_workflow=args.include_workflows,
+                    category=args.category,
+                    capability=args.capability,
+                    tag=args.tag,
+                )
+                if args.json:
+                    _print_json({"templates": templates})
+                else:
+                    _print_workflow_templates_table(templates)
+                return 0
+            if args.workflow_command == "template":
+                template = get_workflow_template(args.template_id)
+                if args.metadata:
+                    _print_json(template.as_dict(include_workflow=True))
+                else:
+                    print(dump_workflow_text(template.workflow, format_name=args.format), end="")
                 return 0
             workflow = load_workflow_file(args.path)
             if args.workflow_command == "validate":
@@ -3295,6 +3782,23 @@ def _default_workflow_bundle_dir(path: str | Path) -> Path:
     return Path("target") / "workflow-bundles" / f"{safe_stem or 'workflow'}-{int(time.time() * 1000)}"
 
 
+def _print_workflow_templates_table(templates: list[dict[str, object]]) -> None:
+    if not templates:
+        print("no workflow templates")
+        return
+    for template in templates:
+        capabilities = ",".join(str(value) for value in template.get("capabilities", []))
+        print(
+            "{} category={} steps={} capabilities={} description={}".format(
+                template.get("id", "-"),
+                template.get("category", "-"),
+                template.get("steps", "-"),
+                capabilities,
+                template.get("description", "-"),
+            )
+        )
+
+
 def _clean_optional_string(value: str | None) -> str | None:
     if value is None:
         return None
@@ -3327,6 +3831,10 @@ def _parse_rect(value: str) -> Rect:
     if width <= 0 or height <= 0:
         raise ValueError("region width and height must be greater than zero")
     return Rect(x=x, y=y, width=width, height=height)
+
+
+def _parse_rects(values: Sequence[str]) -> tuple[Rect, ...]:
+    return tuple(_parse_rect(value) for value in values)
 
 
 def _positive_int(value: str) -> int:

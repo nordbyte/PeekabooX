@@ -1203,6 +1203,23 @@ class RuntimeCoreTests(unittest.TestCase):
         self.assertEqual(update.snapshot.id, "snapshot:event-refresh")
         self.assertFalse(store.desktop_graph_status().stale)
 
+    def test_memory_store_compacts_desktop_graph_snapshots(self) -> None:
+        store = MemoryStore()
+        for index in range(3):
+            store.ingest_desktop_state(
+                FakeClient().get_desktop_state(),
+                snapshot_id=f"snapshot:{index}",
+                captured_at_unix_ms=100 + index,
+            )
+
+        removed = store.compact_desktop_graph(max_snapshots=1)
+        status = store.desktop_graph_status()
+
+        self.assertEqual(removed, 2)
+        self.assertEqual(status.latest_snapshot_id, "snapshot:2")
+        self.assertEqual(status.snapshot_count, 1)
+        self.assertGreater(status.node_count, 0)
+
     def test_memory_store_finds_cached_elements_by_semantic_selector(self) -> None:
         store = MemoryStore()
         store.ingest_desktop_state(
@@ -1241,6 +1258,7 @@ class RuntimeCoreTests(unittest.TestCase):
                 restored.query_desktop_nodes(kind="element", contained_by="window-1")[0].label,
                 "Submit",
             )
+            restored.compact_desktop_graph(max_snapshots=1)
             restored.close()
 
     def test_sqlite_memory_store_persists_desktop_events_and_invalidations(self) -> None:
@@ -1460,6 +1478,46 @@ class RuntimeCoreTests(unittest.TestCase):
         self.assertEqual(fake_client.last_hotkey_options["interval_ms"], 40)
         self.assertTrue(fake_client.last_hotkey_options["release_before"])
         self.assertTrue(fake_client.last_hotkey_options["release_after"])
+
+    def test_agent_runtime_executes_extended_workflow_actions(self) -> None:
+        fake_client = FakeClient()
+        runtime = AgentRuntime(client=fake_client)
+        workflow = Workflow(
+            name="extended-actions",
+            steps=[
+                WorkflowStep(action="ocr_screen", expected_text="Submit"),
+                WorkflowStep(action="assert_text", expected_text="Submit"),
+                WorkflowStep(
+                    action="compare_images",
+                    expected_path="expected.png",
+                    actual_path="actual.png",
+                    max_changed_ratio=0.01,
+                ),
+                WorkflowStep(
+                    action="detect_ui_state",
+                    image_paths=("one.png", "two.png"),
+                    required_stable_transitions=1,
+                ),
+                WorkflowStep(action="detect_ui_elements", image_path="screen.png"),
+                WorkflowStep(action="desktop_focus", app="telegram", verify=False),
+                WorkflowStep(
+                    action="desktop_type_into",
+                    app="telegram",
+                    target="search-input",
+                    value="Saved Messages",
+                    dry_run=True,
+                    verify=False,
+                ),
+                WorkflowStep(action="wait", sleep_ms=0),
+            ],
+        )
+
+        result = runtime.execute_workflow(workflow)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(len(result.steps), 8)
+        self.assertEqual(fake_client.desktop_calls[0][0], "focus")
+        self.assertEqual(fake_client.desktop_calls[1][0], "type_into")
 
     def test_agent_runtime_retries_failed_actions_and_records_attempts(self) -> None:
         fake_client = FlakyActionClient(failures_before_success=1)
@@ -1783,6 +1841,40 @@ class RuntimeCoreTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["schema_version"]["const"], WORKFLOW_SCHEMA_VERSION)
         self.assertFalse(schema["additionalProperties"])
         self.assertIn("click", schema["properties"]["steps"]["items"]["properties"]["action"]["enum"])
+        self.assertIn(
+            "desktop_type_into",
+            schema["properties"]["steps"]["items"]["properties"]["action"]["enum"],
+        )
+        self.assertIn(
+            "plugin_call",
+            schema["properties"]["steps"]["items"]["properties"]["action"]["enum"],
+        )
+
+    def test_agent_runtime_lists_and_prints_workflow_templates(self) -> None:
+        runtime = AgentRuntime(client=FakeClient())
+
+        templates = runtime.list_workflow_templates(category="vision")
+        plugin_template = runtime.workflow_template_info("plugin-tool-call")
+
+        self.assertTrue(any(template["id"] == "ocr-visible-text" for template in templates))
+        self.assertEqual(plugin_template["workflow"]["steps"][0]["action"], "plugin_call")
+
+        output = StringIO()
+        with patch("sys.stdout", output):
+            exit_code = agent_runtime_module.main(["workflow", "templates"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("observe-desktop category=observe", output.getvalue())
+
+    def test_agent_cli_prints_workflow_template_yaml(self) -> None:
+        output = StringIO()
+        with patch("sys.stdout", output):
+            exit_code = agent_runtime_module.main(
+                ["workflow", "template", "semantic-click", "--format", "yaml"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("name: 'semantic-click'", output.getvalue())
 
     def test_workflow_recorder_exports_json_and_yaml(self) -> None:
         recorder = WorkflowRecorder("recorded")

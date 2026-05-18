@@ -197,6 +197,8 @@ element. The same fallback can be enabled for all daemon requests with
 Daemon-routed `MoveMouse`, `Click`, `Drag`, `TypeText`, and `Hotkey` requests
 require the daemon to be started with `--profile operator`, `--allow-input`, or
 `PEEKABOOX_ALLOW_INPUT=1`.
+Daemon-routed plugin tool execution uses a separate gate:
+`--profile operator`, `--allow-plugins`, or `PEEKABOOX_ALLOW_PLUGINS=1`.
 
 `ClickRequest` accepts one target at a time: `coordinates`,
 `semantic_selector`, or a region/window scope with `ratio_x` and `ratio_y`.
@@ -412,6 +414,8 @@ JSON round-trips through `export_desktop_graph()` and `import_desktop_graph()`.
 - `execute_workflow(workflow)` executes explicit `WorkflowStep` sequences.
 - `load_workflow_file(path)` loads a JSON or YAML workflow definition.
 - `execute_workflow_file(path)` loads and executes that workflow definition.
+- `list_workflow_templates(...)` and `workflow_template_info(template_id)`
+  expose built-in editable workflow templates.
 - `start_recording(name)` starts capturing subsequent actions as workflow steps.
 - `stop_recording()` ends the active recording and returns a `Workflow`.
 - `recorded_workflow()` returns the active or last completed recording.
@@ -520,10 +524,11 @@ hosts are rejected without a token. Clients can send either
 `Authorization: Bearer <token>` or `X-PeekabooX-MCP-Token`. Request bodies are
 limited by `--max-request-bytes` or `PEEKABOOX_MCP_MAX_REQUEST_BYTES`.
 
-MCP resources expose server state, tool descriptors, desktop profile metadata,
-latest Doctor/preflight state, desktop graph status/snapshots, plugin discovery,
-runtime audit events, and selected repository docs under `peekaboox://...`
-URIs. MCP prompts provide reusable guidance for diagnostics, safe desktop
+MCP resources expose server state, tool descriptors, workflow templates,
+desktop profile metadata, latest Doctor/preflight state, desktop graph
+status/snapshots, plugin discovery, runtime audit events, and selected
+repository docs under `peekaboox://...` URIs. MCP prompts provide reusable
+guidance for diagnostics, safe desktop
 actions, window inspection, workflow building, structured error recovery, plugin
 development, OCR, and semantic click planning. Completion supports common
 arguments such as tools, prompts, resources, app profiles, desktop targets,

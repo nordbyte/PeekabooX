@@ -369,6 +369,11 @@ class McpServer:
             return _json_resource(uri, self._server_info())
         if uri == "peekaboox://tools":
             return _json_resource(uri, {"tools": self.list_tools()})
+        if uri == "peekaboox://workflows/templates":
+            return _json_resource(
+                uri,
+                {"templates": self._require_runtime().list_workflow_templates()},
+            )
         if uri == "peekaboox://desktop/profiles":
             return _json_resource(uri, self._desktop_profiles({}))
         if uri == "peekaboox://doctor/latest":
@@ -405,6 +410,12 @@ class McpServer:
             if path is None:
                 raise JsonRpcProtocolError(INVALID_PARAMS, f"unknown MCP resource: {uri}")
             return _text_resource(uri, _read_repo_text(path), mime_type="text/markdown")
+        if uri.startswith("peekaboox://workflows/templates/"):
+            template_id = uri.removeprefix("peekaboox://workflows/templates/")
+            return _json_resource(
+                uri,
+                self._require_runtime().workflow_template_info(template_id),
+            )
         raise JsonRpcProtocolError(INVALID_PARAMS, f"unknown MCP resource: {uri}")
 
     def _server_info(self) -> dict[str, Any]:
@@ -451,6 +462,11 @@ class McpServer:
             return KNOWN_CAPABILITY_PROFILES
         if normalized in {"workflow_action", "action"}:
             return WORKFLOW_ACTIONS
+        if normalized in {"template", "template_id", "workflow_template"}:
+            return tuple(
+                str(template["id"])
+                for template in self._require_runtime().list_workflow_templates()
+            )
         if normalized == "format":
             return ("json", "yaml")
         if normalized == "level":
@@ -1019,6 +1035,17 @@ class McpServer:
                 self._desktop_graph_status,
             ),
             self._tool(
+                "compact_desktop_graph",
+                "Drop old semantic desktop graph snapshots by count or age.",
+                schema(
+                    {
+                        "max_snapshots": {"type": "integer", "minimum": 1},
+                        "max_age_ms": {"type": "integer", "minimum": 0},
+                    }
+                ),
+                self._compact_desktop_graph,
+            ),
+            self._tool(
                 "refresh_desktop_graph",
                 "Sample current desktop state and refresh the semantic desktop graph.",
                 schema(
@@ -1543,6 +1570,31 @@ class McpServer:
                 self._load_workflow_file,
             ),
             self._tool(
+                "list_workflow_templates",
+                "List built-in workflow templates with categories, capabilities, and tags.",
+                schema(
+                    {
+                        "category": {"type": "string"},
+                        "capability": {"type": "string"},
+                        "tag": {"type": "string"},
+                        "include_workflows": {"type": "boolean", "default": False},
+                    }
+                ),
+                self._list_workflow_templates,
+            ),
+            self._tool(
+                "get_workflow_template",
+                "Return a built-in workflow template by id.",
+                schema(
+                    {
+                        "template_id": {"type": "string"},
+                        "include_workflow": {"type": "boolean", "default": True},
+                    },
+                    required=["template_id"],
+                ),
+                self._get_workflow_template,
+            ),
+            self._tool(
                 "query_desktop_edges",
                 "Query edges from the runtime semantic desktop graph.",
                 schema(
@@ -2050,6 +2102,14 @@ class McpServer:
     def _desktop_graph_status(self, _arguments: dict[str, Any]) -> dict[str, Any]:
         return _to_mcp_value(self._require_runtime().desktop_graph_status())
 
+    def _compact_desktop_graph(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return _to_mcp_value(
+            self._require_runtime().compact_desktop_graph(
+                max_snapshots=_optional_positive_int(arguments, "max_snapshots"),
+                max_age_ms=_optional_nonnegative_int(arguments, "max_age_ms"),
+            )
+        )
+
     def _refresh_desktop_graph(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return _to_mcp_value(
             self._require_runtime().refresh_desktop_graph(
@@ -2374,6 +2434,22 @@ class McpServer:
     def _load_workflow_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
         workflow = self._require_runtime().load_workflow_file(_required_str(arguments, "path"))
         return {"workflow": workflow_to_dict(workflow)}
+
+    def _list_workflow_templates(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "templates": self._require_runtime().list_workflow_templates(
+                category=_optional_string(arguments, "category"),
+                capability=_optional_string(arguments, "capability"),
+                tag=_optional_string(arguments, "tag"),
+                include_workflows=bool(arguments.get("include_workflows", False)),
+            )
+        }
+
+    def _get_workflow_template(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self._require_runtime().workflow_template_info(
+            _required_str(arguments, "template_id"),
+            include_workflow=bool(arguments.get("include_workflow", True)),
+        )
 
     def _query_desktop_edges(self, arguments: dict[str, Any]) -> list[dict[str, Any]]:
         return _to_mcp_value(

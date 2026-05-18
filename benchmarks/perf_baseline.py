@@ -247,11 +247,28 @@ def benchmark_cases() -> dict[str, BenchmarkCase]:
         if "steps" not in dumped:
             raise AssertionError("workflow JSON did not contain steps")
 
+    def workflow_template_list() -> None:
+        templates = runtime.list_workflow_templates(include_workflows=True)
+        if not any(template["id"] == "semantic-click" for template in templates):
+            raise AssertionError("workflow template list did not contain semantic-click")
+
     def desktop_graph_ingest() -> None:
         store = MemoryStore()
         snapshot = store.ingest_desktop_state(state, snapshot_id="snapshot:iteration")
         if len(snapshot.nodes) < len(state.elements):
             raise AssertionError("desktop graph ingest dropped element nodes")
+
+    def desktop_graph_compact() -> None:
+        store = MemoryStore()
+        for index in range(4):
+            store.ingest_desktop_state(
+                state,
+                snapshot_id=f"snapshot:compact:{index}",
+                captured_at_unix_ms=index,
+            )
+        removed = store.compact_desktop_graph(max_snapshots=1)
+        if removed != 3 or store.desktop_graph_status().snapshot_count != 1:
+            raise AssertionError("desktop graph compaction did not retain one snapshot")
 
     def cached_selector_query() -> None:
         elements = memory.find_cached_elements("role=push button,label=Submit 42")
@@ -305,9 +322,17 @@ def benchmark_cases() -> dict[str, BenchmarkCase]:
             "python.workflow_yaml_roundtrip",
             workflow_yaml_roundtrip,
         ),
+        "python.workflow_template_list": BenchmarkCase(
+            "python.workflow_template_list",
+            workflow_template_list,
+        ),
         "python.memory.desktop_graph_ingest": BenchmarkCase(
             "python.memory.desktop_graph_ingest",
             desktop_graph_ingest,
+        ),
+        "python.memory.desktop_graph_compact": BenchmarkCase(
+            "python.memory.desktop_graph_compact",
+            desktop_graph_compact,
         ),
         "python.memory.cached_selector_query": BenchmarkCase(
             "python.memory.cached_selector_query",

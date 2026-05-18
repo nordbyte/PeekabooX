@@ -106,6 +106,32 @@ class SQLiteMemoryStore(MemoryStore):
                 self._persist_snapshot(snapshot)
             self._persist_metadata("desktop_graph_stale", self.desktop_graph_stale)
 
+    def compact_desktop_graph(
+        self,
+        *,
+        max_snapshots: int | None = None,
+        max_age_ms: int | None = None,
+        now_unix_ms: int | None = None,
+    ) -> int:
+        removed = super().compact_desktop_graph(
+            max_snapshots=max_snapshots,
+            max_age_ms=max_age_ms,
+            now_unix_ms=now_unix_ms,
+        )
+        if removed:
+            kept_ids = {snapshot.id for snapshot in self.desktop_graph.snapshots}
+            with self._connection:
+                if kept_ids:
+                    placeholders = ",".join("?" for _ in kept_ids)
+                    self._connection.execute(
+                        f"DELETE FROM desktop_graph_snapshots WHERE id NOT IN ({placeholders})",
+                        tuple(kept_ids),
+                    )
+                else:
+                    self._connection.execute("DELETE FROM desktop_graph_snapshots")
+                self._persist_metadata("desktop_graph_stale", self.desktop_graph_stale)
+        return removed
+
     def flush(self) -> None:
         with self._connection:
             for key, value in self.values.items():

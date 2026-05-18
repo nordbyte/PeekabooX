@@ -20,6 +20,12 @@ from .model import (
     workflow_json_schema,
 )
 from .recorder import WorkflowRecorder
+from .templates import (
+    WorkflowTemplate,
+    get_workflow_template,
+    list_workflow_templates,
+    workflow_template_dicts,
+)
 
 __all__ = [
     "WORKFLOW_SCHEMA_VERSION",
@@ -27,6 +33,7 @@ __all__ = [
     "Workflow",
     "WorkflowRecorder",
     "WorkflowStep",
+    "WorkflowTemplate",
     "WorkflowValidationError",
     "create_workflow_bundle",
     "dump_workflow_text",
@@ -39,5 +46,8 @@ __all__ = [
     "workflow_json_schema",
     "workflow_step_from_dict",
     "workflow_step_to_dict",
+    "get_workflow_template",
+    "list_workflow_templates",
+    "workflow_template_dicts",
     "workflow_to_dict",
 ]

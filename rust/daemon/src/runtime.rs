@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn print_usage() {
     println!(
-        "Usage: peekabooxd run [--profile <observe|assist|operator>] [--sandbox <off|basic|strict>] [--socket <path>] [--audit-log <path>] [--grpc-addr <addr>] [--no-grpc] [--accessibility-cache-ttl-ms <ms>] [--allow-input] [--vision-fallback] [--no-accessibility-events] [--no-emergency-hotkey] [--once]"
+        "Usage: peekabooxd run [--profile <observe|assist|operator>] [--sandbox <off|basic|strict>] [--socket <path>] [--audit-log <path>] [--grpc-addr <addr>] [--no-grpc] [--accessibility-cache-ttl-ms <ms>] [--allow-input] [--allow-plugins] [--vision-fallback] [--no-accessibility-events] [--no-emergency-hotkey] [--once]"
     );
 }
 
@@ -33,6 +33,12 @@ pub(super) fn input_allowed_from_env() -> bool {
 
 pub(super) fn vision_fallback_from_env() -> bool {
     std::env::var("PEEKABOOX_VISION_FALLBACK")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
+pub(super) fn plugin_execution_allowed_from_env() -> bool {
+    std::env::var("PEEKABOOX_ALLOW_PLUGINS")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
 }

@@ -395,6 +395,13 @@ fn environment_json() -> Value {
         "XDG_RUNTIME_DIR",
         "PIPEWIRE_RUNTIME_DIR",
         "PIPEWIRE_REMOTE",
+        "PEEKABOOX_DAEMON_PROFILE",
+        "PEEKABOOX_ALLOW_INPUT",
+        "PEEKABOOX_ALLOW_PLUGINS",
+        "PEEKABOOX_VISION_FALLBACK",
+        "PEEKABOOX_DESKTOP_PROFILE_PATH",
+        "PEEKABOOX_CAPABILITY_PROFILE",
+        "PEEKABOOX_PREFLIGHT_MODE",
         "PATH",
     ];
     json!({

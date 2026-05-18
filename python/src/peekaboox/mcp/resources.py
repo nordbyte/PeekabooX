@@ -27,6 +27,12 @@ def default_resources() -> tuple[McpResource, ...]:
             description="Current MCP tool descriptors, schemas, annotations, and output schemas.",
         ),
         McpResource(
+            uri="peekaboox://workflows/templates",
+            name="workflow-templates",
+            title="Workflow Templates",
+            description="Built-in workflow templates with categories, capabilities, and tags.",
+        ),
+        McpResource(
             uri="peekaboox://desktop/profiles",
             name="desktop-profiles",
             title="Desktop App Profiles",
@@ -111,6 +117,13 @@ def default_resource_templates() -> tuple[McpResourceTemplate, ...]:
             name="audit",
             title="PeekabooX Runtime Audit",
             description="Read runtime audit events; kind is capabilities, confirmations, or preflight.",
+            mime_type="application/json",
+        ),
+        McpResourceTemplate(
+            uri_template="peekaboox://workflows/templates/{template_id}",
+            name="workflow-template",
+            title="Workflow Template",
+            description="Read a built-in workflow template by template_id.",
             mime_type="application/json",
         ),
     )

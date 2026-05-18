@@ -191,6 +191,8 @@ through the Python CLI:
 
 ```bash
 peekaboox-agent workflow schema
+peekaboox-agent workflow templates
+peekaboox-agent workflow template semantic-click --format yaml
 peekaboox-agent workflow validate examples/workflow.yaml
 peekaboox-agent workflow replay examples/workflow.yaml
 peekaboox-agent workflow bundle examples/workflow.yaml --out target/workflow-bundle
@@ -204,6 +206,9 @@ prints the JSON Schema used by examples, agents, and CI. A bundle contains
 normalized JSON/YAML workflow files, `workflow.schema.json`, metadata, optional
 `doctor.json`, and optional `replay-result.json`. This gives examples and bug
 reports a stable artifact without requiring prose log parsing.
+`workflow templates` lists built-in templates for observe, semantic click,
+text input, desktop profiles, OCR, visual regression, UI-state waiting, and
+plugin calls. `workflow template <id>` prints a ready-to-edit JSON/YAML draft.
 
 `find_element` also accepts daemon-scoped element lookup fields such as
 `app`, `window_title`, `window_id`, and the `vision_*` fallback detector tuning
@@ -216,6 +221,10 @@ steps preserve `preserve_clipboard`, `dry_run`, `clipboard_backend`,
 Hotkey steps preserve normalized key chords plus `dry_run`, `backend`,
 `delay_ms`, `key_delay_ms`, `repeat`, `interval_ms`, `release_before`, and
 `release_after`.
+The workflow action surface also includes `ocr_screen`, `compare_images`,
+`detect_ui_state`, `detect_ui_elements`, `desktop_focus`, `desktop_locate`,
+`desktop_click`, `desktop_drag`, `desktop_type_into`, `desktop_assert`,
+`plugin_call`, `wait`, and `assert_text`.
 
 When recording coordinate clicks, the runtime samples semantic desktop state if
 needed and stores a stable selector such as `role=push button,label=Submit`
@@ -253,6 +262,9 @@ Fresh graph snapshots are also used as a semantic lookup cache. `find_element`
 and semantic `click_selector` first match selectors against cached graph
 elements, and only fall back to daemon semantic lookup when the graph is stale
 or has no match.
+Use `runtime.compact_desktop_graph(max_snapshots=...)` or `max_age_ms=...` to
+drop old graph snapshots. `desktop_graph_status()` reports snapshot, node, and
+edge counts so long-running agents can monitor memory growth.
 
 ## MCP Server
 
@@ -283,6 +295,8 @@ is the default for MCP clients; `--transport http` serves JSON-RPC POST requests
 on `/mcp`; `--transport sse` additionally exposes a lightweight `/sse` endpoint
 that advertises the JSON-RPC endpoint and tool list for clients that discover
 servers through server-sent events.
+Workflow template resources are available at `peekaboox://workflows/templates`
+and `peekaboox://workflows/templates/{template_id}`.
 Set `--auth-token` or `PEEKABOOX_MCP_TOKEN` for HTTP/SSE clients; non-loopback
 HTTP/SSE hosts are refused unless a token is configured. HTTP clients may send
 `Authorization: Bearer <token>` or `X-PeekabooX-MCP-Token`. The default request

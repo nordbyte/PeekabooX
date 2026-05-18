@@ -93,17 +93,34 @@ class MemoryStore:
 
     def desktop_graph_status(self) -> DesktopGraphStatus:
         latest = self.latest_desktop_snapshot()
+        stats = self.desktop_graph.stats()
         return DesktopGraphStatus(
             stale=self.desktop_graph_stale,
             latest_snapshot_id=latest.id if latest else None,
             event_count=len(self.desktop_events),
             invalidation_count=len(self.desktop_graph_invalidations),
+            snapshot_count=stats["snapshot_count"],
+            node_count=stats["node_count"],
+            edge_count=stats["edge_count"],
             last_event=self.desktop_events[-1] if self.desktop_events else None,
             last_invalidation=(
                 self.desktop_graph_invalidations[-1]
                 if self.desktop_graph_invalidations
                 else None
             ),
+        )
+
+    def compact_desktop_graph(
+        self,
+        *,
+        max_snapshots: int | None = None,
+        max_age_ms: int | None = None,
+        now_unix_ms: int | None = None,
+    ) -> int:
+        return self.desktop_graph.compact(
+            max_snapshots=max_snapshots,
+            max_age_ms=max_age_ms,
+            now_unix_ms=now_unix_ms,
         )
 
     def query_desktop_nodes(

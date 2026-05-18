@@ -164,6 +164,10 @@ impl DaemonPolicyProfile {
         matches!(self, Self::Operator)
     }
 
+    fn allow_plugins(self) -> bool {
+        matches!(self, Self::Operator)
+    }
+
     fn vision_fallback(self) -> bool {
         matches!(self, Self::Assist | Self::Operator)
     }
@@ -205,6 +209,7 @@ struct ServerConfig {
     policy_profile: DaemonPolicyProfile,
     sandbox_profile: SandboxProfile,
     allow_input: bool,
+    allow_plugins: bool,
     vision_fallback: bool,
     grpc_addr: Option<SocketAddr>,
     grpc_token: Option<String>,
@@ -264,6 +269,7 @@ fn parse_run_args(args: &[String]) -> Result<DaemonCommand, String> {
                 config.sandbox_profile = SandboxProfile::parse(value)?;
             }
             "--allow-input" => config.allow_input = true,
+            "--allow-plugins" | "--allow-plugin-exec" => config.allow_plugins = true,
             "--vision-fallback" => config.vision_fallback = true,
             "--grpc-addr" => {
                 index += 1;
@@ -324,6 +330,7 @@ fn default_server_config() -> Result<ServerConfig, String> {
     let mut config = server_config_for_profile(profile);
     config.sandbox_profile = sandbox_profile;
     config.allow_input = config.allow_input || input_allowed_from_env();
+    config.allow_plugins = config.allow_plugins || plugin_execution_allowed_from_env();
     config.vision_fallback = config.vision_fallback || vision_fallback_from_env();
     Ok(config)
 }
@@ -336,6 +343,7 @@ fn server_config_for_profile(policy_profile: DaemonPolicyProfile) -> ServerConfi
         policy_profile,
         sandbox_profile: SandboxProfile::Off,
         allow_input: policy_profile.allow_input(),
+        allow_plugins: policy_profile.allow_plugins(),
         vision_fallback: policy_profile.vision_fallback(),
         grpc_addr: Some(default_grpc_addr()),
         grpc_token: grpc_token_from_env(),
@@ -349,6 +357,7 @@ fn server_config_for_profile(policy_profile: DaemonPolicyProfile) -> ServerConfi
 fn apply_daemon_policy_profile(config: &mut ServerConfig, policy_profile: DaemonPolicyProfile) {
     config.policy_profile = policy_profile;
     config.allow_input = policy_profile.allow_input();
+    config.allow_plugins = policy_profile.allow_plugins();
     config.vision_fallback = policy_profile.vision_fallback();
 }
 
@@ -542,6 +551,7 @@ fn run_server(config: ServerConfig) -> Result<(), String> {
             "sandbox_profile": config.sandbox_profile.as_str(),
             "sandbox_steps": sandbox_steps,
             "allow_input": config.allow_input,
+            "allow_plugins": config.allow_plugins,
             "vision_fallback": config.vision_fallback,
             "once": config.once,
             "grpc_addr": config.grpc_addr.map(|addr| addr.to_string()),

@@ -31,12 +31,12 @@ pub(super) fn ensure_input_allowed(config: &ServerConfig) -> Result<(), String> 
 }
 
 pub(super) fn ensure_plugin_execution_allowed(config: &ServerConfig) -> Result<(), String> {
-    if config.allow_input {
+    if config.allow_plugins {
         return Ok(());
     }
 
     Err(
-        "permission denied: plugin execution requires peekabooxd --profile operator, --allow-input, or PEEKABOOX_ALLOW_INPUT=1"
+        "permission denied: plugin execution requires peekabooxd --profile operator, --allow-plugins, or PEEKABOOX_ALLOW_PLUGINS=1"
             .to_owned(),
     )
 }

@@ -8,9 +8,9 @@ use super::{
     VISION_UI_BACKEND_KIND, VISION_UI_BACKEND_NAME, audit_details, capture_delta_dto,
     default_accessibility_cache_ttl, default_audit_log_path, default_grpc_addr, dispatch_request,
     element_lookup_with_optional_vision_fallback, emergency_hotkey_details,
-    emergency_hotkey_enabled_from_env, ensure_input_allowed, input_allowed_from_env,
-    linux_input_event_size, ocr_result_dto, parse_args, parse_linux_input_event,
-    proto_capture_backends_response, proto_capture_delta_response,
+    emergency_hotkey_enabled_from_env, ensure_input_allowed, ensure_plugin_execution_allowed,
+    input_allowed_from_env, linux_input_event_size, ocr_result_dto, parse_args,
+    parse_linux_input_event, proto_capture_backends_response, proto_capture_delta_response,
     proto_detect_ui_elements_response, proto_ocr_response, proto_ui_state_response,
     proto_visual_diff_response, sandbox_profile_from_env, server_config_for_profile,
     ui_element_list_dto, ui_state_dto, vision_fallback_from_env, visual_diff_dto,
@@ -73,6 +73,7 @@ fn parses_run_options() {
                 policy_profile: DaemonPolicyProfile::Observe,
                 sandbox_profile: SandboxProfile::Basic,
                 allow_input: true,
+                allow_plugins: false,
                 vision_fallback: true,
                 grpc_addr: Some("127.0.0.1:47778".parse().unwrap()),
                 grpc_token: None,
@@ -121,6 +122,22 @@ fn parses_run_plugin_path_option() {
 }
 
 #[test]
+fn parses_run_allow_plugins_option() {
+    let command = parse_args(vec!["run".to_owned(), "--allow-plugins".to_owned()]).unwrap();
+
+    assert!(matches!(
+        command,
+        DaemonCommand::Run {
+            config: ServerConfig {
+                allow_plugins: true,
+                allow_input: false,
+                ..
+            }
+        }
+    ));
+}
+
+#[test]
 fn parses_run_policy_profile() {
     let command = parse_args(vec![
         "run".to_owned(),
@@ -135,6 +152,7 @@ fn parses_run_policy_profile() {
             config: ServerConfig {
                 policy_profile: DaemonPolicyProfile::Operator,
                 allow_input: true,
+                allow_plugins: true,
                 vision_fallback: true,
                 ..
             }
@@ -169,10 +187,13 @@ fn daemon_policy_profiles_apply_daemon_gates() {
     let operator = server_config_for_profile(DaemonPolicyProfile::Operator);
 
     assert!(!observe.allow_input);
+    assert!(!observe.allow_plugins);
     assert!(!observe.vision_fallback);
     assert!(!assist.allow_input);
+    assert!(!assist.allow_plugins);
     assert!(assist.vision_fallback);
     assert!(operator.allow_input);
+    assert!(operator.allow_plugins);
     assert!(operator.vision_fallback);
 }
 
@@ -255,6 +276,7 @@ fn input_permission_gate_denies_by_default() {
         policy_profile: DaemonPolicyProfile::Observe,
         sandbox_profile: SandboxProfile::Off,
         allow_input: false,
+        allow_plugins: false,
         vision_fallback: false,
         grpc_addr: Some(default_grpc_addr()),
         grpc_token: None,
@@ -267,6 +289,32 @@ fn input_permission_gate_denies_by_default() {
     let error = ensure_input_allowed(&config).unwrap_err();
 
     assert!(error.contains("--allow-input"));
+}
+
+#[test]
+fn plugin_permission_gate_is_separate_from_input() {
+    let mut config = ServerConfig {
+        socket: PathBuf::from("/tmp/peekaboox-test.sock"),
+        once: true,
+        audit_log: PathBuf::from("/tmp/peekaboox-audit.jsonl"),
+        policy_profile: DaemonPolicyProfile::Observe,
+        sandbox_profile: SandboxProfile::Off,
+        allow_input: true,
+        allow_plugins: false,
+        vision_fallback: false,
+        grpc_addr: Some(default_grpc_addr()),
+        grpc_token: None,
+        accessibility_cache_ttl: default_accessibility_cache_ttl(),
+        accessibility_events: true,
+        emergency_hotkey: true,
+        plugin_paths: Vec::new(),
+    };
+
+    let error = ensure_plugin_execution_allowed(&config).unwrap_err();
+    assert!(error.contains("--allow-plugins"));
+
+    config.allow_plugins = true;
+    ensure_plugin_execution_allowed(&config).unwrap();
 }
 
 #[test]
@@ -493,6 +541,7 @@ fn dispatch_find_elements_uses_cached_selector_query() {
         policy_profile: DaemonPolicyProfile::Observe,
         sandbox_profile: SandboxProfile::Off,
         allow_input: false,
+        allow_plugins: false,
         vision_fallback: false,
         grpc_addr: None,
         grpc_token: None,
@@ -559,6 +608,7 @@ fn dispatch_list_plugins_uses_configured_plugin_paths() {
         policy_profile: DaemonPolicyProfile::Observe,
         sandbox_profile: SandboxProfile::Off,
         allow_input: false,
+        allow_plugins: false,
         vision_fallback: false,
         grpc_addr: None,
         grpc_token: None,
@@ -655,6 +705,7 @@ async fn grpc_list_windows_responds() {
             policy_profile: DaemonPolicyProfile::Observe,
             sandbox_profile: SandboxProfile::Off,
             allow_input: false,
+            allow_plugins: false,
             vision_fallback: false,
             grpc_addr: None,
             grpc_token: None,
@@ -726,6 +777,7 @@ async fn grpc_click_is_permission_gated() {
             policy_profile: DaemonPolicyProfile::Observe,
             sandbox_profile: SandboxProfile::Off,
             allow_input: false,
+            allow_plugins: false,
             vision_fallback: false,
             grpc_addr: None,
             grpc_token: None,
@@ -785,6 +837,7 @@ async fn grpc_semantic_click_is_permission_gated() {
             policy_profile: DaemonPolicyProfile::Observe,
             sandbox_profile: SandboxProfile::Off,
             allow_input: false,
+            allow_plugins: false,
             vision_fallback: false,
             grpc_addr: None,
             grpc_token: None,
