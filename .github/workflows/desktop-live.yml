@@ -15,12 +15,15 @@ jobs:
         with:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config xvfb xdotool gnome-calculator gnome-text-editor
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
       - run: bash examples/desktop/run_all.sh --syntax-only
       - run: cargo build -p peekaboox-cli -p peekabooxd
       - name: Run non-destructive desktop smoke examples under Xvfb
         run: |
           PEEKABOOX_BIN=target/debug/peekaboox \
           PEEKABOOXD_BIN=target/debug/peekabooxd \
+          PEEKABOOX_PYTHON_BIN="$(command -v python)" \
           xvfb-run -a bash examples/desktop/run_all.sh --smoke --strict --no-close
       - uses: actions/upload-artifact@v5
         if: always()
